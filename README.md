@@ -28,10 +28,10 @@ The five applications do not share an automation surface, and this shapes everyt
 | Application | Engine | Language |
 | --- | --- | --- |
 | Photoshop | UXP | Modern JavaScript |
-| Illustrator | UXP | Modern JavaScript |
+| Premiere Pro (≥ 25.6) | UXP | Modern JavaScript (`require("premierepro")`, promise-based) |
 | After Effects | ExtendScript | ES3 — `var` only, no arrow functions, no `JSON` |
-| Premiere Pro | ExtendScript | ES3 |
-| Audition | ExtendScript | ES3 |
+| Illustrator | ExtendScript | ES3 (no public UXP exists) |
+| Audition | ExtendScript | ES3, via an undocumented CEP-only API |
 
 Scripts in `src/tools/` are written for their host's engine and are **not**
 interchangeable. The ExtendScript ones look dated on purpose; modernizing them breaks
@@ -46,8 +46,8 @@ them.
 | `ae_project_info` | After Effects | Project path, item count, bit depth, dirty flag |
 | `ae_list_compositions` | After Effects | Every comp with size, duration, frame rate, layer count |
 | `ae_queue_render` | After Effects | Add a comp to the render queue with an output path |
-| `ppro_project_info` | Premiere Pro | Project name, path, sequence count |
-| `ppro_list_sequences` | Premiere Pro | Sequences with track counts and timebase |
+| `pp_project_info` | Premiere Pro | Project name, path, sequence count |
+| `pp_list_sequences` | Premiere Pro | Sequences with track counts |
 | `ps_list_documents` | Photoshop | Open documents with size, resolution, color mode |
 | `ps_list_layers` | Photoshop | Layers of a document, flattened with nesting depth |
 | `ai_list_documents` | Illustrator | Open documents with artboard count and color space |
@@ -127,8 +127,8 @@ Early, and honest about it:
 - **Working** — MCP server, tool registration, the bridge protocol and its server side,
   error handling, tests.
 - **Not written yet** — the in-app panels. Without one, every tool correctly reports
-  that its application is not connected. The UXP panel (Photoshop, Illustrator) and the
-  CEP panel (After Effects, Premiere, Audition) are the next pieces of work.
+  that its application is not connected. The UXP panel (Photoshop, Premiere Pro) and the
+  CEP panel (After Effects, Illustrator, Audition) are the next pieces of work.
 - **Thin** — Audition and Illustrator have one tool each; Premiere has no export tool.
   The surface grows as the panels land.
 

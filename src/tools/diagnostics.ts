@@ -40,9 +40,10 @@ export function registerDiagnosticTools(server: McpServer, bridge: BridgeServer)
       title: "Creative Cloud: evaluate a raw script",
       description:
         "Evaluate a raw script in one of the applications and return its result. The script must match the host's " +
-        "engine: ExtendScript (ES3 — var only, no arrow functions) for After Effects, Premiere Pro, and Audition; " +
-        "modern UXP JavaScript for Photoshop and Illustrator. This is an escape hatch for work the typed tools do " +
-        "not cover — prefer a typed tool where one exists.",
+        "engine: ExtendScript (ES3 — var only, no arrow functions) for After Effects, Illustrator, and Audition; " +
+        "modern UXP JavaScript for Photoshop and Premiere Pro (Premiere scripts use require('premierepro') and may " +
+        "return a Promise). This is an escape hatch for work the typed tools do not cover — prefer a typed tool " +
+        "where one exists.",
       inputSchema: {
         appId: z.enum(APP_IDS).describe("Which application to run the script in."),
         script: z

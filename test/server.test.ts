@@ -40,7 +40,7 @@ describe("adobe-cc-mcp server", () => {
     const names = tools.map((t) => t.name);
 
     expect(names).toContain("ae_list_compositions");
-    expect(names).toContain("ppro_list_sequences");
+    expect(names).toContain("pp_list_sequences");
     expect(names).toContain("ps_list_documents");
     expect(names).toContain("ai_list_documents");
     expect(names).toContain("au_document_info");

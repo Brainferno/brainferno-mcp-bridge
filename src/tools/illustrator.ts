@@ -3,18 +3,29 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { AppBridge } from "../bridge/types.js";
 import { guard, jsonResult } from "./result.js";
 
-/** Illustrator runs UXP — modern JavaScript is fine here. */
+/**
+ * Illustrator has no public UXP — it is driven through ExtendScript (ES3) via
+ * the CEP panel: `var` only, no arrow functions, no JSON global. Do not
+ * modernize these scripts.
+ */
 
-const LIST_DOCUMENTS = `(() => {
-  const { app } = require("illustrator");
-  return app.documents.map((doc) => ({
-    name: doc.name,
-    path: doc.fullName ? String(doc.fullName) : null,
-    width: doc.width,
-    height: doc.height,
-    artboardCount: doc.artboards.length,
-    colorSpace: String(doc.documentColorSpace),
-  }));
+const LIST_DOCUMENTS = `(function () {
+  var out = [];
+  for (var i = 0; i < app.documents.length; i++) {
+    var doc = app.documents[i];
+    var path = null;
+    // fullName throws on a document that has never been saved.
+    try { path = doc.fullName.fsName; } catch (e) { path = null; }
+    out.push({
+      name: doc.name,
+      path: path,
+      width: doc.width,
+      height: doc.height,
+      artboardCount: doc.artboards.length,
+      colorSpace: String(doc.documentColorSpace)
+    });
+  }
+  return out;
 })()`;
 
 export function registerIllustratorTools(server: McpServer, bridge: AppBridge): void {
