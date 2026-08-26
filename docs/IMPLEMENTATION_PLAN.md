@@ -210,9 +210,103 @@ Principles: parallelism only after the interface freeze (end of Phase B); every 
 | E pipeline | 1 integration agent | code-review agent | end-to-end demo, human + debug agent |
 | F packaging | integration agent + docs agent | security-review agent | fresh-machine install test per OS |
 
+## Part 5 — Target tool catalogs (v1, per app)
+
+The frozen interface for Phase D. Names follow §2.5; every list/get tool carries `readOnlyHint`; params sketched, exact zod schemas written at freeze time. **(RO)** = read-only, **(M)** = mutating, **(D)** = destructiveHint, **(J)** = returns `{jobId}` via job manager, **(IMG)** = returns image block.
+
+**Shared (`cc_`)** — `cc_connected_apps` (RO, exists) · `cc_eval_script(app, script, timeoutMs?)` (M, exists) · `cc_job_status(jobId)` (RO) · `cc_job_cancel(jobId)` (M) · `cc_pairing_info` (RO) · `cc_launch_app(app)` (M) · `cc_open_project(app, path)` (M) · `cc_workspace_list` (RO).
+
+**After Effects (`ae_`, deep — ~20 tools)**
+- Read: `ae_project_info` (exists) · `ae_list_compositions` (exists) · `ae_get_comp(compId)` — layers with in/out, transforms, effects · `ae_list_footage` · `ae_get_layer(compId, layerIndex)` — properties incl. keyframe listing.
+- Structure: `ae_create_comp(name,w,h,fps,duration)` · `ae_import_footage(path)` · `ae_add_layer(compId, source|solid|text|null|adjustment)` · `ae_set_layer_props(compId, layerIndex, {transform, timing, blendMode, parent})` · `ae_delete_layer` (D) · `ae_precompose(compId, layerIndices, name)`.
+- Animation: `ae_set_keyframes(compId, layerIndex, propPath, [{time,value,ease?}])` · `ae_set_expression(compId, layerIndex, propPath, expr)` · `ae_add_effect(compId, layerIndex, effectMatchName, props?)` · `ae_set_marker`.
+- Output: `ae_render_frame(compId, time)` (IMG) — via render-queue still or aerender · `ae_render_comp(compId, outputPath, template?)` (J) — aerender subprocess per spike 11 · `ae_save_project` (M).
+- Every mutating tool wraps its script in `app.beginUndoGroup`/`endUndoGroup` so a human can undo Claude's step.
+
+**Photoshop (`ps_`, deep — ~18 tools)**
+- Read: `ps_list_documents` (exists) · `ps_list_layers` (exists) · `ps_get_layer(documentId, layerId)` — bounds, text content, effects · `ps_export_preview(documentId?, maxDim?)` (IMG).
+- Document: `ps_create_document(w,h,resolution,mode)` · `ps_open(path)` · `ps_save`/`ps_save_as(path, format)` (M/D) · `ps_flatten` (D) · `ps_resize_image` · `ps_crop`.
+- Layers: `ps_create_text_layer(text, font, size, color, position)` · `ps_set_layer_props(visible, opacity, blendMode, name, position)` · `ps_delete_layer` (D) · `ps_duplicate_layer` · `ps_place_image(path)` — place as smart object · `ps_apply_adjustment(kind, params)` (levels/curves/hue-sat as adjustment layers).
+- Selection/fill: `ps_select(rect|all|none)` · `ps_fill(color)`.
+- Escape hatch: `ps_batchplay(descriptors)` (M) — raw batchPlay array for anything the DOM lacks.
+- All mutations run inside `executeAsModal` (panel-side wrapper adds it; scripts stay clean).
+
+**Premiere Pro (`pp_`, useful — ~12 tools)** — scope confirmed by spike 8 against `@adobe/premierepro` actual coverage:
+`pp_project_info` · `pp_list_sequences` · `pp_get_sequence(seqId)` — tracks & clips with times · `pp_list_bins` · `pp_import_media(paths)` · `pp_create_sequence(name, presetOrSettings)` · `pp_insert_clip(seqId, projectItemId, trackIndex, time, insert|overwrite)` · `pp_move_clip` / `pp_trim_clip` · `pp_set_clip_audio_level` · `pp_add_marker` · `pp_export_frame(seqId, time)` (IMG) · `pp_export_sequence(seqId, presetPath, outputPath)` (J, via Media Encoder).
+
+**Illustrator (`ai_`, useful — ~10 tools)**
+`ai_list_documents` (exists) · `ai_get_artboards` · `ai_create_document(w,h,colorMode,artboards?)` · `ai_create_shape(rect|ellipse|line|polygon, geometry, fill?, stroke?)` · `ai_create_text(content, font, size, position)` · `ai_set_item_props` · `ai_delete_item` (D) · `ai_export_artboard(artboardIndex, format: png|svg|pdf, path?)` (IMG for png) · `ai_export_preview` (IMG) · `ai_save`.
+
+**Audition (`au_`, useful — scope gated by spike 10)**
+`au_document_info` (exists) · `au_open(path)` · `au_list_documents` · `au_analyze_loudness` — peak/RMS/LUFS if reachable · `au_amplify(db)` · `au_normalize(target)` · `au_apply_effect(name, preset?)` — only if the hidden API exposes the effects rack · `au_export(format, path)` (J if long) · `au_save`. If spike 10 shows the hidden API can't do edits reliably, Audition v1 ships read/analyze/export only and the plan notes ffmpeg-side fallbacks in the server for pure-audio transforms.
+
+## Part 6 — Bridge protocol v2: concrete frames
+
+```jsonc
+// panel → server, first frame (extends existing HelloFrame)
+{ "type": "hello", "protocolVersion": 2, "appId": "premiere", "token": "…",
+  "hostVersion": "26.0", "engine": "uxp", "features": ["timeline_edit", "frame_export"] }
+
+// server → panel (unchanged) { "type": "welcome", "protocolVersion": 2 }
+// server → panel (unchanged) { "type": "eval", "id": "uuid", "script": "…" }
+
+// NEW panel → server, zero or more per eval
+{ "type": "progress", "id": "uuid", "percent": 42.5, "message": "Rendering frame 51/120" }
+
+// panel → server (existing ResultFrame; value may use the file convention)
+{ "type": "result", "id": "uuid", "ok": true, "value": { "filePath": "<workspace>/frame-000051.png" } }
+
+// NEW keepalive, both directions, every 15s; two missed = evict panel
+{ "type": "ping", "t": 1735689600 }  /  { "type": "pong", "t": 1735689600 }
+```
+Implementation lands in `src/bridge/protocol.ts` (frame types + parser), `src/bridge/socket.ts` (heartbeat timer, progress routing to a per-eval callback in `EvalOptions.onProgress`), `src/bridge/types.ts` (extend `AppBridge.evaluate` options). The existing strict version check stays; panels and server ship together so no cross-version support matrix.
+
+## Part 7 — Target repo layout
+
+```
+adobe-cc-mcp/
+  src/                     server (exists; grows per Part 3)
+    jobs.ts                job manager (new)
+    workspace.ts           workspace dir + path validation (new)
+    preview.ts             imageResult, contact sheet (new, uses sharp)
+    tools/pipeline.ts      cross-app tools (new)
+  panel-uxp/               UXP panel: shared shell + manifests/{photoshop,premiere}
+  panel-cep/               CEP panel: shared shell + manifests/{aftereffects,illustrator,audition}
+    jsx/                   per-host ExtendScript entries + json2.jsx
+  scripts/                 smoke-<app>.ts, install-panels
+  docs/
+    IMPLEMENTATION_PLAN.md this plan (already committed)
+    spikes/                Phase B findings notes
+    style-guide.md         frozen tool-interface conventions (CONTRIBUTING.md links here)
+  test/                    vitest (exists; grows)
+```
+
+## Part 8 — Risk register
+
+| Risk | Likelihood | Mitigation |
+|---|---|---|
+| `@adobe/premierepro` UXP API too young for timeline *editing* | Medium | Spike 8 gates scope; fallback = read-only + frame/export tools for v1, CEP stopgap explicitly rejected (sunset) |
+| Audition hidden API can't mutate audio | Medium-high | Spike 10 gates scope; fallback = analyze/export only + server-side ffmpeg transforms |
+| CEP ZXP signing friction (cert, timestamp server) | Medium | Dev mode (`PlayerDebugMode`) for all development; signing only in Phase F; self-signed cert via ZXPSignCmd documented |
+| UXP manifest localhost-permission quirks differ across UXP versions | Medium | Fixed default port 7777; `install-panels` rewrites manifest if user overrides port |
+| AE blocking renders freeze the app during long jobs | High if in-app | Default to aerender subprocess (spike 11); in-app render-queue only for stills |
+| Windows/macOS divergence discovered late | Medium | Hard rule: every spike and exit criterion runs on both OSes before the phase closes |
+| Adobe removes CEP from AE/AI/AU mid-project | Low (no announced dates) | Panel transport is one module; a future UXP port swaps the shell, tools/scripts survive where engine survives |
+
+## Part 9 — Concrete agent briefs (Part 4 roles, ready to launch)
+
+- **core-builder** (Phase A): "Implement steps 1–5 of docs/IMPLEMENTATION_PLAN.md in order, one commit per step. Do not touch panel-*/. Run `npm run typecheck && npm test` before each commit. stdout is the MCP wire — stderr logging only."
+- **spike-agent** (Phase B, one per spike): "Produce the minimal panel/harness for <surface>, plus docs/spikes/<name>.md answering: does the channel work, what permissions/manifest entries were required, what broke, recommended mechanism. Throwaway code goes in spikes/, never src/."
+- **app-builder** (Phase D, ×5, worktrees): "You own src/tools/<app>.ts, panel-<tech>/ host glue for <app>, and test/<app>.test.ts only. Build the Part 5 catalog for <app> against the frozen bridge interface. ExtendScript strings must be ES3 (no const/let/arrow/JSON global/template literals). A needed shared-core change is a written request to the architect, not an edit."
+- **code-reviewer** (paired per builder): checklist = naming per §2.5, annotations truthful, error codes present, timeouts sensible per operation class, path params validated, ES3 grep clean for ExtendScript files, tests cover the not-connected path.
+- **debug-agent** (live loop): "Given smoke-table output + server stderr + panel log pasted by the human, produce a diagnosis and a minimal patch; re-emit the smoke script. Never guess at GUI state — ask the human one precise question when logs are insufficient."
+- **ui-design agent**: "Restyle panel-uxp/ and panel-cep/ UI only (HTML/CSS + theme hooks: UXP theme tokens, CEP CSInterface theme sync). No changes to transport.js or manifests beyond icon assets."
+- **integration-agent** (Phase E–F), **docs-agent**, **security-reviewer** (security-review skill over src/bridge, token/pairing, workspace path validation) as per Part 4 table.
+
 ## Verification
 
 - Unit/integration: `npm run typecheck && npm test` (fake-panel tests already exercise tool→bridge→result; extend for progress, jobs, images).
-- Live: per-app smoke scripts (`scripts/smoke-<app>.ts`) run with the app open on each OS; the Phase E end-to-end demo is the final acceptance test.
+- Live: per-app smoke scripts (`scripts/smoke-<app>.ts`) run with the app open on each OS; the Phase E end-to-end demo (step 21) is the final acceptance test.
 - Packaging: fresh-machine install from README only, both OSes.
+- Each phase's exit criteria (Part 3) are the gates; the interface freeze after Phase B is the one hard synchronization point.
 
