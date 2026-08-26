@@ -27,7 +27,10 @@ export function buildServer(config: Config): BuiltServer {
   const bridge = new BridgeServer({
     port: config.bridgePort,
     token: config.bridgeToken,
+    insecure: config.bridgeInsecure,
     defaultTimeoutMs: config.evalTimeoutMs,
+    heartbeatIntervalMs: config.heartbeatIntervalMs,
+    handshakeFilePath: config.handshakeFilePath,
   });
 
   const server = new McpServer(
@@ -41,7 +44,7 @@ export function buildServer(config: Config): BuiltServer {
     },
   );
 
-  registerDiagnosticTools(server, bridge);
+  registerDiagnosticTools(server, bridge, { allowRawScripts: config.allowRawScripts });
   registerAfterEffectsTools(server, bridge.bridgeFor("after_effects"));
   registerPremiereTools(server, bridge.bridgeFor("premiere"));
   registerPhotoshopTools(server, bridge.bridgeFor("photoshop"));

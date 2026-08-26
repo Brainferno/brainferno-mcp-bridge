@@ -1,4 +1,5 @@
 import type { AppId } from "../apps.js";
+import type { TimeoutClass } from "./protocol.js";
 
 /** A JSON value, as returned across the bridge from a host application. */
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
@@ -6,19 +7,24 @@ export type JsonValue = string | number | boolean | null | JsonValue[] | { [key:
 export interface EvalOptions {
   /** Override the configured timeout for this one call. */
   timeoutMs?: number;
+  /** Command weight class, selecting a default deadline. Defaults to "slow". */
+  timeoutClass?: TimeoutClass;
 }
 
 /**
  * A live connection to one running Creative Cloud application.
  *
- * Implementations are responsible for delivering a script to the host and
- * returning whatever it evaluated to, parsed as JSON.
+ * The primitive is {@link execute}: it delivers a *named* command and its
+ * params to the host and resolves with whatever the host returned, parsed as
+ * JSON. {@link evaluate} is a convenience for the generic `eval` command.
  */
 export interface AppBridge {
   readonly appId: AppId;
   /** Whether a host is currently reachable through this bridge. */
   isConnected(): boolean;
-  /** Send a script to the host and resolve with its result. */
+  /** Send a named command to the host and resolve with its result. */
+  execute(name: string, params?: JsonValue, options?: EvalOptions): Promise<JsonValue>;
+  /** Convenience wrapper for the generic `eval` command (params `{script}`). */
   evaluate(script: string, options?: EvalOptions): Promise<JsonValue>;
   close(): Promise<void>;
 }
@@ -31,7 +37,18 @@ export class AppNotConnectedError extends Error {
   }
 }
 
-/** Raised when the host received the script but the script itself threw. */
+/** Raised when a panel disconnected while a command was in flight. */
+export class AppDisconnectedError extends Error {
+  constructor(
+    public readonly appId: AppId,
+    reason: string,
+  ) {
+    super(`The "${appId}" panel disconnected before the command completed (${reason}).`);
+    this.name = "AppDisconnectedError";
+  }
+}
+
+/** Raised when the host received the command but the script itself threw. */
 export class ScriptError extends Error {
   constructor(
     public readonly appId: AppId,

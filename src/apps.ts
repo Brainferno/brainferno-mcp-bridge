@@ -1,67 +1,99 @@
 /**
- * The five Creative Cloud hosts this server drives, and which scripting engine
- * each one exposes.
+ * The five Creative Cloud hosts this server drives: which *lane* reaches each
+ * one, which in-app *panel* (if any) it needs, and which scripting *engine*
+ * runs the work.
  *
- * The split matters: Photoshop and Premiere Pro (>= 25.6) are driven through
- * UXP (modern JS, actively supported), while After Effects, Illustrator, and
- * Audition are only reachable through ExtendScript (ES3 — no let/const, no
- * arrow functions, no JSON global). Scripts written for one engine will not
- * run on the other.
+ * There is no single automation surface across all five, so the server routes
+ * each app down one of three lanes:
+ *   - "socket":    an in-app panel dials out to the bridge hub. Photoshop and
+ *                  Premiere Pro use a UXP panel; After Effects and Audition use
+ *                  a CEP panel. UXP plugins cannot listen on a socket, so the
+ *                  panel is always the client and the hub the server.
+ *   - "os-script": no panel — the server injects ExtendScript from outside via
+ *                  `osascript 'do javascript'` (macOS) or COM `DoJavaScript`
+ *                  (Windows). Illustrator has no public UXP, so this is its only
+ *                  complete surface.
  *
- * This mapping is deliberate, not historical: Illustrator has no public UXP,
- * and Premiere's ExtendScript/CEP surface is being removed in favor of UXP —
- * so Premiere gets UXP and Illustrator gets ExtendScript, not the other way
- * around. See docs/IMPLEMENTATION_PLAN.md Part 1.
+ * This mapping is deliberate and current (2026): Illustrator UXP is Adobe
+ * internal-only, and Premiere's ExtendScript/CEP surface is being removed in
+ * favor of UXP — so Premiere is UXP and Illustrator is os-script ExtendScript,
+ * not the other way around.
  */
 
 export const APP_IDS = ["after_effects", "premiere", "photoshop", "illustrator", "audition"] as const;
 
 export type AppId = (typeof APP_IDS)[number];
 
-export type ScriptEngine = "uxp" | "extendscript";
+/** How the server reaches a host. */
+export type Lane = "socket" | "os-script";
+/** Which in-app panel technology hosts the bridge client, when there is one. */
+export type PanelKind = "uxp" | "cep";
+/** Which scripting engine the host's commands ultimately run in. */
+export type ScriptEngine = "uxp-batchplay" | "premierepro-api" | "extendscript";
 
 export interface AppInfo {
   id: AppId;
   /** Human-readable name, used in tool descriptions and error messages. */
   displayName: string;
+  lane: Lane;
+  /** The panel that dials into the hub, for socket-lane apps. */
+  panel?: PanelKind;
   engine: ScriptEngine;
   /**
-   * Application name as AppleScript sees it, for the macOS `do script` fallback.
-   * Undefined where no such fallback exists.
+   * Application name as AppleScript sees it, for the macOS os-script lane.
+   * Undefined where no such lane exists.
    */
   appleScriptName?: string;
+  /**
+   * Windows COM ProgID for the os-script lane. Bind a versioned ProgID at
+   * runtime (e.g. "Illustrator.Application.30") when multiple versions coexist.
+   */
+  winProgId?: string;
 }
 
 export const APPS: Record<AppId, AppInfo> = {
   after_effects: {
     id: "after_effects",
     displayName: "After Effects",
+    lane: "socket",
+    panel: "cep",
     engine: "extendscript",
+    // os-script is a documented emergency fallback, not the primary lane.
     appleScriptName: "Adobe After Effects",
   },
   premiere: {
     id: "premiere",
     displayName: "Premiere Pro",
-    engine: "uxp",
-    // No appleScriptName: Premiere has no usable AppleScript dictionary.
+    lane: "socket",
+    panel: "uxp",
+    engine: "premierepro-api",
+    // No appleScriptName / winProgId: Premiere has no AppleScript or COM DOM.
   },
   audition: {
     id: "audition",
     displayName: "Audition",
+    lane: "socket",
+    panel: "cep",
     engine: "extendscript",
-    // No appleScriptName: Audition has no AppleScript or COM dictionary.
+    // No appleScriptName / winProgId: Audition has no AppleScript or COM DOM.
   },
   photoshop: {
     id: "photoshop",
     displayName: "Photoshop",
-    engine: "uxp",
+    lane: "socket",
+    panel: "uxp",
+    engine: "uxp-batchplay",
+    // COM/AppleScript ExtendScript is a possible fallback lane, not primary.
     appleScriptName: "Adobe Photoshop",
+    winProgId: "Photoshop.Application",
   },
   illustrator: {
     id: "illustrator",
     displayName: "Illustrator",
+    lane: "os-script",
     engine: "extendscript",
     appleScriptName: "Adobe Illustrator",
+    winProgId: "Illustrator.Application",
   },
 };
 

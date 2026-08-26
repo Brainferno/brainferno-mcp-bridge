@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import type { AppBridge } from "../bridge/types.js";
+import { jsStringLiteral } from "../bridge/script-escape.js";
 import { guard, jsonResult } from "./result.js";
 
 /**
@@ -41,9 +42,12 @@ const PROJECT_INFO = `(function () {
 })()`;
 
 function renderQueueScript(compName: string, outputPath: string, templateName: string | undefined): string {
-  const comp = JSON.stringify(compName);
-  const out = JSON.stringify(outputPath);
-  const template = templateName === undefined ? "null" : JSON.stringify(templateName);
+  // jsStringLiteral, not JSON.stringify: the latter leaves U+2028/U+2029 raw,
+  // which are line terminators to ExtendScript's ES3 parser (a comp name or
+  // path containing one would break the script — or inject into it).
+  const comp = jsStringLiteral(compName);
+  const out = jsStringLiteral(outputPath);
+  const template = templateName === undefined ? "null" : jsStringLiteral(templateName);
   return `(function () {
   var target = null;
   for (var i = 1; i <= app.project.numItems; i++) {
