@@ -31,6 +31,7 @@ export function buildServer(config: Config): BuiltServer {
     defaultTimeoutMs: config.evalTimeoutMs,
     heartbeatIntervalMs: config.heartbeatIntervalMs,
     handshakeFilePath: config.handshakeFilePath,
+    allowedOrigins: config.allowedOrigins,
   });
 
   const server = new McpServer(

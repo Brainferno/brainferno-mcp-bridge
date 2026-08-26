@@ -25,9 +25,11 @@ panel  ──ws──▶  hub          hub ──ws──▶  panel
 
 ## Connection lifecycle
 
-1. **Upgrade.** The hub validates the HTTP upgrade before accepting the socket: any web
-   `Origin` (`http(s)://…`) is rejected `403`, and any non-loopback `Host` is rejected
-   `403` (DNS-rebinding guard). Panels send no web Origin.
+1. **Upgrade.** The hub validates the HTTP upgrade before accepting the socket. The
+   `Origin` is allowlisted: an absent Origin (UXP panels send none), a loopback Origin, or
+   an explicitly configured one is accepted; everything else — a real web origin, or the
+   literal `null` a sandboxed/`file:`/`data:` document sends — is rejected `403`. The `Host`
+   must be loopback (DNS-rebinding guard). A per-process connection cap also bounds churn.
 2. **Discover.** The panel reads `~/.adobe-cc-mcp/bridge.json` (the handshake file) to
    learn the port and token. It is written mode-600 when the server starts listening.
 3. **Hello.** Within **3 s** the panel MUST send a `hello` carrying the token (in the frame,

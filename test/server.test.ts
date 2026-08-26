@@ -19,6 +19,7 @@ const config: Config = {
   heartbeatIntervalMs: 0,
   allowRawScripts: false,
   handshakeFilePath: "",
+  allowedOrigins: [],
   logLevel: "error",
 };
 

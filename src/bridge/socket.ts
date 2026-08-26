@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 
@@ -26,6 +26,12 @@ const SERVER_VERSION = "0.1.0";
 const DEFAULT_AUTH_DEADLINE_MS = 3_000;
 const FAST_TIMEOUT_MS = 10_000;
 const MAX_MISSED_PINGS = 2;
+/** Even a "render" gets a ceiling so a silent panel cannot wedge its app queue
+ * forever; the job registry (a later phase) will own long renders properly. */
+const RENDER_CEILING_MS = 30 * 60_000;
+/** Cap on concurrent sockets, so a local/web peer cannot exhaust FDs by churn. */
+const DEFAULT_MAX_CONNECTIONS = 64;
+const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost", "::1"]);
 
 interface Pending {
   resolve: (value: JsonValue) => void;
@@ -56,6 +62,10 @@ export interface BridgeServerOptions {
   authDeadlineMs?: number;
   /** Where to write the port+token handshake file. Skipped when `insecure`. */
   handshakeFilePath?: string;
+  /** Extra Origins to accept, beyond loopback origins and the no-Origin case. */
+  allowedOrigins?: string[];
+  /** Maximum concurrent sockets before new upgrades are refused. */
+  maxConnections?: number;
   /** Loopback only by default — this port evaluates arbitrary script. */
   host?: string;
 }
@@ -82,6 +92,8 @@ export class BridgeServer {
   private readonly insecure: boolean;
   private readonly heartbeatIntervalMs: number;
   private readonly authDeadlineMs: number;
+  private readonly allowedOrigins: Set<string>;
+  private readonly maxConnections: number;
   private heartbeat?: NodeJS.Timeout;
 
   constructor(private readonly options: BridgeServerOptions) {
@@ -95,6 +107,8 @@ export class BridgeServer {
         : randomBytes(32).toString("hex");
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? 15_000;
     this.authDeadlineMs = options.authDeadlineMs ?? DEFAULT_AUTH_DEADLINE_MS;
+    this.allowedOrigins = new Set(options.allowedOrigins ?? []);
+    this.maxConnections = options.maxConnections ?? DEFAULT_MAX_CONNECTIONS;
 
     this.wss = new WebSocketServer({
       port: options.port,
@@ -153,7 +167,11 @@ export class BridgeServer {
     const host = this.options.host ?? "127.0.0.1";
     log.info(`bridge listening on ${host}:${this.port()}`);
     if (this.insecure) {
-      log.warn("bridge authentication is DISABLED (insecure mode) — do not use on a shared machine");
+      log.warn(
+        "bridge authentication is DISABLED (insecure mode) — with auth off the Origin/Host checks are the only " +
+          "gate, so any local process (and a web page via a null-origin frame) could run script in your apps; " +
+          "use only for local debugging",
+      );
       return;
     }
     if (this.options.handshakeFilePath !== undefined) {
@@ -175,14 +193,23 @@ export class BridgeServer {
     req: IncomingMessage,
     done: (ok: boolean, code?: number, message?: string) => void,
   ): void {
-    // Loopback binding alone does not stop a browser: reject any web Origin, and
-    // any Host that is not loopback (DNS-rebinding guard).
-    const origin = req.headers.origin;
-    if (typeof origin === "string" && /^https?:\/\//i.test(origin)) {
-      log.warn(`rejecting upgrade from web origin ${origin}`);
+    if (this.states.size >= this.maxConnections) {
+      log.warn(`rejecting upgrade: ${this.states.size} connections already open`);
+      done(false, 503, "too many connections");
+      return;
+    }
+    // Loopback binding alone does not stop a browser (WebSockets are exempt from
+    // the same-origin policy). Allowlist the Origin — an absent one (UXP panels
+    // send none) and a loopback one are fine; a web page's Origin is always a
+    // real web origin or the literal "null" (sandboxed/file/data documents),
+    // neither of which is loopback, so both are rejected.
+    if (!this.originAllowed(req.headers.origin)) {
+      log.warn(`rejecting upgrade from origin ${JSON.stringify(req.headers.origin)}`);
       done(false, 403, "forbidden origin");
       return;
     }
+    // Host must be loopback too (DNS-rebinding guard: a rebinding page sends the
+    // attacker hostname here, not the resolved IP).
     const host = req.headers.host;
     if (typeof host === "string" && !/^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(host)) {
       log.warn(`rejecting upgrade with non-loopback host ${host}`);
@@ -190,6 +217,16 @@ export class BridgeServer {
       return;
     }
     done(true);
+  }
+
+  private originAllowed(origin: string | undefined): boolean {
+    if (origin === undefined) return true; // UXP panels send no Origin header.
+    if (this.allowedOrigins.has(origin)) return true;
+    try {
+      return LOOPBACK_HOSTNAMES.has(new URL(origin).hostname);
+    } catch {
+      return false; // "null", "file://", or malformed — reject.
+    }
   }
 
   private onConnection(socket: WebSocket): void {
@@ -261,7 +298,7 @@ export class BridgeServer {
     state: SocketState,
     frame: Extract<ReturnType<typeof parsePanelFrame>, { type: "hello" }>,
   ): void {
-    if (!this.insecure && this.token !== "" && frame.token !== this.token) {
+    if (!this.insecure && !this.tokenMatches(frame.token)) {
       log.warn(`rejecting panel for "${frame.appId}": bad or missing token`);
       socket.close(4001, "unauthorized");
       return;
@@ -298,6 +335,15 @@ export class BridgeServer {
     });
     const version = frame.hostVersion ? ` (${frame.hostVersion})` : "";
     log.info(`panel connected: ${frame.appId}${version}`);
+  }
+
+  private tokenMatches(provided: string | undefined): boolean {
+    if (this.token === "") return true; // insecure mode has no token
+    if (provided === undefined) return false;
+    const a = Buffer.from(provided);
+    const b = Buffer.from(this.token);
+    // Constant-time, and length-guarded (timingSafeEqual throws on a mismatch).
+    return a.length === b.length && timingSafeEqual(a, b);
   }
 
   private settle(
@@ -384,19 +430,22 @@ export class BridgeServer {
     const timeoutMs = this.resolveTimeout(options, timeoutClass);
 
     return new Promise<JsonValue>((resolve, reject) => {
-      let timer: NodeJS.Timeout | undefined;
-      if (timeoutMs !== null) {
-        timer = setTimeout(() => {
-          state.pending.delete(id);
-          reject(new EvalTimeoutError(appId, timeoutMs));
-        }, timeoutMs);
-      }
+      const timer = setTimeout(() => {
+        state.pending.delete(id);
+        reject(new EvalTimeoutError(appId, timeoutMs));
+      }, timeoutMs);
       state.pending.set(id, { resolve, reject, timer });
-      this.send(socket, { type: "cmd", id, name, params: params ?? null, timeoutClass });
+      try {
+        this.send(socket, { type: "cmd", id, name, params: params ?? null, timeoutClass });
+      } catch (error) {
+        clearTimeout(timer);
+        state.pending.delete(id);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }
 
-  private resolveTimeout(options: EvalOptions | undefined, timeoutClass: TimeoutClass): number | null {
+  private resolveTimeout(options: EvalOptions | undefined, timeoutClass: TimeoutClass): number {
     if (options?.timeoutMs !== undefined) return options.timeoutMs;
     switch (timeoutClass) {
       case "fast":
@@ -404,9 +453,10 @@ export class BridgeServer {
       case "slow":
         return this.options.defaultTimeoutMs;
       case "render":
-        // Renders run for minutes; they rely on disconnect/heartbeat cleanup
-        // until the job registry (a later phase) owns their lifecycle.
-        return null;
+        // Renders run for minutes, but keep a generous ceiling so a silent panel
+        // cannot wedge the app's command queue forever; the job registry (a
+        // later phase) will own long-render lifecycles properly.
+        return RENDER_CEILING_MS;
     }
   }
 

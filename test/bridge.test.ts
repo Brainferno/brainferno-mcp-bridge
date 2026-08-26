@@ -1,8 +1,13 @@
+import { lstatSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
 
 import { BridgeServer, type BridgeServerOptions } from "../src/bridge/socket.js";
 import { PROTOCOL_VERSION } from "../src/bridge/protocol.js";
+import { writeHandshake } from "../src/bridge/handshake.js";
 import { jsStringLiteral } from "../src/bridge/script-escape.js";
 import { AppDisconnectedError } from "../src/bridge/types.js";
 import type { AppId } from "../src/apps.js";
@@ -37,6 +42,18 @@ function hello(ws: WebSocket, appId: AppId, token?: string): void {
 
 function awaitClose(ws: WebSocket): Promise<number> {
   return new Promise((resolve) => ws.once("close", (code) => resolve(code)));
+}
+
+/** Resolves true if the upgrade was refused, false if the socket opened. */
+function tryUpgrade(port: number, options: { origin?: string } = {}): Promise<boolean> {
+  return new Promise((resolve) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`, options);
+    ws.once("open", () => {
+      ws.close();
+      resolve(false);
+    });
+    ws.once("error", () => resolve(true));
+  });
 }
 
 /** Resolves with the id of the first `cmd` frame the socket receives, and
@@ -114,6 +131,60 @@ describe("BridgeServer authentication", () => {
     await b.ready();
     const ws = await open(b.port());
     expect(await awaitClose(ws)).toBe(4001);
+  });
+});
+
+describe("BridgeServer upgrade origin policy", () => {
+  it("rejects a sandboxed web page's null origin", async () => {
+    const b = makeBridge();
+    await b.ready();
+    expect(await tryUpgrade(b.port(), { origin: "null" })).toBe(true);
+  });
+
+  it("rejects a real web origin", async () => {
+    const b = makeBridge();
+    await b.ready();
+    expect(await tryUpgrade(b.port(), { origin: "http://evil.example" })).toBe(true);
+  });
+
+  it("allows a connection with no origin (a UXP panel)", async () => {
+    const b = makeBridge();
+    await b.ready();
+    expect(await tryUpgrade(b.port())).toBe(false);
+  });
+
+  it("allows an explicitly allowlisted origin", async () => {
+    const b = makeBridge({ allowedOrigins: ["null"] });
+    await b.ready();
+    expect(await tryUpgrade(b.port(), { origin: "null" })).toBe(false);
+  });
+});
+
+describe("writeHandshake", () => {
+  it("replaces a pre-existing looser-mode file and lands mode-600", () => {
+    const dir = mkdtempSync(join(tmpdir(), "acm-hs-"));
+    const path = join(dir, "bridge.json");
+    writeFileSync(path, "stale", { mode: 0o644 });
+
+    writeHandshake(path, { protocolVersion: PROTOCOL_VERSION, port: 1, token: "sekret", pid: 1 });
+
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expect(JSON.parse(readFileSync(path, "utf8")).token).toBe("sekret");
+  });
+
+  it("does not write the token through a pre-existing symlink", () => {
+    const dir = mkdtempSync(join(tmpdir(), "acm-hs-"));
+    const target = join(dir, "target.json");
+    const link = join(dir, "bridge.json");
+    writeFileSync(target, "", { mode: 0o644 });
+    symlinkSync(target, link);
+
+    writeHandshake(link, { protocolVersion: PROTOCOL_VERSION, port: 1, token: "sekret", pid: 1 });
+
+    // The symlink was removed and a real 600 file written; the target is untouched.
+    expect(lstatSync(link).isSymbolicLink()).toBe(false);
+    expect(readFileSync(target, "utf8")).toBe("");
+    expect(lstatSync(link).mode & 0o777).toBe(0o600);
   });
 });
 

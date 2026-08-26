@@ -31,6 +31,12 @@ export interface Config {
   allowRawScripts: boolean;
   /** Where to write the port+token handshake file panels read. */
   handshakeFilePath: string;
+  /**
+   * Extra WebSocket Origins to accept on the upgrade, beyond loopback origins
+   * and the no-Origin case (UXP panels send none). Fill in a panel's actual
+   * Origin here once a spike establishes what it sends.
+   */
+  allowedOrigins: string[];
   logLevel: LogLevel;
 }
 
@@ -71,6 +77,10 @@ export function loadConfig(): Config {
     heartbeatIntervalMs: intFromEnv("ADOBE_CC_MCP_HEARTBEAT_MS", 15_000, { allowZero: true }),
     allowRawScripts: boolFromEnv("ADOBE_CC_MCP_ALLOW_RAW_SCRIPTS"),
     handshakeFilePath: process.env.ADOBE_CC_MCP_HANDSHAKE_FILE ?? defaultHandshakePath(),
+    allowedOrigins: (process.env.ADOBE_CC_MCP_ALLOWED_ORIGINS ?? "")
+      .split(",")
+      .map((o) => o.trim())
+      .filter((o) => o !== ""),
     logLevel: logLevelFromEnv(),
   };
 }
