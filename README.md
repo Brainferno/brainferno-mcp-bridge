@@ -49,6 +49,7 @@ them.
 | --- | --- | --- |
 | `cc_connected_apps` | all | Each app's lane, panel, engine, and connection state |
 | `cc_eval_script` | AE, Illustrator, Audition | Raw ExtendScript escape hatch — **opt-in** (`ADOBE_CC_MCP_ALLOW_RAW_SCRIPTS=1`) |
+| `ai_beta_status` / `ai_beta_list_tools` / `ai_beta_call` | Illustrator (Beta) | Delegate to Adobe's official Illustrator MCP for analyze/batch/export — **opt-in** via a key ([docs](docs/illustrator-beta.md)) |
 | `ae_project_info` | After Effects | Project path, item count, bit depth, dirty flag |
 | `ae_list_compositions` | After Effects | Every comp with size, duration, frame rate, layer count |
 | `ae_queue_render` | After Effects | Add a comp to the render queue with an output path |
@@ -91,6 +92,8 @@ Copy `.env.example` and adjust. All settings are environment variables:
 | `ADOBE_CC_MCP_EVAL_TIMEOUT_MS` | `30000` | How long to wait for a "slow" script result |
 | `ADOBE_CC_MCP_HEARTBEAT_MS` | `15000` | Ping cadence for detecting a dead panel |
 | `ADOBE_CC_MCP_ALLOW_RAW_SCRIPTS` | *(off)* | `1` registers the `cc_eval_script` escape hatch |
+| `ADOBE_CC_MCP_ILLUSTRATOR_KEY` | *(empty → delegate off)* | Bearer key for Adobe's Illustrator (Beta) MCP; enables the `ai_beta_*` delegate tools ([docs](docs/illustrator-beta.md)) |
+| `ADOBE_CC_MCP_ILLUSTRATOR_URL` | `http://localhost:18412/v1/mcp` | Adobe's Illustrator (Beta) MCP endpoint |
 | `ADOBE_CC_MCP_LOG_LEVEL` | `info` | `error` \| `warn` \| `info` \| `debug` |
 
 The bridge binds to `127.0.0.1` only and evaluates arbitrary script inside your Adobe

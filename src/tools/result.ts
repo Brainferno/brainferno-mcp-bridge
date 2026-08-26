@@ -1,10 +1,10 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
-import { AppNotConnectedError, EvalTimeoutError, ScriptError, type JsonValue } from "../bridge/types.js";
+import { AppNotConnectedError, EvalTimeoutError, ScriptError } from "../bridge/types.js";
 import { log } from "../logging.js";
 
-/** Wraps a JSON value as a tool result the client can read as text. */
-export function jsonResult(value: JsonValue): CallToolResult {
+/** Wraps any JSON-serializable value as a tool result the client reads as text. */
+export function jsonResult(value: unknown): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
 }
 

@@ -2,17 +2,20 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { BridgeServer } from "./bridge/socket.js";
 import type { Config } from "./config.js";
+import { IllustratorDelegate } from "./drivers/illustrator-delegate.js";
 import { setLogLevel } from "./logging.js";
 import { registerAfterEffectsTools } from "./tools/after-effects.js";
 import { registerAuditionTools } from "./tools/audition.js";
 import { registerDiagnosticTools } from "./tools/diagnostics.js";
 import { registerIllustratorTools } from "./tools/illustrator.js";
+import { registerIllustratorDelegateTools } from "./tools/illustrator-delegate.js";
 import { registerPhotoshopTools } from "./tools/photoshop.js";
 import { registerPremiereTools } from "./tools/premiere.js";
 
 export interface BuiltServer {
   server: McpServer;
   bridge: BridgeServer;
+  illustratorDelegate: IllustratorDelegate;
 }
 
 /**
@@ -45,12 +48,18 @@ export function buildServer(config: Config): BuiltServer {
     },
   );
 
+  const illustratorDelegate = new IllustratorDelegate({
+    url: config.illustratorMcpUrl,
+    token: config.illustratorMcpKey,
+  });
+
   registerDiagnosticTools(server, bridge, { allowRawScripts: config.allowRawScripts });
   registerAfterEffectsTools(server, bridge.bridgeFor("after_effects"));
   registerPremiereTools(server, bridge.bridgeFor("premiere"));
   registerPhotoshopTools(server, bridge.bridgeFor("photoshop"));
   registerIllustratorTools(server, bridge.bridgeFor("illustrator"));
+  registerIllustratorDelegateTools(server, illustratorDelegate, config.illustratorMcpKey !== "");
   registerAuditionTools(server, bridge.bridgeFor("audition"));
 
-  return { server, bridge };
+  return { server, bridge, illustratorDelegate };
 }

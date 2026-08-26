@@ -20,6 +20,8 @@ const config: Config = {
   allowRawScripts: false,
   handshakeFilePath: "",
   allowedOrigins: [],
+  illustratorMcpUrl: "http://localhost:18412/v1/mcp",
+  illustratorMcpKey: "",
   logLevel: "error",
 };
 
@@ -79,6 +81,11 @@ describe("adobe-cc-mcp server", () => {
     expect(tools.map((t) => t.name)).not.toContain("cc_eval_script");
   });
 
+  it("does not advertise the Illustrator delegate tools without a key", async () => {
+    const { tools } = await client.listTools();
+    expect(tools.map((t) => t.name)).not.toContain("ai_beta_status");
+  });
+
   it("reports every panel-driven application as disconnected when no panel has dialed in", async () => {
     const result = await client.callTool({ name: "cc_connected_apps", arguments: {} });
     const text = (result.content as { type: string; text: string }[])[0]!.text;
@@ -132,5 +139,25 @@ describe("adobe-cc-mcp server", () => {
     expect(result.isError).toBe(true);
     expect((result.content as { text: string }[])[0]!.text).toMatch(/No open document/);
     panel.close();
+  });
+});
+
+describe("adobe-cc-mcp server with an Illustrator delegate key", () => {
+  it("advertises the delegate tools when a key is configured", async () => {
+    const built = buildServer({ ...config, illustratorMcpKey: "ilst_test" });
+    await built.bridge.ready();
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const c = new Client({ name: "test", version: "0.0.0" });
+    await Promise.all([c.connect(clientTransport), built.server.connect(serverTransport)]);
+
+    const names = (await c.listTools()).tools.map((t) => t.name);
+    expect(names).toContain("ai_beta_status");
+    expect(names).toContain("ai_beta_list_tools");
+    expect(names).toContain("ai_beta_call");
+
+    await c.close();
+    await built.server.close();
+    await built.bridge.close();
+    await built.illustratorDelegate.close();
   });
 });

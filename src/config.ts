@@ -1,6 +1,12 @@
 /** Runtime configuration, read once at startup from the environment. */
 
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 import { defaultHandshakePath } from "./bridge/handshake.js";
+
+const DEFAULT_ILLUSTRATOR_MCP_URL = "http://localhost:18412/v1/mcp";
 
 export type LogLevel = "error" | "warn" | "info" | "debug";
 
@@ -37,7 +43,33 @@ export interface Config {
    * Origin here once a spike establishes what it sends.
    */
   allowedOrigins: string[];
+  /** Adobe's official Illustrator (Beta) MCP endpoint the delegate lane dials. */
+  illustratorMcpUrl: string;
+  /**
+   * Bearer key for Adobe's Illustrator (Beta) MCP server. Empty disables the
+   * delegate lane. A capability key to the user's local Illustrator — never log
+   * it or put it in an error message.
+   */
+  illustratorMcpKey: string;
   logLevel: LogLevel;
+}
+
+/**
+ * The Illustrator delegate key: env first, then a mode-600 `config.json` beside
+ * the handshake file, so the user can paste it once without editing the client
+ * config. Returns "" when unset (delegate disabled).
+ */
+function illustratorKeyFromEnvOrFile(): string {
+  const fromEnv = process.env.ADOBE_CC_MCP_ILLUSTRATOR_KEY;
+  if (fromEnv !== undefined && fromEnv !== "") return fromEnv;
+  try {
+    const path = join(homedir(), ".adobe-cc-mcp", "config.json");
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as { illustratorKey?: unknown };
+    if (typeof parsed.illustratorKey === "string") return parsed.illustratorKey;
+  } catch {
+    // No config file, or unreadable/malformed — the delegate stays disabled.
+  }
+  return "";
 }
 
 function intFromEnv(name: string, fallback: number, { allowZero = false } = {}): number {
@@ -81,6 +113,8 @@ export function loadConfig(): Config {
       .split(",")
       .map((o) => o.trim())
       .filter((o) => o !== ""),
+    illustratorMcpUrl: process.env.ADOBE_CC_MCP_ILLUSTRATOR_URL ?? DEFAULT_ILLUSTRATOR_MCP_URL,
+    illustratorMcpKey: illustratorKeyFromEnvOrFile(),
     logLevel: logLevelFromEnv(),
   };
 }
