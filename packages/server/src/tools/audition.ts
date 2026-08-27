@@ -10,12 +10,22 @@ import { guard, jsonResult } from "./result.js";
 
 /**
  * Audition is driven through the CEP panel's `eval` command (ExtendScript,
- * ES3). Its DOM is the thinnest of the five and mostly undocumented, so this
- * file leans on ExtendScript reflection: `Application.reflect.properties`
- * lists every `COMMAND_*` menu command (invoked with `app.invokeCommand`),
- * `$.dictionary` dumps the whole API, and document state is read generically
- * from `doc.reflect.properties`. Deterministic audio work (loudness, convert,
- * trim, denoise, mix) lives in the ffmpeg lane (`audio_*`), not here.
+ * ES3). Its DOM is small and undocumented; the surface used here comes from a
+ * live dump of Audition 26.3 (`docs/api-dumps/audition-26.3.json`, made by
+ * `au_api_dump`):
+ *
+ *   app.openDocument(new DocumentOpenParameter(path)) → Document
+ *   app.invokeCommand(id) / isCommandEnabled(id) — 612 Application.COMMAND_* ids
+ *   app.transport.play() / stop() / pause() / record(), .isPlaying, .loop
+ *   WaveDocument: sampleRate, duration (samples), playheadPosition (samples),
+ *     audioFormat {sampleRate, bitDepth, channelLayout}, markers[],
+ *     saveAs(path, export), saveDocument(null), closeDocument(),
+ *     applyFavorite(name), addMarker(start, duration, name, type, description)
+ *   MultitrackDocument: audioTracks (audioClipTracks[i].audioClips[j].startTime…),
+ *     saveAsDocument / exportDocument, addMarker
+ *
+ * Deterministic audio work (loudness, convert, trim, denoise, mix) lives in
+ * the ffmpeg lane (`audio_*`), not here.
  *
  * Rules: var only, no arrow functions, one IIFE per script.
  */
@@ -23,40 +33,76 @@ import { guard, jsonResult } from "./result.js";
 const HELPERS = `
   function __doc() { var d = app.activeDocument; if (!d) { throw new Error("No document is open in Audition. Open one (au_open_document) or create one in the app."); } return d; }
   function __kind(o) { try { return o.reflect.name; } catch (e) { return typeof o; } }
-  function __props(o) {
+  function __isWave(d) { return __kind(d) === "WaveDocument"; }
+  function __isMulti(d) { return __kind(d) === "MultitrackDocument"; }
+  function __sec(d, samples) { var sr = d.sampleRate; return sr && typeof samples === "number" ? samples / sr : null; }
+  function __fmt(f) {
+    if (!f) { return null; }
     var out = {};
+    try { out.sampleRate = f.sampleRate; } catch (e) {}
+    try { out.bitDepth = f.bitDepth; } catch (e) {}
+    try { var cl = f.channelLayout; out.channels = cl ? cl.length : null; out.channelLayout = cl ? cl.description : null; } catch (e) {}
+    return out;
+  }
+  function __marker(d, m) {
+    var o = {};
+    try { o.name = m.name; } catch (e) {}
+    try { o.type = m.type; } catch (e) {}
+    try { o.description = m.description; } catch (e) {}
+    try { o.startSeconds = __sec(d, m.start); } catch (e) {}
+    try { o.durationSeconds = __sec(d, m.duration); } catch (e) {}
+    return o;
+  }
+  function __markers(d) {
+    var out = [];
+    try { var ms = d.markers; for (var i = 0; i < ms.length; i++) { out.push(__marker(d, ms[i])); } } catch (e) {}
+    return out;
+  }
+  function __tracks(d) {
+    var out = [];
     try {
-      var ps = o.reflect.properties;
-      for (var i = 0; i < ps.length; i++) {
-        var n = ps[i].name;
-        if (n === "reflect" || n === "__proto__" || n === "prototype") { continue; }
+      var ts = d.audioTracks.audioClipTracks;
+      for (var i = 0; i < ts.length; i++) {
+        var t = ts[i];
+        var clips = [];
         try {
-          var v = o[n]; var t = typeof v;
-          if (v === null || v === undefined) { out[n] = null; }
-          else if (t === "number" || t === "string" || t === "boolean") { out[n] = v; }
-          else if (v instanceof File || v instanceof Folder) { out[n] = v.fsName; }
-          else if (t === "object") { out[n] = "<" + __kind(v) + ">"; }
-        } catch (e) { out[n] = "<unreadable>"; }
+          var cs = t.audioClips;
+          for (var j = 0; j < cs.length; j++) {
+            var c = cs[j];
+            clips.push({ index: j, name: c.name, startSeconds: __sec(d, c.startTime), durationSeconds: __sec(d, c.duration), endSeconds: __sec(d, c.startTime + c.duration), selected: c.selected });
+          }
+        } catch (e) {}
+        out.push({ index: i, name: t.name, mute: t.mute, solo: t.solo, armed: t.armed, clips: clips });
       }
     } catch (e) {}
     return out;
   }
   function __docInfo(d) {
-    var p = __props(d);
-    var sr = typeof p.sampleRate === "number" ? p.sampleRate : 0;
-    return {
-      kind: __kind(d),
-      name: p.displayName !== undefined ? p.displayName : null,
-      sampleRate: sr || null,
-      durationSeconds: sr && typeof p.duration === "number" ? p.duration / sr : null,
-      playheadSeconds: sr && typeof p.playheadPosition === "number" ? p.playheadPosition / sr : null,
-      props: p
-    };
+    var wave = __isWave(d), multi = __isMulti(d);
+    var info = { kind: __kind(d), name: d.displayName, path: null, dirty: null, sampleRate: null, durationSeconds: null, playheadSeconds: null };
+    try { info.path = d.path || null; } catch (e) {}
+    try { info.dirty = d.dirty; } catch (e) {}
+    try { info.sampleRate = d.sampleRate || null; } catch (e) {}
+    try { info.durationSeconds = __sec(d, d.duration); } catch (e) {}
+    try { info.playheadSeconds = __sec(d, d.playheadPosition); } catch (e) {}
+    if (wave) {
+      try { info.audioFormat = __fmt(d.audioFormat); } catch (e) {}
+      try { info.fileFormat = d.fileFormat ? { id: d.fileFormat.id, title: d.fileFormat.title } : null; } catch (e) {}
+      try { info.exists = d.exists; } catch (e) {}
+    }
+    if (multi) { info.tracks = __tracks(d); }
+    info.markers = __markers(d);
+    return info;
   }
   function __docs() {
     var out = [];
-    try { var ds = app.documents; for (var i = 0; i < ds.length; i++) { out.push({ index: i, kind: __kind(ds[i]), name: ds[i].displayName }); } } catch (e) {}
+    try { var ds = app.documents; for (var i = 0; i < ds.length; i++) { out.push({ index: i, kind: __kind(ds[i]), name: ds[i].displayName, path: ds[i].path || null }); } } catch (e) {}
     return out;
+  }
+  function __transport() {
+    var t = app.transport, o = {};
+    try { o.isPlaying = t.isPlaying; o.isPaused = t.isPaused; o.isRecording = t.isRecording; o.loop = t.loop; o.isPlayEnabled = t.isPlayEnabled; } catch (e) {}
+    return o;
   }
 `;
 
@@ -64,12 +110,7 @@ const wrap = (body: string) => `(function () {${HELPERS}${body}\n})()`;
 
 export const APP_STATE = wrap(`
   var d = app.activeDocument;
-  return {
-    version: app.version,
-    build: app.buildNumber || null,
-    documents: __docs(),
-    activeDocument: d ? __docInfo(d) : null
-  };`);
+  return { version: app.version, build: app.buildNumber || null, documents: __docs(), activeDocument: d ? __docInfo(d) : null, transport: __transport() };`);
 
 export const DOCUMENT_INFO = wrap(`return __docInfo(__doc());`);
 
@@ -98,49 +139,82 @@ export function invokeCommandScript(id: string, force: boolean): string {
   var enabled = null;
   try { enabled = app.isCommandEnabled(id); } catch (e) {}
   if (enabled === false && !${force ? "true" : "false"}) { throw new Error("Command " + id + " is not enabled in the current view/selection (au_list_commands with checkEnabled shows what is)."); }
-  app.invokeCommand(id);
-  return { invoked: id, wasEnabled: enabled };`);
+  var ok = app.invokeCommand(id);
+  return { invoked: id, result: ok, wasEnabled: enabled };`);
 }
 
 export function setPlayheadScript(seconds: number): string {
   return wrap(`
   var d = __doc();
-  var sr = d.sampleRate;
-  if (!sr) { throw new Error("The active document has no sample rate (is it a multitrack session?)."); }
-  d.playheadPosition = Math.round(${seconds} * sr);
-  return __docInfo(d);`);
+  if (!d.sampleRate) { throw new Error("The active document has no sample rate."); }
+  d.playheadPosition = Math.round(${seconds} * d.sampleRate);
+  return { playheadSeconds: __sec(d, d.playheadPosition) };`);
 }
 
 export function openDocumentScript(path: string): string {
   return wrap(`
   var f = new File(${jsStringLiteral(path)});
   if (!f.exists) { throw new Error("File not found: " + f.fsName); }
-  var d = null, errs = [];
-  if (typeof app.openDocument === "function") { try { d = app.openDocument(f); } catch (e) { errs.push("openDocument(File): " + e.message); } }
-  if (!d && typeof app.openDocument === "function") { try { d = app.openDocument(f.fsName); } catch (e) { errs.push("openDocument(path): " + e.message); } }
-  if (!d && typeof app.open === "function") { try { d = app.open(f); } catch (e) { errs.push("open(File): " + e.message); } }
+  var d = app.openDocument(new DocumentOpenParameter(f.fsName));
   if (!d) { d = app.activeDocument; }
-  if (!d) { throw new Error("Audition did not open the file" + (errs.length ? " (" + errs.join("; ") + ")" : " (no open method on app; run au_api_dump)")); }
+  if (!d) { throw new Error("Audition did not open " + f.fsName); }
   return __docInfo(d);`);
 }
 
-export function saveDocumentScript(path: string | undefined): string {
+export function saveDocumentScript(path: string | undefined, asExport: boolean): string {
   return wrap(`
   var d = __doc();
   var path = ${path === undefined ? "null" : jsStringLiteral(path)};
-  var ok = null, errs = [];
+  var ok;
   if (path === null) {
-    if (typeof d.save === "function") { try { ok = d.save(); } catch (e) { errs.push("save(): " + e.message); } }
-    else { errs.push("no save() on " + __kind(d)); }
+    if (__isWave(d)) { ok = d.saveDocument(null); }
+    else if (__isMulti(d)) { ok = d.saveDocument(new MultitrackSaveParameter()); }
+    else { throw new Error("Cannot save a " + __kind(d)); }
   } else {
     var f = new File(path);
-    if (typeof d.saveAs === "function") {
-      try { ok = d.saveAs(f); } catch (e) { errs.push("saveAs(File): " + e.message); }
-      if (ok === null || ok === false) { try { ok = d.saveAs(f.fsName); } catch (e) { errs.push("saveAs(path): " + e.message); } }
-    } else { errs.push("no saveAs() on " + __kind(d)); }
+    if (__isWave(d)) { ok = d.saveAs(f.fsName, ${asExport ? "true" : "false"}); }
+    else if (__isMulti(d)) { ok = ${asExport ? "d.exportDocument(f.fsName, new MultitrackExportParameter(false, false, null))" : "d.saveAsDocument(f.fsName, new MultitrackSaveAsParameter(false, true))"}; }
+    else { throw new Error("Cannot save a " + __kind(d)); }
   }
-  if (ok === false || (ok === null && errs.length)) { throw new Error("Save failed: " + errs.join("; ")); }
-  return { saved: true, result: ok, path: path, document: __docInfo(__doc()) };`);
+  if (ok === false) { throw new Error("Audition refused to save" + (path !== null ? " to " + path : "") + " (check the folder exists and the extension is a supported format)."); }
+  return { saved: true, exported: ${asExport ? "true" : "false"}, path: path, document: __docInfo(app.activeDocument || d) };`);
+}
+
+export function closeDocumentScript(): string {
+  return wrap(`
+  var d = __doc();
+  var name = d.displayName;
+  var ok = d.closeDocument();
+  return { closed: name, result: ok, documents: __docs() };`);
+}
+
+export function applyFavoriteScript(name: string): string {
+  return wrap(`
+  var d = __doc();
+  if (!__isWave(d)) { throw new Error("Favorites apply to waveform documents; the active document is a " + __kind(d) + "."); }
+  var ok = d.applyFavorite(${jsStringLiteral(name)});
+  if (ok === false) { throw new Error("Audition could not apply the favorite " + ${jsStringLiteral(name)} + " (check the exact name in the Favorites panel)."); }
+  return { applied: ${jsStringLiteral(name)}, result: ok, document: __docInfo(d) };`);
+}
+
+export function addMarkerScript(seconds: number, durationSeconds: number, name: string, type: string, description: string): string {
+  return wrap(`
+  var d = __doc();
+  if (!d.sampleRate) { throw new Error("The active document has no sample rate."); }
+  var ok = d.addMarker(Math.round(${seconds} * d.sampleRate), Math.round(${durationSeconds} * d.sampleRate), ${jsStringLiteral(name)}, ${jsStringLiteral(type)}, ${jsStringLiteral(description)});
+  if (ok === false) { throw new Error("Audition refused the marker."); }
+  return { markers: __markers(d) };`);
+}
+
+export function transportScript(action: "play" | "stop" | "pause" | "record" | "state", loop: boolean | undefined): string {
+  return wrap(`
+  var t = app.transport;
+  ${loop === undefined ? "" : `t.loop = ${loop ? "true" : "false"};`}
+  var ok = null;
+  ${action === "state" ? "" : `ok = t.${action}();`}
+  var s = __transport(); s.action = ${jsStringLiteral(action)}; s.result = ok;
+  try { s.playheadSeconds = __sec(app.activeDocument, app.activeDocument.playheadPosition); } catch (e) {}
+  return s;`);
 }
 
 export const API_DUMP = wrap(`
@@ -179,7 +253,7 @@ export function registerAuditionTools(server: McpServer, bridge: AppBridge): voi
     "au_app_state",
     {
       title: "Audition: application state",
-      description: "Audition version, the open documents, and the active document (kind, sample rate, duration, playhead, every readable property).",
+      description: "Audition version, every open document, the active document in full (see au_document_info), and the transport state.",
       inputSchema: {},
       annotations: { readOnlyHint: true },
     },
@@ -190,7 +264,9 @@ export function registerAuditionTools(server: McpServer, bridge: AppBridge): voi
     "au_document_info",
     {
       title: "Audition: active document info",
-      description: "Read the active Audition document: kind (WaveDocument / MultitrackDocument), name, sample rate, duration and playhead in seconds, plus every readable property.",
+      description:
+        "Read the active document: kind (WaveDocument / MultitrackDocument), name, path, sample rate, duration and playhead in seconds, " +
+        "audio format, markers, and for a multitrack session every track with its clips.",
       inputSchema: {},
       annotations: { readOnlyHint: true },
     },
@@ -202,7 +278,7 @@ export function registerAuditionTools(server: McpServer, bridge: AppBridge): voi
     {
       title: "Audition: list menu commands",
       description:
-        "List Audition's scriptable menu commands (every Application.COMMAND_* constant) with id and help text, optionally filtered " +
+        "List Audition's scriptable menu commands (every Application.COMMAND_* constant, 600+) with id and help text, optionally filtered " +
         "by a substring and annotated with whether each is enabled right now. Feed an id to au_invoke_command.",
       inputSchema: {
         filter: z.string().optional().describe("Case-insensitive substring of the id, constant name, or help text, e.g. 'normalize', 'Effects', 'Favorite'."),
@@ -218,10 +294,10 @@ export function registerAuditionTools(server: McpServer, bridge: AppBridge): voi
     {
       title: "Audition: run a menu command",
       description:
-        "Run a menu command by id from au_list_commands (e.g. an Effects or Favorites command). Refuses commands that are disabled in the " +
-        "current view unless force is set. Some commands open a dialog in Audition that the user must close.",
+        "Run a menu command by id from au_list_commands (Effects, Edit, View, Multitrack…). Refuses commands that are disabled in the " +
+        "current view unless force is set. Many Effects commands open their dialog in Audition; for hands-off processing use au_apply_favorite or the audio_* tools.",
       inputSchema: {
-        id: z.string().min(1).describe("Command id from au_list_commands."),
+        id: z.string().min(1).describe("Command id from au_list_commands, e.g. 'Effects.Normalize'."),
         force: z.boolean().optional().describe("Run even if Audition reports it disabled."),
       },
     },
@@ -229,20 +305,61 @@ export function registerAuditionTools(server: McpServer, bridge: AppBridge): voi
   );
 
   server.registerTool(
+    "au_apply_favorite",
+    {
+      title: "Audition: apply a Favorite",
+      description:
+        "Apply a saved Favorite (a recorded effect chain from Audition's Favorites panel) to the active waveform document, without dialogs. " +
+        "Built-in examples: 'Normalize to -0.1 dB', 'Fade In', 'Fade Out', 'Remove 60 Hz Hum', 'Vocal Enhancer'.",
+      inputSchema: { name: z.string().min(1).describe("Exact Favorite name as shown in the Favorites panel.") },
+    },
+    async ({ name }) => run(applyFavoriteScript(name), { timeoutClass: "render", timeoutMs: 10 * 60_000 }),
+  );
+
+  server.registerTool(
     "au_set_playhead",
     {
       title: "Audition: move the playhead",
-      description: "Move the active waveform document's playhead to a time in seconds.",
+      description: "Move the active document's playhead to a time in seconds.",
       inputSchema: { seconds: z.number().min(0) },
     },
     async ({ seconds }) => run(setPlayheadScript(seconds), { timeoutClass: "fast" }),
   );
 
   server.registerTool(
+    "au_transport",
+    {
+      title: "Audition: transport",
+      description: "Play, stop, pause, or record the active document, or just read the transport state. Optionally set loop playback.",
+      inputSchema: {
+        action: z.enum(["play", "stop", "pause", "record", "state"]).optional().describe("Defaults to state."),
+        loop: z.boolean().optional(),
+      },
+    },
+    async ({ action, loop }) => run(transportScript(action ?? "state", loop), { timeoutClass: "fast" }),
+  );
+
+  server.registerTool(
+    "au_add_marker",
+    {
+      title: "Audition: add a marker",
+      description: "Add a marker (cue or range) to the active document at a time in seconds.",
+      inputSchema: {
+        seconds: z.number().min(0),
+        durationSeconds: z.number().min(0).optional().describe("0 (default) makes a cue point; more makes a range."),
+        name: z.string(),
+        type: z.string().optional().describe("Marker type as Audition names it. Defaults to 'Cue'."),
+        description: z.string().optional(),
+      },
+    },
+    async (a) => run(addMarkerScript(a.seconds, a.durationSeconds ?? 0, a.name, a.type ?? "Cue", a.description ?? "")),
+  );
+
+  server.registerTool(
     "au_open_document",
     {
       title: "Audition: open an audio file or session",
-      description: "Open an audio file (.wav, .mp3, …) or a .sesx multitrack session in Audition. It becomes the active document.",
+      description: "Open an audio file (.wav, .mp3, .flac, …) or a .sesx multitrack session in Audition. It becomes the active document.",
       inputSchema: { path: z.string().min(1).describe("Absolute path.") },
     },
     async ({ path }) => run(openDocumentScript(path)),
@@ -251,11 +368,26 @@ export function registerAuditionTools(server: McpServer, bridge: AppBridge): voi
   server.registerTool(
     "au_save_document",
     {
-      title: "Audition: save the active document",
-      description: "Save the active document in place, or Save As to a path (format from the extension).",
-      inputSchema: { path: z.string().min(1).optional().describe("Absolute path for Save As. Omit to save in place.") },
+      title: "Audition: save / export the active document",
+      description:
+        "Save the active document in place, or Save As to a path (format from the extension: .wav, .mp3, .flac, .aif, .sesx for sessions). " +
+        "export=true writes the file but keeps the document pointing at its original file (a waveform 'Export'; for a session, a mixdown export).",
+      inputSchema: {
+        path: z.string().min(1).optional().describe("Absolute path for Save As / Export. Omit to save in place."),
+        export: z.boolean().optional().describe("Export a copy instead of re-pointing the document. Defaults to false."),
+      },
     },
-    async ({ path }) => run(saveDocumentScript(path)),
+    async ({ path, export: asExport }) => run(saveDocumentScript(path, asExport ?? false), { timeoutClass: "render", timeoutMs: 10 * 60_000 }),
+  );
+
+  server.registerTool(
+    "au_close_document",
+    {
+      title: "Audition: close the active document",
+      description: "Close the active document. Audition may ask about unsaved changes; save first with au_save_document to avoid the prompt.",
+      inputSchema: {},
+    },
+    async () => run(closeDocumentScript()),
   );
 
   server.registerTool(
