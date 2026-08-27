@@ -2,8 +2,11 @@
 <html>
   <head>
     <style>
-      html, body { height: 100%; margin: 0; }
-      body { display: flex; flex-direction: column; box-sizing: border-box; padding: 8px 8px 16px 8px; font-family: system-ui, sans-serif; font-size: 12px; color: #ddd; }
+      html, body { height: 100%; margin: 0; padding: 0; overflow: hidden; }
+      /* Pin the body to the panel edges so the column layout knows its height;
+         the log then flexes to whatever is left, and the panel can be dragged
+         taller or shorter. */
+      body { position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column; box-sizing: border-box; padding: 8px; font-family: system-ui, sans-serif; font-size: 12px; color: #ddd; }
       .row { display: flex; flex-direction: row; align-items: center; gap: 6px; margin-bottom: 6px; flex-shrink: 0; }
       .badge { padding: 2px 8px; border-radius: 10px; background: #555; }
       .badge.on { background: #2e7d32; }
@@ -11,9 +14,9 @@
       input { flex: 1; min-width: 60px; }
       label { width: 40px; flex-shrink: 0; }
       button { cursor: pointer; }
-      #log { flex: 1; min-height: 80px; overflow: auto; white-space: pre-wrap; word-break: break-all; font-family: monospace; font-size: 11px; background: #1e1e1e; padding: 6px; border-radius: 4px; }
-      .below { margin-top: 8px; margin-bottom: 12px; }
-      #hint { flex-shrink: 0; font-size: 10px; color: #999; }
+      #log { flex: 1 1 0px; min-height: 40px; overflow-y: auto; overflow-x: hidden; white-space: pre-wrap; word-break: break-all; font-family: monospace; font-size: 11px; background: #1e1e1e; padding: 6px; border-radius: 4px; }
+      .below { margin-top: 8px; margin-bottom: 4px; }
+      #hint { flex-shrink: 0; font-size: 10px; color: #999; padding-bottom: 8px; }
     </style>
   </head>
   <body>
