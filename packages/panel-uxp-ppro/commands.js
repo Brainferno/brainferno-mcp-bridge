@@ -279,10 +279,16 @@
   }
 
   /**
-   * Effect parameter times are relative to the clip's start on the timeline
-   * (a keyframe at 0 sits on the clip's first frame). `offset` is the clip's
-   * start in sequence seconds so callers can keep talking sequence time.
+   * Effect parameter times are in the clip's *media* time: sequence time S maps
+   * to inPoint + (S - clipStart) (speed 1). `offset` = clipStart - inPoint, so
+   * callers can keep talking sequence seconds. Verified live on 26.3: keys at
+   * media 0 s sat before a still's visible range (its in point is ~3600 s).
    */
+  async function clipTimeOffset(it) {
+    const start = sec(await it.getStartTime()) || 0;
+    const inPt = sec(await it.getInPoint()) || 0;
+    return start - inPt;
+  }
   async function components(p, chain, offset) {
     offset = offset || 0;
     const comps = locked(p, () => {
@@ -409,14 +415,16 @@
       const s = await sequence(proj, p.sequenceId);
       const it = await clipAt(s, p);
       const chain = await it.getComponentChain();
-      const comps = await components(proj, chain, sec(await it.getStartTime()) || 0);
+      const offset = await clipTimeOffset(it);
+      const comps = await components(proj, chain, offset);
+      const firstFrame = secs(sec(await it.getInPoint()) || 0);
       const out = [];
       for (const c of comps) {
         const params = [];
         for (const q of c.params) {
           let value = null;
           try {
-            value = plainValue(await q.param.getValueAtTime(T.TIME_ZERO));
+            value = plainValue(await q.param.getValueAtTime(firstFrame));
           } catch (e) {}
           params.push({ index: q.index, name: q.name, value, timeVarying: q.timeVarying, keyframeSeconds: q.keyframes });
         }
@@ -699,13 +707,14 @@
       const q = findParam(comp, p.param);
       const value = hostValue(p.value);
       const keyed = isNum(p.seconds);
-      // Keyframe times are clip-relative in the host; the tool speaks sequence seconds.
+      // Keyframe times are media-relative in the host; the tool speaks sequence seconds.
       const clipStart = sec(await it.getStartTime()) || 0;
       const clipEnd = sec(await it.getEndTime());
-      const local = keyed ? Number(p.seconds) - clipStart : 0;
-      if (keyed && (local < 0 || (clipEnd !== null && Number(p.seconds) > clipEnd))) {
+      const offset = await clipTimeOffset(it);
+      if (keyed && (Number(p.seconds) < clipStart - 1e-6 || (clipEnd !== null && Number(p.seconds) > clipEnd + 1e-6))) {
         throw new Error("Keyframe time " + p.seconds + "s is outside the clip (" + clipStart + "s to " + clipEnd + "s).");
       }
+      const local = (keyed ? Number(p.seconds) : clipStart) - offset;
       const interp = p.interpolation === "hold" ? C.InterpolationMode.HOLD : p.interpolation === "bezier" ? C.InterpolationMode.BEZIER : p.interpolation === "linear" ? C.InterpolationMode.LINEAR : null;
       tx(proj, keyed ? "Add keyframe" : "Set effect parameter", (ca) => {
         const kf = q.param.createKeyframe(value);
@@ -725,7 +734,7 @@
       } catch (e) {}
       let keyframeSeconds = [];
       try {
-        keyframeSeconds = locked(proj, () => q.param.getKeyframeListAsTickTimes().map((t) => sec(t) + clipStart));
+        keyframeSeconds = locked(proj, () => q.param.getKeyframeListAsTickTimes().map((t) => sec(t) + offset));
       } catch (e) {}
       return { effect: comp.displayName, param: q.name, value: now, keyframed: keyed, keyframeSeconds };
     },
