@@ -28,3 +28,28 @@ Panel: `spikes/uxp-photoshop/`. Loaded via UXP Developer Tool with Developer Mod
   with a throwaway listener on port 7898 (`Host: 127.0.0.1:7898`, `Origin: file://`).
 - `writeFileSync` to `~/.adobe-cc-mcp/panel-photoshop.log` works with `fullAccess`;
   `appendFileSync` is not available. Clipboard `setContent` works with `clipboard: readAndWrite`.
+
+## RESULT: Spike 1 is GREEN on Windows (2026-08-26, ~19:08)
+
+After a real server restart (the server only loads code at start — pid 66064 → 51492), the
+panel reconnected on its own: `socket open — sending hello` → `welcome: server 0.1.0,
+heartbeat 15000ms`. `netstat` shows the socket `ESTABLISHED`. `cc_connected_apps` reports
+Photoshop `connected: true`. `ps_list_documents` returned the live document
+(`Untitled-1`, 1920×1080, RGB, 1 layer) — a named command (`ps.list_documents`) executed inside
+Photoshop's UXP panel, result back through the hub to Claude Code.
+
+| Question | Answer (Windows, PS 27.9.1) |
+|---|---|
+| UXP → localhost WebSocket | **Works** with `network.domains: "all"`. Explicit `ws://127.0.0.1:PORT` entries are rejected by this UXP build (bug #321). |
+| Handshake file for port + token | **Works** (`fs.readFileSync`, `localFileSystem: fullAccess`). No pasted token needed. |
+| Protocol v2 hello/welcome/cmd/result + heartbeat | **Works.** Token auth passed; per-socket result matching fine. |
+| Script strings in UXP | **Impossible** (`new Function` blocked). Named commands only — protocol v2's design is mandatory. |
+| Hub Origin policy | Must accept `Origin: file://` (what UXP sends). Done; browsers send `null`, not `file://`. |
+| Panel logging | `writeFileSync` to `~/.adobe-cc-mcp/panel-photoshop.log` works; `appendFileSync` missing. |
+
+**Decisions unlocked:** the hub topology stands; `bridge-client` needs no Windows long-poll
+fallback (at least for Photoshop 27.9 on this machine); the production `panel-uxp` is a
+straight-line build from this spike (named command registry + `executeAsModal` + batchPlay).
+
+**Still open:** macOS leg; Premiere UXP leg (same panel stack); whether a narrower
+`network.domains` entry form exists that this UXP accepts.
