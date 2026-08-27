@@ -110,33 +110,52 @@ export class BridgeServer {
     this.allowedOrigins = new Set(options.allowedOrigins ?? []);
     this.maxConnections = options.maxConnections ?? DEFAULT_MAX_CONNECTIONS;
 
-    this.wss = new WebSocketServer({
-      port: options.port,
-      host: options.host ?? "127.0.0.1",
-      verifyClient: (info, done) => this.verifyUpgrade(info.req, done),
-    });
-    this.wss.on("connection", (socket) => this.onConnection(socket));
-    this.wss.on("listening", () => this.onListening());
-    this.wss.on("error", (error) => log.error("bridge server error", error));
+    this.wss = this.listen(options.port);
     if (this.heartbeatIntervalMs > 0) {
       this.heartbeat = setInterval(() => this.pingAll(), this.heartbeatIntervalMs);
       this.heartbeat.unref();
     }
   }
 
-  /** Resolves once the listening socket is bound, or rejects if the port is taken. */
+  private listen(port: number): WebSocketServer {
+    const wss = new WebSocketServer({
+      port,
+      host: this.options.host ?? "127.0.0.1",
+      verifyClient: (info, done) => this.verifyUpgrade(info.req, done),
+    });
+    wss.on("connection", (socket) => this.onConnection(socket));
+    wss.on("listening", () => this.onListening());
+    return wss;
+  }
+
+  /**
+   * Resolves once a listening socket is bound. If the preferred port is taken
+   * (typically a stale server instance still holding it), falls back to an
+   * OS-assigned port: panels discover the real port from the handshake file,
+   * so a fixed port is a preference, not a requirement.
+   */
   ready(): Promise<void> {
+    return this.waitListening(this.wss).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "EADDRINUSE" || this.options.port === 0) throw error;
+      log.warn(`port ${this.options.port} is in use (a stale server instance?) — falling back to an OS-assigned port`);
+      this.wss = this.listen(0);
+      return this.waitListening(this.wss);
+    });
+  }
+
+  private waitListening(wss: WebSocketServer): Promise<void> {
     return new Promise((resolve, reject) => {
-      if (this.wss.address() !== null) {
+      if (wss.address() !== null) {
         resolve();
         return;
       }
       const onError = (error: Error) => reject(error);
-      this.wss.once("listening", () => {
-        this.wss.off("error", onError);
+      wss.once("listening", () => {
+        wss.off("error", onError);
+        wss.on("error", (e) => log.error("bridge server error", e));
         resolve();
       });
-      this.wss.once("error", onError);
+      wss.once("error", onError);
     });
   }
 
