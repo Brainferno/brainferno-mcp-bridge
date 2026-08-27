@@ -71,3 +71,12 @@ Through the running `adobe-cc-mcp` server inside Claude Code (not a side script)
 2. `ai_beta_call` `ListDocuments` → first two tries returned Adobe's own error `"A modal dialog is open in Illustrator"` (a real reply from Illustrator — the MCP & Tools window was open). After closing it: `{"success": true, "documentCount": 0}`.
 
 Lessons: the server reads the key only at start — after changing the key, reconnect (`/mcp`). Any open modal dialog in Illustrator blocks every tool; Adobe returns a structured error, which we pass through unchanged.
+
+## Mutations and previews verified
+
+3. `CreateDocument {width:1080, height:1080}` → `Untitled-1`, RGB, points. (With `{}` Adobe replies "Missing required property 'height'/'width'" — its schema errors are clear, and `ai_beta_list_tools` now passes the input schemas through.)
+4. `CapturePreview {reason}` on an empty document → "Document has no visible artwork" (Adobe cannot draw, so the canvas stays empty without our os-script lane).
+5. `OpenDocument {filePath}` on a small SVG → opened as `delegate-test`, 1080×1080.
+6. `CapturePreview {reason}` → PNG written to `%LOCALAPPDATA%\Temp\AI_30_9\illustrator_preview.png` (7 KB, 26 DPI, 22 ms). Adobe hands back a **file path**, not bytes — exactly the file-handoff convention our preview pipeline expects. Note the low DPI: this is an inspection preview, not an export.
+
+Takeaway for the plan: the delegate covers open/create/arrange/restyle/export/preview today. Drawing new art and saving `.ai` remain the os-script lane's job.
