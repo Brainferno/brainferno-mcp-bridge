@@ -62,3 +62,12 @@ Earlier research said Adobe’s server was analyze/batch/export only. The live l
 | `ScaleObjects` | Scale one or more art objects around the center of their combined bounding box, preserving relative positions. TWO MODES: (1) 'factor' (default): sx/sy are multipliers (sx=2 doubles, sx=0.5 halves, sx=1 is no change). (2 |
 
 Full schemas: call `ai_beta_list_tools` / `ai_beta_call` locally; names and inputs are Adobe’s and may change between Beta builds.
+
+## Round trip verified (2026-08-26, later the same day)
+
+Through the running `adobe-cc-mcp` server inside Claude Code (not a side script):
+
+1. `ai_beta_status` → `{"available": true, "toolCount": 46}` with the rotated key read from `~/.adobe-cc-mcp/config.json`.
+2. `ai_beta_call` `ListDocuments` → first two tries returned Adobe's own error `"A modal dialog is open in Illustrator"` (a real reply from Illustrator — the MCP & Tools window was open). After closing it: `{"success": true, "documentCount": 0}`.
+
+Lessons: the server reads the key only at start — after changing the key, reconnect (`/mcp`). Any open modal dialog in Illustrator blocks every tool; Adobe returns a structured error, which we pass through unchanged.

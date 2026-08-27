@@ -9,7 +9,7 @@ import {
 /** A fake downstream MCP client, so tests need no HTTP or real Illustrator. */
 function fakeClient(overrides: Partial<DelegateClient> = {}): DelegateClient {
   return {
-    listTools: async () => ({ tools: [{ name: "analyze_document", description: "Analyze the open doc" }] }),
+    listTools: async () => ({ tools: [{ name: "analyze_document", description: "Analyze the open doc", inputSchema: { type: "object" } }] }),
     callTool: async ({ name }) => ({ content: [{ type: "text" as const, text: `ran ${name}` }] }),
     close: async () => {},
     ...overrides,
@@ -28,7 +28,7 @@ describe("IllustratorDelegate", () => {
 
   it("listTools returns downstream names and descriptions", async () => {
     const delegate = new IllustratorDelegate({ url: "u", token: "k", clientFactory: async () => fakeClient() });
-    expect(await delegate.listTools()).toEqual([{ name: "analyze_document", description: "Analyze the open doc" }]);
+    expect(await delegate.listTools()).toEqual([{ name: "analyze_document", description: "Analyze the open doc", inputSchema: { type: "object" } }]);
   });
 
   it("call forwards the name and arguments and returns the result verbatim", async () => {

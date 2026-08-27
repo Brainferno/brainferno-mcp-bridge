@@ -25,11 +25,13 @@ import { log } from "../logging.js";
 export interface DelegateToolInfo {
   name: string;
   description?: string;
+  /** JSON Schema for the tool arguments, passed through from Adobe verbatim. */
+  inputSchema?: unknown;
 }
 
 /** The subset of an MCP client this delegate needs — injectable for tests. */
 export interface DelegateClient {
-  listTools(): Promise<{ tools: { name: string; description?: string }[] }>;
+  listTools(): Promise<{ tools: { name: string; description?: string; inputSchema?: unknown }[] }>;
   callTool(args: { name: string; arguments?: Record<string, unknown> }): Promise<CallToolResult>;
   close(): Promise<void>;
 }
@@ -112,7 +114,7 @@ export class IllustratorDelegate {
     try {
       const client = await this.connect();
       const { tools } = await client.listTools();
-      return tools.map((tool) => ({ name: tool.name, description: tool.description }));
+      return tools.map((tool) => ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema }));
     } catch (error) {
       this.reset();
       throw error instanceof DelegateUnavailableError ? error : new DelegateUnavailableError(UNAVAILABLE_HINT);

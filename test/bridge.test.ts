@@ -161,7 +161,7 @@ describe("BridgeServer upgrade origin policy", () => {
 });
 
 describe("writeHandshake", () => {
-  it("replaces a pre-existing looser-mode file and lands mode-600", () => {
+  it.skipIf(process.platform === "win32")("replaces a pre-existing looser-mode file and lands mode-600", () => {
     const dir = mkdtempSync(join(tmpdir(), "acm-hs-"));
     const path = join(dir, "bridge.json");
     writeFileSync(path, "stale", { mode: 0o644 });
@@ -172,7 +172,7 @@ describe("writeHandshake", () => {
     expect(JSON.parse(readFileSync(path, "utf8")).token).toBe("sekret");
   });
 
-  it("does not write the token through a pre-existing symlink", () => {
+  it.skipIf(process.platform === "win32")("does not write the token through a pre-existing symlink", () => {
     const dir = mkdtempSync(join(tmpdir(), "acm-hs-"));
     const target = join(dir, "target.json");
     const link = join(dir, "bridge.json");
