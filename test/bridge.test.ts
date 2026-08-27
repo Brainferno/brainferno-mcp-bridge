@@ -153,6 +153,12 @@ describe("BridgeServer upgrade origin policy", () => {
     expect(await tryUpgrade(b.port())).toBe(false);
   });
 
+  it("allows the file:// origin UXP panels send", async () => {
+    const b = makeBridge();
+    await b.ready();
+    expect(await tryUpgrade(b.port(), { origin: "file://" })).toBe(false);
+  });
+
   it("allows an explicitly allowlisted origin", async () => {
     const b = makeBridge({ allowedOrigins: ["null"] });
     await b.ready();

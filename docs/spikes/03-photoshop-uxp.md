@@ -15,3 +15,16 @@ Panel: `spikes/uxp-photoshop/`. Loaded via UXP Developer Tool with Developer Mod
 
 - Photoshop tools = named commands (`ps.list_documents`, `ps.list_layers`, …) implemented in the panel against the `photoshop` module. No `eval` lane for Photoshop, ever.
 - The handshake-file mechanism is validated for UXP; the panel needs no pasted token.
+
+## Update (same day): the socket works — our own gate was the last blocker
+
+- With `"network": { "domains": "all" }` the WebSocket left Photoshop and reached the hub (TCP
+  connections seen on 7897). The explicit `ws://127.0.0.1:7897` entry is **rejected** by UXP on
+  this build ("Manifest entry not found") — bug #321 confirmed on Photoshop 27.9.1 / Windows.
+  Narrowing the permission is a later task; `"all"` is what works today.
+- The hub then answered **403**: Photoshop's UXP WebSocket sends `Origin: file://`, which the
+  Origin allowlist did not include. A browser sends the literal `null` for local documents, never
+  `file://`, so `file://` is now accepted by default (token auth stays the real gate). Captured
+  with a throwaway listener on port 7898 (`Host: 127.0.0.1:7898`, `Origin: file://`).
+- `writeFileSync` to `~/.adobe-cc-mcp/panel-photoshop.log` works with `fullAccess`;
+  `appendFileSync` is not available. Clipboard `setContent` works with `clipboard: readAndWrite`.
