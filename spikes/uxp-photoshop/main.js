@@ -9,6 +9,9 @@
  *   3. Does the hello/welcome/cmd/result protocol v2 round-trip?
  *   4. Can UXP evaluate a script string (`new Function`) — or must every
  *      command be a named, panel-side function?
+ *
+ * The log is mirrored to ~/.adobe-cc-mcp/panel-photoshop.log so it can be read
+ * from outside Photoshop.
  */
 
 const PROTOCOL_VERSION = 2;
@@ -16,25 +19,35 @@ const PANEL_VERSION = "0.1.0-spike";
 
 const el = (id) => document.getElementById(id);
 const logEl = el("log");
+
+function homeDir() {
+  return require("os").homedir().split("\\").join("/");
+}
+
 let logFilePath = null;
 function logFile() {
   if (logFilePath !== null) return logFilePath;
-  try { logFilePath = require("os").homedir().replace(/\/g, "/") + "/.adobe-cc-mcp/panel-photoshop.log"; }
-  catch (e) { logFilePath = ""; }
+  try {
+    logFilePath = homeDir() + "/.adobe-cc-mcp/panel-photoshop.log";
+  } catch (e) {
+    logFilePath = "";
+  }
   return logFilePath;
 }
+
 function log(msg) {
   const line = "[" + new Date().toLocaleTimeString() + "] " + msg;
-  logEl.textContent += line + "
-";
+  logEl.textContent += line + "\n";
   logEl.scrollTop = logEl.scrollHeight;
   console.log(line);
   try {
     const p = logFile();
-    if (p) require("fs").appendFileSync(p, line + "
-", "utf-8");
-  } catch (e) { /* file logging is best effort */ }
+    if (p) require("fs").appendFileSync(p, line + "\n", "utf-8");
+  } catch (e) {
+    /* file logging is best effort */
+  }
 }
+
 function setStatus(state) {
   const b = el("status");
   b.textContent = state;
@@ -44,15 +57,13 @@ function setStatus(state) {
 // ---- 1. handshake file --------------------------------------------------
 function readHandshake() {
   try {
-    const os = require("os");
-    const fs = require("fs");
-    const path = os.homedir().replace(/\\/g, "/") + "/.adobe-cc-mcp/bridge.json";
-    const text = fs.readFileSync(path, "utf-8");
+    const path = homeDir() + "/.adobe-cc-mcp/bridge.json";
+    const text = require("fs").readFileSync(path, "utf-8");
     const hs = JSON.parse(text);
-    log(`handshake read OK: port=${hs.port} protocol=${hs.protocolVersion} pid=${hs.pid}`);
+    log("handshake read OK: port=" + hs.port + " protocol=" + hs.protocolVersion + " pid=" + hs.pid);
     return hs;
   } catch (e) {
-    log(`handshake read FAILED: ${e && e.message ? e.message : e}`);
+    log("handshake read FAILED: " + (e && e.message ? e.message : e));
     return null;
   }
 }
@@ -62,10 +73,10 @@ function evalCapability() {
   try {
     const f = new Function("return 1 + 1");
     const v = f();
-    log(`new Function works (1+1=${v})`);
+    log("new Function works (1+1=" + v + ")");
     return true;
   } catch (e) {
-    log(`new Function BLOCKED: ${e && e.message ? e.message : e}`);
+    log("new Function BLOCKED: " + (e && e.message ? e.message : e));
     return false;
   }
 }
@@ -134,13 +145,13 @@ async function connect() {
   const token = el("token").value || (hs && hs.token) || "";
   if (!token) log("no token — set one, or start the server so it writes the handshake file");
 
-  const url = `ws://127.0.0.1:${port}`;
-  log(`connecting ${url} …`);
+  const url = "ws://127.0.0.1:" + port;
+  log("connecting " + url + " …");
   setStatus("connecting");
   try {
     ws = new WebSocket(url);
   } catch (e) {
-    log(`WebSocket ctor threw: ${e && e.message ? e.message : e}`);
+    log("WebSocket ctor threw: " + (e && e.message ? e.message : e));
     setStatus("error");
     return;
   }
@@ -165,13 +176,13 @@ async function connect() {
     let frame;
     try {
       frame = JSON.parse(ev.data);
-    } catch {
-      log(`bad frame: ${String(ev.data).slice(0, 80)}`);
+    } catch (e) {
+      log("bad frame: " + String(ev.data).slice(0, 80));
       return;
     }
     if (frame.type === "welcome") {
       setStatus("connected");
-      log(`welcome: server ${frame.serverVersion}, heartbeat ${frame.heartbeatIntervalMs}ms`);
+      log("welcome: server " + frame.serverVersion + ", heartbeat " + frame.heartbeatIntervalMs + "ms");
       return;
     }
     if (frame.type === "ping") {
@@ -179,54 +190,72 @@ async function connect() {
       return;
     }
     if (frame.type === "cmd") {
-      log(`cmd ${frame.name} (${frame.id.slice(0, 8)})`);
+      log("cmd " + frame.name + " (" + frame.id.slice(0, 8) + ")");
       const handler = commands[frame.name];
       if (!handler) {
-        ws.send(JSON.stringify({ type: "result", id: frame.id, ok: false, error: { code: "UNKNOWN_COMMAND", message: `panel does not implement ${frame.name}` } }));
+        ws.send(JSON.stringify({ type: "result", id: frame.id, ok: false, error: { code: "UNKNOWN_COMMAND", message: "panel does not implement " + frame.name } }));
         return;
       }
       try {
         const value = await handler(frame.params);
         ws.send(JSON.stringify({ type: "result", id: frame.id, ok: true, value }));
-        log(`  → ok`);
+        log("  -> ok");
       } catch (e) {
         ws.send(JSON.stringify({ type: "result", id: frame.id, ok: false, error: { code: "HOST_ERROR", message: e && e.message ? e.message : String(e) } }));
-        log(`  → error: ${e && e.message ? e.message : e}`);
+        log("  -> error: " + (e && e.message ? e.message : e));
       }
       return;
     }
     if (frame.type === "bye") {
-      log(`server said bye: ${frame.reason}`);
+      log("server said bye: " + frame.reason);
       return;
     }
   };
 
-  ws.onerror = (e) => log(`socket error: ${e && e.message ? e.message : JSON.stringify(e)}`);
+  ws.onerror = (e) => log("socket error: " + (e && e.message ? e.message : JSON.stringify(e)));
   ws.onclose = (ev) => {
     setStatus("disconnected");
-    log(`socket closed: code=${ev.code} reason=${ev.reason || "(none)"}`);
+    log("socket closed: code=" + ev.code + " reason=" + (ev.reason || "(none)"));
     ws = null;
     if (!killed) {
       log("reconnecting in 3s …");
-      setTimeout(() => { if (!killed && !ws) connect(); }, 3000);
+      setTimeout(() => {
+        if (!killed && !ws) connect();
+      }, 3000);
     }
   };
 }
 
-el("connect").addEventListener("click", () => { if (ws) { log("already connected"); return; } connect(); });
+el("connect").addEventListener("click", () => {
+  if (ws) {
+    log("already connected");
+    return;
+  }
+  connect();
+});
 el("kill").addEventListener("click", () => {
   killed = true;
-  if (ws) { try { ws.send(JSON.stringify({ type: "bye", reason: "kill switch" })); } catch {} ws.close(1000, "kill switch"); }
+  if (ws) {
+    try {
+      ws.send(JSON.stringify({ type: "bye", reason: "kill switch" }));
+    } catch (e) {}
+    ws.close(1000, "kill switch");
+  }
   log("kill switch engaged — no reconnect until you press Connect");
 });
-el("clear").addEventListener("click", () => { logEl.textContent = ""; });
+el("clear").addEventListener("click", () => {
+  logEl.textContent = "";
+});
 el("copy").addEventListener("click", async () => {
   try {
     await navigator.clipboard.setContent({ "text/plain": logEl.textContent });
     log("log copied to clipboard");
-  } catch (e) { log("copy failed: " + (e && e.message ? e.message : e)); }
+  } catch (e) {
+    log("copy failed: " + (e && e.message ? e.message : e));
+  }
 });
 
-log(`---- panel loaded (${PANEL_VERSION}) ----`);
+log("---- panel loaded (" + PANEL_VERSION + ") ----");
 evalCapability();
 readHandshake();
+connect();
