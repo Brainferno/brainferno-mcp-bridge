@@ -178,7 +178,7 @@ export const args = {
     "-i",
     input,
     "-filter_complex",
-    `showwavespic=s=${width}x${height}:colors=${color}:scale=lin`,
+    `color=c=#1e1e2e:s=${width}x${height}[bg];[0:a]showwavespic=s=${width}x${height}:colors=${color}:scale=lin[w];[bg][w]overlay=format=auto`,
     "-frames:v",
     "1",
     output,
