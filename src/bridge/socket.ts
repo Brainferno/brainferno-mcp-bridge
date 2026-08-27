@@ -221,6 +221,11 @@ export class BridgeServer {
 
   private originAllowed(origin: string | undefined): boolean {
     if (origin === undefined) return true; // UXP panels send no Origin header.
+    // UXP panels (Photoshop 2026 on Windows, verified) send the literal
+    // "file://". Browsers never send that for a local document — they send the
+    // word "null" — so accepting it does not reopen the drive-by hole; the
+    // token remains the real gate.
+    if (origin === "file://") return true;
     if (this.allowedOrigins.has(origin)) return true;
     try {
       return LOOPBACK_HOSTNAMES.has(new URL(origin).hostname);
