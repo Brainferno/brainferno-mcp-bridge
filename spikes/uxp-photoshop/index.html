@@ -2,30 +2,29 @@
 <html>
   <head>
     <style>
-      html, body { height: 100%; margin: 0; padding: 0; overflow: hidden; }
-      /* Pin the body to the panel edges so the column layout knows its height;
-         the log then flexes to whatever is left, and the panel can be dragged
-         taller or shorter. */
-      body { position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column; box-sizing: border-box; padding: 8px; font-family: system-ui, sans-serif; font-size: 12px; color: #ddd; }
-      .row { display: flex; flex-direction: row; align-items: center; gap: 6px; margin-bottom: 6px; flex-shrink: 0; }
+      html, body { margin: 0; padding: 0; }
+      body { height: 100vh; overflow: hidden; box-sizing: border-box; padding: 8px; font-family: system-ui, sans-serif; font-size: 12px; color: #ddd; }
+      .row { display: flex; flex-direction: row; align-items: center; gap: 6px; margin-bottom: 6px; }
       .badge { padding: 2px 8px; border-radius: 10px; background: #555; }
       .badge.on { background: #2e7d32; }
       .badge.off { background: #7a2a2a; }
       input { flex: 1; min-width: 60px; }
-      label { width: 40px; flex-shrink: 0; }
+      label { width: 40px; }
       button { cursor: pointer; }
-      #log { flex: 1 1 0px; min-height: 40px; overflow-y: auto; overflow-x: hidden; white-space: pre-wrap; word-break: break-all; font-family: monospace; font-size: 11px; background: #1e1e1e; padding: 6px; border-radius: 4px; }
+      /* Height is set by fitLog() in main.js from the real panel height — UXP's
+         layout engine does not size body/flex children to the panel. */
+      #log { height: 160px; overflow-y: auto; overflow-x: hidden; white-space: pre-wrap; word-break: break-all; font-family: monospace; font-size: 11px; background: #1e1e1e; padding: 6px; border-radius: 4px; box-sizing: border-box; }
       .below { margin-top: 8px; margin-bottom: 4px; }
-      #hint { flex-shrink: 0; font-size: 10px; color: #999; padding-bottom: 8px; }
+      #hint { font-size: 10px; color: #999; }
     </style>
   </head>
   <body>
-    <div class="row"><strong>adobe-cc-mcp bridge</strong> <span id="status" class="badge off">disconnected</span></div>
-    <div class="row"><button id="connect">Connect</button><button id="kill">Kill switch</button></div>
-    <div class="row"><label>Port</label><input id="port" placeholder="7897" /></div>
-    <div class="row"><label>Token</label><input id="token" placeholder="auto from bridge.json, or paste" /></div>
+    <div class="row" id="r1"><strong>adobe-cc-mcp bridge</strong> <span id="status" class="badge off">disconnected</span></div>
+    <div class="row" id="r2"><button id="connect">Connect</button><button id="kill">Kill switch</button></div>
+    <div class="row" id="r3"><label>Port</label><input id="port" placeholder="7897" /></div>
+    <div class="row" id="r4"><label>Token</label><input id="token" placeholder="auto from bridge.json, or paste" /></div>
     <div id="log"></div>
-    <div class="row below"><button id="copy">Copy log</button><button id="clear">Clear</button></div>
+    <div class="row below" id="r5"><button id="copy">Copy log</button><button id="clear">Clear</button></div>
     <div id="hint">Log also written to ~/.adobe-cc-mcp/panel-photoshop.log</div>
   </body>
   <script src="main.js"></script>

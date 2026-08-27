@@ -278,6 +278,29 @@ el("copy").addEventListener("click", async () => {
   }
 });
 
+// ---- layout: size the log box from the real panel height -----------------
+// UXP does not size body/flex children to the panel, so measure and set it.
+function heightOf(id) {
+  const n = el(id);
+  if (!n) return 0;
+  const r = n.getBoundingClientRect ? n.getBoundingClientRect() : null;
+  return (r && r.height ? r.height : n.offsetHeight || 0) + 6; // + row margin
+}
+let lastFit = -1;
+function fitLog() {
+  const total = window.innerHeight || (document.documentElement && document.documentElement.clientHeight) || 0;
+  if (!total) return;
+  const used = heightOf("r1") + heightOf("r2") + heightOf("r3") + heightOf("r4") + heightOf("r5") + heightOf("hint") + 16;
+  const h = Math.max(40, Math.floor(total - used));
+  if (h !== lastFit) {
+    lastFit = h;
+    logEl.style.height = h + "px";
+  }
+}
+window.addEventListener("resize", fitLog);
+setInterval(fitLog, 400);
+fitLog();
+
 log("---- panel loaded (" + PANEL_VERSION + ") ----");
 evalCapability();
 readHandshake();
