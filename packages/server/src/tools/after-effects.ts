@@ -436,6 +436,23 @@ function aerenderExecutable(appFolder: string, isWindows: boolean): string {
   return isWindows ? join(appFolder, "aerender.exe") : join(appFolder, "aerender");
 }
 
+/** saveFrameToPng returns before the file is fully written: wait for it to appear and stop growing. */
+async function waitForFile(path: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let lastSize = -1;
+  while (Date.now() < deadline) {
+    try {
+      const { size } = await stat(path);
+      if (size > 0 && size === lastSize) return;
+      lastSize = size;
+    } catch {
+      /* not there yet */
+    }
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  throw new Error(`After Effects did not finish writing ${path} within ${Math.round(timeoutMs / 1000)}s. Is "Allow Scripts to Write Files and Access Network" enabled in Preferences > Scripting & Expressions?`);
+}
+
 function runAerender(exe: string, args: string[], timeoutMs: number): Promise<{ code: number | null; tail: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(exe, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
@@ -782,6 +799,7 @@ export function registerAfterEffectsTools(server: McpServer, bridge: AppBridge):
         await mkdir(dir, { recursive: true });
         const path = join(dir, `${randomUUID()}.png`).replace(/\\/g, "/");
         await bridge.evaluate(renderFrameScript(id, time ?? 0, path, maxDimension ?? 1024), { timeoutClass: "slow" });
+        await waitForFile(path, 20_000);
         return imageResult(path, "image/png", `Frame at ${time ?? 0}s`);
       }),
   );
