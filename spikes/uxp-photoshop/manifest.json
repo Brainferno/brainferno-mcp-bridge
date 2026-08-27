@@ -55,12 +55,7 @@
   ],
   "requiredPermissions": {
     "network": {
-      "domains": [
-        "ws://127.0.0.1:7897",
-        "ws://localhost:7897",
-        "ws://127.0.0.1",
-        "ws://localhost"
-      ]
+      "domains": "all"
     },
     "localFileSystem": "fullAccess",
     "clipboard": "readAndWrite"
