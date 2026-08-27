@@ -278,7 +278,13 @@
     return v;
   }
 
-  async function components(p, chain) {
+  /**
+   * Effect parameter times are relative to the clip's start on the timeline
+   * (a keyframe at 0 sits on the clip's first frame). `offset` is the clip's
+   * start in sequence seconds so callers can keep talking sequence time.
+   */
+  async function components(p, chain, offset) {
+    offset = offset || 0;
     const comps = locked(p, () => {
       const n = chain.getComponentCount();
       const arr = [];
@@ -292,7 +298,7 @@
           let timeVarying = false;
           try {
             timeVarying = q.isTimeVarying();
-            keyframes = q.getKeyframeListAsTickTimes().map(sec);
+            keyframes = q.getKeyframeListAsTickTimes().map((t) => sec(t) + offset);
           } catch (e) {}
           params.push({ index: j, name: q.displayName, timeVarying, keyframes, param: q });
         }
@@ -403,7 +409,7 @@
       const s = await sequence(proj, p.sequenceId);
       const it = await clipAt(s, p);
       const chain = await it.getComponentChain();
-      const comps = await components(proj, chain);
+      const comps = await components(proj, chain, sec(await it.getStartTime()) || 0);
       const out = [];
       for (const c of comps) {
         const params = [];
@@ -572,7 +578,17 @@
       const proj = await project();
       const s = await sequence(proj, p.sequenceId);
       const it = await clipAt(s, p);
-      tx(proj, "Move clip", (ca) => ca.addAction(it.createMoveAction(secs(p.seconds))));
+      // createMoveAction shifts by an offset; the tool takes an absolute start.
+      const cur = sec(await it.getStartTime()) || 0;
+      const delta = Number(p.seconds) - cur;
+      if (Math.abs(delta) > 1e-6) tx(proj, "Move clip", (ca) => ca.addAction(it.createMoveAction(secs(delta))));
+      // The clip may now sit at a different index on its track; find it by start time.
+      const type = p.trackType === "audio" ? "audio" : "video";
+      const items = await trackClips(await trackOf(s, type, p.trackIndex || 0));
+      for (let i = 0; i < items.length; i++) {
+        const info = await clipInfo(items[i], i);
+        if (Math.abs((info.startSeconds || 0) - Number(p.seconds)) < 0.021) return { clip: Object.assign({ trackType: type, trackIndex: p.trackIndex || 0, clipIndex: i }, info) };
+      }
       return { clip: await refreshedClip(s, p) };
     },
 
@@ -683,14 +699,21 @@
       const q = findParam(comp, p.param);
       const value = hostValue(p.value);
       const keyed = isNum(p.seconds);
+      // Keyframe times are clip-relative in the host; the tool speaks sequence seconds.
+      const clipStart = sec(await it.getStartTime()) || 0;
+      const clipEnd = sec(await it.getEndTime());
+      const local = keyed ? Number(p.seconds) - clipStart : 0;
+      if (keyed && (local < 0 || (clipEnd !== null && Number(p.seconds) > clipEnd))) {
+        throw new Error("Keyframe time " + p.seconds + "s is outside the clip (" + clipStart + "s to " + clipEnd + "s).");
+      }
       const interp = p.interpolation === "hold" ? C.InterpolationMode.HOLD : p.interpolation === "bezier" ? C.InterpolationMode.BEZIER : p.interpolation === "linear" ? C.InterpolationMode.LINEAR : null;
       tx(proj, keyed ? "Add keyframe" : "Set effect parameter", (ca) => {
         const kf = q.param.createKeyframe(value);
         if (keyed) {
           if (!q.timeVarying) ca.addAction(q.param.createSetTimeVaryingAction(true));
-          kf.position = secs(p.seconds);
+          kf.position = secs(local);
           ca.addAction(q.param.createAddKeyframeAction(kf));
-          if (interp !== null) ca.addAction(q.param.createSetInterpolationAtKeyframeAction(secs(p.seconds), interp));
+          if (interp !== null) ca.addAction(q.param.createSetInterpolationAtKeyframeAction(secs(local), interp));
         } else {
           if (q.timeVarying) ca.addAction(q.param.createSetTimeVaryingAction(false));
           ca.addAction(q.param.createSetValueAction(kf, true));
@@ -698,9 +721,13 @@
       });
       let now = null;
       try {
-        now = plainValue(await q.param.getValueAtTime(keyed ? secs(p.seconds) : T.TIME_ZERO));
+        now = plainValue(await q.param.getValueAtTime(secs(local)));
       } catch (e) {}
-      return { effect: comp.displayName, param: q.name, value: now, keyframed: keyed };
+      let keyframeSeconds = [];
+      try {
+        keyframeSeconds = locked(proj, () => q.param.getKeyframeListAsTickTimes().map((t) => sec(t) + clipStart));
+      } catch (e) {}
+      return { effect: comp.displayName, param: q.name, value: now, keyframed: keyed, keyframeSeconds };
     },
 
     // ---- markers ----
