@@ -56,6 +56,8 @@ them.
 | `ai_*` (7) | Illustrator | Documents, shapes, text, save, export artboard, preview (panel-less OS-script lane) |
 | `au_*` (12) | Audition | App/document state, 600+ menu commands (list/invoke), Favorites (hands-off effect chains), markers, transport, open/save/export, API dump — [live run](docs/spikes/08-audition-tools-live.md) |
 | `audio_*` (9) | ffmpeg (no Adobe app needed) | Probe, EBU R128 measure + two-pass normalize, convert/extract, trim, trim silence, denoise, mix, waveform image |
+| `pipeline_*` (4) | cross-app | `ps_to_ae`, `render_and_import` (AE → aerender → Premiere), `audio_roundtrip` (Premiere → ffmpeg → Premiere), `ai_to_ps` — one call, one job, per-step progress, failure names the step + recovery tool — [live run](docs/spikes/09-pipelines-live.md) |
+| `cc_job_*` (4) | jobs | `status`, `list`, `wait` (streams progress), `cancel`; long renders/exports take `wait:false` and return a jobId |
 
 Tools are always advertised, even when the application is closed — a closed app returns
 an actionable error rather than disappearing from the tool list mid-session.
@@ -152,8 +154,10 @@ Early, and honest about it:
   Illustrator OS-script lane and beta-MCP delegate, the ffmpeg audio lane, and the v1 tool
   sets for all five applications — each proven end to end with previews you can see
   (`docs/spikes/05`–`08`).
-- **Next** — cross-app `pipeline_*` tools with a job registry, macOS verification,
-  packaging/installers.
+- **Working too** — the job registry and the four cross-app pipelines; the flagship chain
+  (Photoshop → After Effects → aerender → Premiere → ffmpeg audio → back to the timeline)
+  ran from one conversation (`docs/spikes/09`).
+- **Next** — macOS verification, packaging/installers, work-folder cleanup.
 - **Thin** — Audition multitrack sessions are read-only so far; Illustrator's own lane covers
   create/save/export only (Adobe's beta MCP adds analysis/batch/export).
 

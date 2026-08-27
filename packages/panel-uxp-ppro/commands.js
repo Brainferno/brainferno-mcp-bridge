@@ -547,21 +547,26 @@
       tx(proj, overwrite ? "Overwrite clip" : "Insert clip", (ca) => {
         ca.addAction(overwrite ? ed.createOverwriteItemAction(entry.raw, t, v, a) : ed.createInsertProjectItemAction(entry.raw, t, v, a, p.limitShift !== false));
       });
-      // Report the clip that now starts at that time.
+      // Report the clip that now starts at that time and comes from this item
+      // (an audio-only item lands on the audio track while a video clip may
+      // already sit at the same time on V1).
       let clip = null;
+      let fallback = null;
       for (const type of ["video", "audio"]) {
         try {
           const items = await trackClips(await trackOf(s, type, type === "video" ? v : a));
           for (let i = 0; i < items.length; i++) {
             const info = await clipInfo(items[i], i);
             if (Math.abs((info.startSeconds || 0) - (Number(p.seconds) || 0)) < 0.021) {
-              clip = Object.assign({ trackType: type, trackIndex: type === "video" ? v : a, clipIndex: i }, info);
-              break;
+              const hit = Object.assign({ trackType: type, trackIndex: type === "video" ? v : a, clipIndex: i }, info);
+              if (info.projectItem && info.projectItem.id === entry.id) { clip = hit; break; }
+              if (!fallback) fallback = hit;
             }
           }
         } catch (e) {}
         if (clip) break;
       }
+      if (!clip) clip = fallback;
       return { inserted: true, mode: overwrite ? "overwrite" : "insert", clip, sequence: await seqSummary(s) };
     },
 

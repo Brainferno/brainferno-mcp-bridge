@@ -109,7 +109,8 @@ export const args = {
     "null",
     "-",
   ],
-  normalize: (input: string, output: string, targetLufs: number, truePeak: number, lra: number, m: Record<string, string>) => [
+  // loudnorm works at 192 kHz internally and would write that rate; resample back to the source rate.
+  normalize: (input: string, output: string, targetLufs: number, truePeak: number, lra: number, m: Record<string, string>, sampleRate = 48000) => [
     "-hide_banner",
     "-nostats",
     "-y",
@@ -117,6 +118,8 @@ export const args = {
     input,
     "-af",
     `loudnorm=I=${targetLufs}:TP=${truePeak}:LRA=${lra}:measured_I=${m["input_i"]}:measured_TP=${m["input_tp"]}:measured_LRA=${m["input_lra"]}:measured_thresh=${m["input_thresh"]}:offset=${m["target_offset"]}:linear=true:print_format=json`,
+    "-ar",
+    String(sampleRate),
     "-vn",
     output,
   ],
@@ -236,6 +239,18 @@ function ffmpegRunner(options: AudioToolOptions, signal?: AbortSignal) {
   return (a: string[], what: string, timeoutMs = TEN_MINUTES) => runProcess(options.ffmpegPath, a, timeoutMs, signal).then((r) => (r.code === 0 ? r : fail(what, r.stderr)));
 }
 
+/** The input's audio sample rate via ffprobe; 48000 when it cannot be read. */
+export async function sourceSampleRate(options: AudioToolOptions, input: string, signal?: AbortSignal): Promise<number> {
+  try {
+    const r = await runProcess(options.ffprobePath, args.probe(input), 60_000, signal);
+    if (r.code !== 0) return 48000;
+    const rate = summarizeProbe(JSON.parse(r.stdout) as ProbeOutput).audio?.sampleRate;
+    return typeof rate === "number" && rate > 0 ? rate : 48000;
+  } catch {
+    return 48000;
+  }
+}
+
 export interface LoudnessTargets {
   targetLufs: number;
   truePeakDb: number;
@@ -254,7 +269,8 @@ export async function normalizeLoudness(options: AudioToolOptions, input: string
   const pass1 = await ffmpeg(args.measure(input, t.targetLufs, t.truePeakDb, t.loudnessRange), "loudness measurement");
   const before = parseLoudnormJson(pass1.stderr);
   await ensureDir(output);
-  const pass2 = await ffmpeg(args.normalize(input, output, t.targetLufs, t.truePeakDb, t.loudnessRange, before), "loudness normalization");
+  const sampleRate = await sourceSampleRate(options, input, signal);
+  const pass2 = await ffmpeg(args.normalize(input, output, t.targetLufs, t.truePeakDb, t.loudnessRange, before, sampleRate), "loudness normalization");
   const after = parseLoudnormJson(pass2.stderr);
   return {
     ...(await outInfo(output)),

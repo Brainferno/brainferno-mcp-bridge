@@ -82,6 +82,9 @@ describe("audio lane against a real ffmpeg", async () => {
     const norm = text(await client.callTool({ name: "audio_normalize_loudness", arguments: { input: tone, output: normalized, targetLufs: -16 } }));
     expect((norm["after"] as { integratedLufs: number }).integratedLufs).toBeCloseTo(-16, 0);
     expect((await stat(normalized)).size).toBeGreaterThan(1000);
+    // loudnorm must not leave the file at its internal 192 kHz.
+    const probeNorm = text(await client.callTool({ name: "audio_probe", arguments: { path: normalized } }));
+    expect((probeNorm["audio"] as { sampleRate: number }).sampleRate).toBe((probe["audio"] as { sampleRate: number }).sampleRate);
 
     const wave = await client.callTool({ name: "audio_waveform_image", arguments: { path: tone, width: 400, height: 100 } });
     expect((wave.content as { type: string }[])[0]?.type).toBe("image");
