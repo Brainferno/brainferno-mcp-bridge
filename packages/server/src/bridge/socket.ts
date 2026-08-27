@@ -83,7 +83,7 @@ export interface BridgeServerOptions {
  * settle another's in-flight call.
  */
 export class BridgeServer {
-  private readonly wss: WebSocketServer;
+  private wss: WebSocketServer;
   private readonly panels = new Map<AppId, WebSocket>();
   private readonly states = new Map<WebSocket, SocketState>();
   /** Serializes commands per app: one script/modal scope per host at a time. */

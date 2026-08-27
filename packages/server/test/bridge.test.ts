@@ -247,6 +247,18 @@ describe("BridgeServer command routing", () => {
   });
 });
 
+describe("BridgeServer port fallback", () => {
+  it("falls back to an OS-assigned port when the preferred port is taken", async () => {
+    const first = makeBridge();
+    await first.ready();
+    const second = new BridgeServer({ port: first.port(), token: "s3cret", defaultTimeoutMs: 1_000, heartbeatIntervalMs: 0 });
+    await second.ready();
+    expect(second.port()).not.toBe(0);
+    expect(second.port()).not.toBe(first.port());
+    await second.close();
+  });
+});
+
 describe("BridgeServer heartbeat", () => {
   it("terminates a panel that stops answering pings", async () => {
     const b = makeBridge({ heartbeatIntervalMs: 40 });
