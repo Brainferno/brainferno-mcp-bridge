@@ -54,7 +54,8 @@ them.
 | `ae_*` (24) | After Effects | Project/comps/footage, layers of every kind, keyframes + easing, expressions, effects + params, text, markers, frame preview, render queue, headless aerender — [live run](docs/spikes/06-aftereffects-tools-live.md) |
 | `pp_*` (28) | Premiere Pro | Project/sequences/items, get_sequence (tracks + clips), import, create sequence from media, insert/overwrite, ripple remove, move/trim/props, transitions, effects + keyframes, markers, frame preview, export presets, H.264/any-preset export (in-app or to Media Encoder) — [live run](docs/spikes/07-premiere-tools-live.md) |
 | `ai_*` (7) | Illustrator | Documents, shapes, text, save, export artboard, preview (panel-less OS-script lane) |
-| `au_document_info` | Audition | Active document's sample rate, duration, multitrack flag |
+| `au_*` (12) | Audition | App/document state, 600+ menu commands (list/invoke), Favorites (hands-off effect chains), markers, transport, open/save/export, API dump — [live run](docs/spikes/08-audition-tools-live.md) |
+| `audio_*` (9) | ffmpeg (no Adobe app needed) | Probe, EBU R128 measure + two-pass normalize, convert/extract, trim, trim silence, denoise, mix, waveform image |
 
 Tools are always advertised, even when the application is closed — a closed app returns
 an actionable error rather than disappearing from the tool list mid-session.
@@ -148,13 +149,13 @@ Early, and honest about it:
 - **Working (Windows-verified live)** — the hardened bridge hub (token auth by default,
   Origin/Host upgrade checks, per-socket result matching, heartbeat), the frozen v2
   protocol, the Photoshop and Premiere Pro UXP panels, the After Effects CEP panel, the
-  Illustrator OS-script lane and beta-MCP delegate, and the v1 tool sets for Photoshop,
-  After Effects, Premiere Pro, and Illustrator — each proven end to end with previews
-  you can see (`docs/spikes/05`–`07`).
-- **Next** — Audition (CEP + ffmpeg lane), cross-app `pipeline_*` tools with a job
-  registry, macOS verification, packaging/installers.
-- **Thin** — Audition has one tool; Illustrator's own lane covers create/save/export only
-  (Adobe's beta MCP adds analysis/batch/export).
+  Illustrator OS-script lane and beta-MCP delegate, the ffmpeg audio lane, and the v1 tool
+  sets for all five applications — each proven end to end with previews you can see
+  (`docs/spikes/05`–`08`).
+- **Next** — cross-app `pipeline_*` tools with a job registry, macOS verification,
+  packaging/installers.
+- **Thin** — Audition multitrack sessions are read-only so far; Illustrator's own lane covers
+  create/save/export only (Adobe's beta MCP adds analysis/batch/export).
 
 ## License
 
