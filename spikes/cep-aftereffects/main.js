@@ -53,15 +53,15 @@ function setStatus(state) {
 }
 
 // ---- host bridge --------------------------------------------------------
-const cep = typeof window !== "undefined" ? window.__adobe_cep__ : undefined;
+const adobeCep = typeof window !== "undefined" ? window.__adobe_cep__ : undefined; // NB: `cep` is a CEP-provided global
 
 function evalScript(src) {
   return new Promise((resolve) => {
-    if (!cep) {
+    if (!adobeCep) {
       resolve("EvalScript error: __adobe_cep__ missing");
       return;
     }
-    cep.evalScript(src, (res) => resolve(res));
+    adobeCep.evalScript(src, (res) => resolve(res));
   });
 }
 
@@ -248,7 +248,7 @@ el("copy").addEventListener("click", () => {
 // ---- boot ---------------------------------------------------------------
 log("---- panel loaded (" + PANEL_VERSION + ") ----");
 log("node: " + (nodeRequire ? "available" : "NOT available") + (nodeFs ? " (fs ok)" : ""));
-log("__adobe_cep__: " + (cep ? "present" : "MISSING"));
+log("__adobe_cep__: " + (adobeCep ? "present" : "MISSING"));
 (async () => {
   try {
     const info = await commands["ae.host_info"]();
