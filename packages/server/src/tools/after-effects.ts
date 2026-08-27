@@ -77,6 +77,10 @@ const HELPERS = `
     else { kind = "footage"; }
     return { index: l.index, name: l.name, kind: kind, enabled: l.enabled, inPoint: l.inPoint, outPoint: l.outPoint, startTime: l.startTime, parentIndex: l.parent ? l.parent.index : null, sourceId: l.source ? l.source.id : null };
   }
+  function __centerAnchor(l) {
+    var r = l.sourceRectAtTime(0, false);
+    if (r && r.width > 0) { l.property("ADBE Transform Group").property("ADBE Anchor Point").setValue([r.left + r.width / 2, r.top + r.height / 2]); }
+  }
   function __compInfo(c) {
     return { id: c.id, name: c.name, width: c.width, height: c.height, duration: c.duration, frameRate: c.frameRate, numLayers: c.numLayers, pixelAspect: c.pixelAspect };
   }
@@ -213,6 +217,7 @@ export function addLayerScript(p: AddLayerParams): string {
     }
     var name = ${opt(p.name)};
     if (name !== null) { l.name = name; }
+    if (kind === "text") { __centerAnchor(l); }
     return __layerInfo(l);
   });`);
 }
@@ -388,6 +393,10 @@ export function setTextScript(p: SetTextParams): string {
     v = ${opt(p.justification)};
     if (v !== null) { td.justification = v === "center" ? ParagraphJustification.CENTER_JUSTIFY : v === "right" ? ParagraphJustification.RIGHT_JUSTIFY : ParagraphJustification.LEFT_JUSTIFY; }
     st.setValue(td);
+    // Point text is positioned by its anchor; put the anchor at the visual
+    // center so position means "center of the text" regardless of
+    // justification (CENTER_JUSTIFY did not center on the anchor here).
+    __centerAnchor(l);
     var info = __layerInfo(l); info.text = st.value.text; return info;
   });`);
 }

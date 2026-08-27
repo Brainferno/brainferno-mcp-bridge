@@ -99,6 +99,11 @@ describe("After Effects tool scripts", () => {
     expect(SAMPLES["keys"]).toContain("setTemporalEaseAtKey");
   });
 
+  it("centers the text anchor on the text bounds", () => {
+    expect(SAMPLES["setText"]).toContain("__centerAnchor(l);");
+    expect(SAMPLES["text"]).toContain('if (kind === "text") { __centerAnchor(l); }');
+  });
+
   it("renders a frame through a temporary downscaled comp that is removed", () => {
     expect(SAMPLES["frame"]).toContain('addComp("__acm_preview"');
     expect(SAMPLES["frame"]).toContain("saveFrameToPng(1.5");
