@@ -6,11 +6,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
 
 import { BridgeServer, type BridgeServerOptions } from "../src/bridge/socket.js";
-import { PROTOCOL_VERSION } from "../src/bridge/protocol.js";
+import { PROTOCOL_VERSION } from "@adobe-cc-mcp/protocol";
 import { writeHandshake } from "../src/bridge/handshake.js";
 import { jsStringLiteral } from "../src/bridge/script-escape.js";
 import { AppDisconnectedError } from "../src/bridge/types.js";
-import type { AppId } from "../src/apps.js";
+import type { AppId } from "@adobe-cc-mcp/protocol";
 
 let bridge: BridgeServer | undefined;
 

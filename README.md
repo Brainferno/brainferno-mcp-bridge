@@ -82,7 +82,7 @@ Register with an MCP client — for Claude Code:
 
 ```bash
 claude mcp add adobe-cc --env ADOBE_CC_MCP_BRIDGE_TOKEN=$(openssl rand -hex 24) \
-  -- node /absolute/path/to/adobe-cc-mcp/dist/index.js
+  -- node /absolute/path/to/adobe-cc-mcp/packages/server/dist/index.js
 ```
 
 ### Configuration
@@ -116,7 +116,7 @@ npm run typecheck  # tsc --noEmit
 npm test           # vitest
 ```
 
-Tests use the MCP SDK's in-memory transport and a fake panel over a real WebSocket, so
+Tests live in `packages/server/test` and use the MCP SDK's in-memory transport and a fake panel over a real WebSocket, so
 they exercise the full path — tool call, bridge dispatch, result parsing — with no Adobe
 application involved.
 

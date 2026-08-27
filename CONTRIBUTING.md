@@ -38,7 +38,7 @@ for `const `, `let `, `=>`, `` ` `` and `JSON.` — any hit is a rejection.
   return value: `(function () { ... return value; })()` in ExtendScript,
   `(() => { ... })()` or `(async () => { ... })()` in UXP.
 - Interpolate dynamic values into scripts **only** through `JSON.stringify` on
-  the TypeScript side (see `renderQueueScript` in `src/tools/after-effects.ts`).
+  the TypeScript side (see `renderQueueScript` in `packages/server/src/tools/after-effects.ts`).
   Never concatenate raw user input into script source.
 - Throw `Error` with an actionable message for expected failures ("No project is
   open") — the bridge surfaces it as a `ScriptError`.
@@ -48,8 +48,8 @@ for `const `, `let `, `=>`, `` ` `` and `JSON.` — any hit is a rejection.
 ## Registration pattern
 
 Every tool goes through `server.registerTool` in its app's
-`src/tools/<app>.ts`, with the body wrapped in `guard()` from
-`src/tools/result.ts` and results built with `jsonResult`/`textResult` (and
+`packages/server/src/tools/<app>.ts`, with the body wrapped in `guard()` from
+`packages/server/src/tools/result.ts` and results built with `jsonResult`/`textResult` (and
 `imageResult` once it exists):
 
 ```ts
@@ -89,11 +89,11 @@ long-blocking call.
 ## Process rules
 
 - **stdout is the MCP wire.** Never `console.log`; use `log` from
-  `src/logging.ts` (stderr).
-- Per-app work touches only `src/tools/<app>.ts`, that app's panel glue, and
-  `test/` — shared core (`src/bridge/`, `src/server.ts`, `src/tools/result.ts`,
+  `packages/server/src/logging.ts` (stderr).
+- Per-app work touches only `packages/server/src/tools/<app>.ts`, that app's panel glue, and
+  `test/` — shared core (`src/bridge/`, `src/server.ts`, `packages/server/src/tools/result.ts`,
   `src/apps.ts`) changes go through the architect.
 - `npm run typecheck && npm test` must pass before every commit. Tests use the
   in-memory MCP transport plus a fake panel over a real WebSocket
-  (`test/server.test.ts`) — new tools get at least a not-connected-path test,
+  (`packages/server/test/server.test.ts`) — new tools get at least a not-connected-path test,
   and a round-trip test where behavior warrants it.

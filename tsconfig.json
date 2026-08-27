@@ -1,17 +1,16 @@
 {
+  "extends": "./tsconfig.base.json",
   "compilerOptions": {
-    "target": "ES2022",
-    "lib": ["ES2022"],
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "strict": true,
-    "noUncheckedIndexedAccess": true,
-    "noImplicitOverride": true,
-    "noFallthroughCasesInSwitch": true,
-    "verbatimModuleSyntax": true,
-    "skipLibCheck": true,
-    "resolveJsonModule": true,
-    "noEmit": true
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@adobe-cc-mcp/protocol": [
+        "packages/protocol/src/index.ts"
+      ]
+    }
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"]
+  "include": [
+    "packages/*/src/**/*.ts",
+    "packages/*/test/**/*.ts"
+  ]
 }

@@ -2,8 +2,8 @@ import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 
-import type { AppId } from "../apps.js";
-import { APPS } from "../apps.js";
+import type { AppId } from "@adobe-cc-mcp/protocol";
+import { APPS } from "@adobe-cc-mcp/protocol";
 import { log } from "../logging.js";
 import { removeHandshake, writeHandshake } from "./handshake.js";
 import {
@@ -11,7 +11,7 @@ import {
   parsePanelFrame,
   type ServerFrame,
   type TimeoutClass,
-} from "./protocol.js";
+} from "@adobe-cc-mcp/protocol";
 import {
   AppDisconnectedError,
   AppNotConnectedError,

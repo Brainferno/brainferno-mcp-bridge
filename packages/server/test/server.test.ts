@@ -5,9 +5,9 @@ import { WebSocket } from "ws";
 
 import { buildServer } from "../src/server.js";
 import type { BridgeServer } from "../src/bridge/socket.js";
-import { PROTOCOL_VERSION } from "../src/bridge/protocol.js";
+import { PROTOCOL_VERSION } from "@adobe-cc-mcp/protocol";
 import type { Config } from "../src/config.js";
-import type { AppId } from "../src/apps.js";
+import type { AppId } from "@adobe-cc-mcp/protocol";
 
 // Port 0 lets the OS pick a free one; insecure mode skips auth and the handshake
 // file so tests never touch the real ~/.adobe-cc-mcp/bridge.json.

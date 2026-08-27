@@ -108,6 +108,8 @@ Run on the user's real macOS + Windows machines (Claude Code drives, human click
 **Exit:** spikes 1–3 green (gate the MVP apps); 4–5 produce decision docs (gate Phase 4 scope). Any red spike triggers its named fallback and updates `docs/spikes/`; only a *transport* change (not frame format) may amend the frozen protocol.
 
 ### Phase 2 — Monorepo migration (after spikes 1–2, before production panels)
+> **Stage 1 done 2026-08-26:** npm workspaces (not pnpm — no new tool needed). `packages/protocol` (apps + v2 frames) and `packages/server` (everything else, tests included); root `npm run build/typecheck/test` fan out; vitest aliases the protocol to source so tests need no build. Claude Code re-registered at `packages/server/dist/index.js`. **Stage 2 pending:** move the spike panels to `packages/panel-uxp` / `packages/panel-cep` and extract the shared dial-out logic into `packages/bridge-client`.
+
 **Why here:** Phase-0 hardening was cheapest in the flat repo; spikes are throwaway and must not wait on plumbing; the forcing function is production panel code importing shared protocol types (starts now); migrating post-Spike-1 shapes the workspace around *validated* facts (e.g. `bridge-client` born with the transport interface if Windows needed polling). Convert to **pnpm workspaces + tsup + vitest**: `packages/{protocol, server, bridge-client, panel-ui, panel-uxp, panel-cep, jsx}` + `installers/ docs/ spikes/ server.json`. Mechanical `git mv` with history; SDK stays on v1 ^1.30.
 **Exit:** `pnpm -r build && pnpm -r test` green; the Phase-0 suite passes unmodified against `packages/server`; `node packages/server/dist/index.js` still registers with Claude Code; bolt scaffolds build empty panels importing `@adobe-cc-mcp/protocol`.
 

@@ -24,7 +24,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { APPS, type AppId } from "../apps.js";
+import { APPS, type AppId } from "@adobe-cc-mcp/protocol";
 import { jsStringLiteral } from "../bridge/script-escape.js";
 import {
   AppNotConnectedError,

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
-import { APPS, APP_IDS, type AppId } from "../apps.js";
+import { APPS, APP_IDS, type AppId } from "@adobe-cc-mcp/protocol";
 import type { BridgeServer } from "../bridge/socket.js";
 import { log } from "../logging.js";
 import { guard, jsonResult } from "./result.js";

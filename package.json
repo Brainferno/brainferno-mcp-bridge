@@ -1,23 +1,17 @@
 {
-  "name": "adobe-cc-mcp",
-  "version": "0.1.0",
+  "name": "adobe-cc-mcp-workspace",
   "private": true,
-  "description": "MCP server for production After Effects, Premiere, Photoshop, Illustrator, and Audition",
+  "version": "0.1.0",
   "type": "module",
-  "bin": { "adobe-cc-mcp": "./dist/index.js" },
-  "main": "./dist/index.js",
-  "engines": { "node": ">=20" },
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
-    "dev": "tsx watch src/index.ts",
-    "start": "node dist/index.js",
-    "typecheck": "tsc",
+    "build": "npm run build -w @adobe-cc-mcp/protocol && npm run build -w adobe-cc-mcp",
+    "dev": "npm run dev -w adobe-cc-mcp",
+    "start": "npm run start -w adobe-cc-mcp",
+    "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
-    "ws": "^8.21.3",
-    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

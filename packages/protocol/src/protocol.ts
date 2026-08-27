@@ -21,7 +21,7 @@
 
 import { z } from "zod";
 
-import { APP_IDS } from "../apps.js";
+import { APP_IDS } from "./apps.js";
 
 export const PROTOCOL_VERSION = 2;
 

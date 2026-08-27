@@ -1,5 +1,5 @@
-import type { AppId } from "../apps.js";
-import type { TimeoutClass } from "./protocol.js";
+import type { AppId } from "@adobe-cc-mcp/protocol";
+import type { TimeoutClass } from "@adobe-cc-mcp/protocol";
 
 /** A JSON value, as returned across the bridge from a host application. */
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
