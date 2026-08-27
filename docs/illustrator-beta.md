@@ -1,14 +1,16 @@
 # Illustrator: Adobe's official MCP beta
 
 Adobe Illustrator **(Beta) 30.4+** ships a built-in MCP server on your machine at
-`http://localhost:18412/v1/mcp` (Streamable HTTP, Bearer key). It **analyzes, batch-recolors,
-and exports** the open document — it **cannot create a document, add objects/paths/text, or
-save a `.ai`** (export only), and has no run-script escape hatch. It runs only while Illustrator
+`http://localhost:18412/v1/mcp` (Streamable HTTP, Bearer key). A live probe (see
+[`docs/spikes/01-illustrator-beta-tools.md`](spikes/01-illustrator-beta-tools.md)) found **46 tools**. It can create
+documents, artboards, layers, and groups; move, scale, rotate, and restyle objects; replace text and fonts;
+export; and capture previews. It **cannot draw new shapes, paths, or text**, **cannot save a `.ai`**, and has
+no run-script escape hatch. It runs only while Illustrator
 Beta is open with *MCP & Tools* enabled.
 
 That is exactly complementary to `adobe-cc-mcp`'s own Illustrator lane (the `ai_*` tools, which
-drive ExtendScript to **create/save/edit** the full DOM). So the two compose: our tools build
-and save; Adobe's analyze and batch-export.
+drive ExtendScript to **draw new art and save** the full DOM). So the two compose: our tools draw and
+save; Adobe’s arrange, restyle, analyze, and export.
 
 There are two ways to use Adobe's server. Both are fine under Claude Code.
 
@@ -28,7 +30,7 @@ claude mcp add --transport http \
   --scope user illustrator http://localhost:18412/v1/mcp
 ```
 
-Adobe's ~40 tools then appear next to ours. Simplest, but you get two overlapping Illustrator
+Adobe’s 46 tools then appear next to ours. Simplest, but you get two overlapping Illustrator
 menus and our pipeline tools can't call Adobe's.
 
 ## Model B — through adobe-cc-mcp (the delegate lane)
