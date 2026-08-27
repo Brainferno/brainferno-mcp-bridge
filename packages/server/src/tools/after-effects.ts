@@ -207,7 +207,8 @@ export function addLayerScript(p: AddLayerParams): string {
     var kind = ${lit(p.kind)}, l;
     if (kind === "footage") {
       var item = app.project.itemByID(${optNum(p.itemId)});
-      if (!item || !(item instanceof AVItem)) { throw new Error("footage needs itemId of a footage item or comp (ae_list_footage / ae_list_compositions)."); }
+      // AVItem is not a global in AE 26.3's ExtendScript; test the concrete classes.
+      if (!item || !(item instanceof FootageItem || item instanceof CompItem)) { throw new Error("footage needs itemId of a footage item or comp (ae_list_footage / ae_list_compositions)."); }
       l = c.layers.add(item);
     } else if (kind === "solid" || kind === "adjustment") {
       l = c.layers.addSolid(${color}, ${opt(p.name) === "null" ? lit(p.kind === "adjustment" ? "Adjustment" : "Solid") : lit(p.name as string)}, ${optNum(p.width) === "null" ? "c.width" : num(p.width as number)}, ${optNum(p.height) === "null" ? "c.height" : num(p.height as number)}, 1.0);
