@@ -2,22 +2,26 @@
 <html>
   <head>
     <style>
-      body { font-family: system-ui, sans-serif; font-size: 12px; padding: 10px; color: #ddd; }
-      .row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+      html, body { height: 100%; margin: 0; }
+      body { display: flex; flex-direction: column; box-sizing: border-box; padding: 8px; font-family: system-ui, sans-serif; font-size: 12px; color: #ddd; }
+      .row { display: flex; flex-direction: row; align-items: center; gap: 6px; margin-bottom: 6px; flex-shrink: 0; }
       .badge { padding: 2px 8px; border-radius: 10px; background: #555; }
       .badge.on { background: #2e7d32; }
       .badge.off { background: #7a2a2a; }
-      input { width: 100%; box-sizing: border-box; }
-      #log { white-space: pre-wrap; font-family: monospace; font-size: 11px; background: #1e1e1e; padding: 6px; height: 220px; overflow: auto; }
+      input { flex: 1; min-width: 60px; }
+      label { width: 40px; flex-shrink: 0; }
       button { cursor: pointer; }
+      #log { flex: 1; min-height: 80px; overflow: auto; white-space: pre-wrap; word-break: break-all; font-family: monospace; font-size: 11px; background: #1e1e1e; padding: 6px; border-radius: 4px; }
+      #hint { flex-shrink: 0; margin-top: 4px; font-size: 10px; color: #999; }
     </style>
   </head>
   <body>
     <div class="row"><strong>adobe-cc-mcp bridge</strong> <span id="status" class="badge off">disconnected</span></div>
-    <div class="row"><button id="connect">Connect</button><button id="kill">Kill switch</button><button id="clear">Clear log</button></div>
-    <div class="row"><label style="width:40px">Port</label><input id="port" placeholder="7897" /></div>
-    <div class="row"><label style="width:40px">Token</label><input id="token" placeholder="auto from ~/.adobe-cc-mcp/bridge.json, or paste" /></div>
+    <div class="row"><button id="connect">Connect</button><button id="kill">Kill switch</button><button id="copy">Copy log</button><button id="clear">Clear</button></div>
+    <div class="row"><label>Port</label><input id="port" placeholder="7897" /></div>
+    <div class="row"><label>Token</label><input id="token" placeholder="auto from bridge.json, or paste" /></div>
     <div id="log"></div>
+    <div id="hint">Log also written to ~/.adobe-cc-mcp/panel-photoshop.log</div>
     <script src="main.js"></script>
   </body>
 </html>

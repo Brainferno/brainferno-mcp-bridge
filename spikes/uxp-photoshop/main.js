@@ -16,11 +16,24 @@ const PANEL_VERSION = "0.1.0-spike";
 
 const el = (id) => document.getElementById(id);
 const logEl = el("log");
+let logFilePath = null;
+function logFile() {
+  if (logFilePath !== null) return logFilePath;
+  try { logFilePath = require("os").homedir().replace(/\/g, "/") + "/.adobe-cc-mcp/panel-photoshop.log"; }
+  catch (e) { logFilePath = ""; }
+  return logFilePath;
+}
 function log(msg) {
-  const line = `[${new Date().toLocaleTimeString()}] ${msg}`;
-  logEl.textContent += line + "\n";
+  const line = "[" + new Date().toLocaleTimeString() + "] " + msg;
+  logEl.textContent += line + "
+";
   logEl.scrollTop = logEl.scrollHeight;
   console.log(line);
+  try {
+    const p = logFile();
+    if (p) require("fs").appendFileSync(p, line + "
+", "utf-8");
+  } catch (e) { /* file logging is best effort */ }
 }
 function setStatus(state) {
   const b = el("status");
@@ -207,7 +220,13 @@ el("kill").addEventListener("click", () => {
   log("kill switch engaged — no reconnect until you press Connect");
 });
 el("clear").addEventListener("click", () => { logEl.textContent = ""; });
+el("copy").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.setContent({ "text/plain": logEl.textContent });
+    log("log copied to clipboard");
+  } catch (e) { log("copy failed: " + (e && e.message ? e.message : e)); }
+});
 
-log(`panel loaded (${PANEL_VERSION})`);
+log(`---- panel loaded (${PANEL_VERSION}) ----`);
 evalCapability();
 readHandshake();
