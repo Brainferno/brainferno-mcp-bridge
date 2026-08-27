@@ -35,16 +35,25 @@ function logFile() {
   return logFilePath;
 }
 
+let logBuffer = "";
+let logWriteError = null;
 function log(msg) {
   const line = "[" + new Date().toLocaleTimeString() + "] " + msg;
   logEl.textContent += line + "\n";
   logEl.scrollTop = logEl.scrollHeight;
   console.log(line);
+  logBuffer += line + "\n";
+  // UXP's fs has writeFileSync but not always appendFileSync: rewrite the
+  // whole buffer each time (the log is small). Report the first failure once,
+  // in the panel, so a silent no-op is visible.
   try {
     const p = logFile();
-    if (p) require("fs").appendFileSync(p, line + "\n", "utf-8");
+    if (p) require("fs").writeFileSync(p, logBuffer, "utf-8");
   } catch (e) {
-    /* file logging is best effort */
+    if (logWriteError === null) {
+      logWriteError = e && e.message ? e.message : String(e);
+      logEl.textContent += "[file log unavailable: " + logWriteError + "]\n";
+    }
   }
 }
 
