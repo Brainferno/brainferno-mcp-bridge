@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+  <head>
+    <style>
+      body { font-family: system-ui, sans-serif; font-size: 12px; padding: 10px; color: #ddd; }
+      .row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+      .badge { padding: 2px 8px; border-radius: 10px; background: #555; }
+      .badge.on { background: #2e7d32; }
+      .badge.off { background: #7a2a2a; }
+      input { width: 100%; box-sizing: border-box; }
+      #log { white-space: pre-wrap; font-family: monospace; font-size: 11px; background: #1e1e1e; padding: 6px; height: 220px; overflow: auto; }
+      button { cursor: pointer; }
+    </style>
+  </head>
+  <body>
+    <div class="row"><strong>adobe-cc-mcp bridge</strong> <span id="status" class="badge off">disconnected</span></div>
+    <div class="row"><button id="connect">Connect</button><button id="kill">Kill switch</button><button id="clear">Clear log</button></div>
+    <div class="row"><label style="width:40px">Port</label><input id="port" placeholder="7897" /></div>
+    <div class="row"><label style="width:40px">Token</label><input id="token" placeholder="auto from ~/.adobe-cc-mcp/bridge.json, or paste" /></div>
+    <div id="log"></div>
+    <script src="main.js"></script>
+  </body>
+</html>

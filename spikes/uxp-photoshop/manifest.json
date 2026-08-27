@@ -1,0 +1,30 @@
+{
+  "manifestVersion": 5,
+  "id": "com.brainferno.adobe-cc-mcp.spike",
+  "name": "adobe-cc-mcp spike",
+  "version": "0.1.0",
+  "main": "index.html",
+  "host": [{ "app": "PS", "minVersion": "26.0.0" }],
+  "entrypoints": [
+    {
+      "type": "panel",
+      "id": "bridge",
+      "label": { "default": "adobe-cc-mcp bridge (spike)" },
+      "minimumSize": { "width": 260, "height": 200 },
+      "preferredDockedSize": { "width": 320, "height": 400 },
+      "preferredFloatingSize": { "width": 320, "height": 400 }
+    }
+  ],
+  "requiredPermissions": {
+    "network": {
+      "domains": [
+        "ws://127.0.0.1:7897",
+        "ws://localhost:7897",
+        "ws://127.0.0.1",
+        "ws://localhost"
+      ]
+    },
+    "localFileSystem": "fullAccess"
+  },
+  "icons": []
+}

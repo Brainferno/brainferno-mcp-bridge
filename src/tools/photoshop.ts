@@ -5,45 +5,12 @@ import type { AppBridge } from "../bridge/types.js";
 import { guard, jsonResult } from "./result.js";
 
 /**
- * Photoshop runs UXP, so these scripts may use modern JavaScript and the
- * `photoshop` module the panel exposes to the eval scope.
+ * Photoshop is driven through its UXP panel. UXP does not reliably evaluate
+ * script strings, so — per protocol v2 — these tools send *named* commands
+ * and the panel implements them against the `photoshop` module (DOM and
+ * batchPlay). The panel advertises the names it implements in its hello
+ * `capabilities`; an unimplemented name comes back as UNKNOWN_COMMAND.
  */
-
-const LIST_DOCUMENTS = `(() => {
-  const { app } = require("photoshop");
-  return app.documents.map((doc) => ({
-    id: doc.id,
-    name: doc.name,
-    path: doc.path ?? null,
-    width: doc.width,
-    height: doc.height,
-    resolution: doc.resolution,
-    mode: String(doc.mode),
-    layerCount: doc.layers.length,
-  }));
-})()`;
-
-function listLayersScript(documentId: number | undefined): string {
-  const selector =
-    documentId === undefined ? "app.activeDocument" : `app.documents.find((d) => d.id === ${documentId})`;
-  return `(() => {
-  const { app } = require("photoshop");
-  const doc = ${selector};
-  if (!doc) { throw new Error("Document not found"); }
-  const walk = (layers, depth) => layers.flatMap((layer) => [
-    {
-      id: layer.id,
-      name: layer.name,
-      kind: String(layer.kind),
-      visible: layer.visible,
-      opacity: layer.opacity,
-      depth,
-    },
-    ...(layer.layers ? walk(layer.layers, depth + 1) : []),
-  ]);
-  return walk(doc.layers, 0);
-})()`;
-}
 
 export function registerPhotoshopTools(server: McpServer, bridge: AppBridge): void {
   server.registerTool(
@@ -54,7 +21,7 @@ export function registerPhotoshopTools(server: McpServer, bridge: AppBridge): vo
       inputSchema: {},
       annotations: { readOnlyHint: true },
     },
-    async () => guard(async () => jsonResult(await bridge.evaluate(LIST_DOCUMENTS))),
+    async () => guard(async () => jsonResult(await bridge.execute("ps.list_documents", {}, { timeoutClass: "fast" }))),
   );
 
   server.registerTool(
@@ -71,6 +38,9 @@ export function registerPhotoshopTools(server: McpServer, bridge: AppBridge): vo
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ documentId }) => guard(async () => jsonResult(await bridge.evaluate(listLayersScript(documentId)))),
+    async ({ documentId }) =>
+      guard(async () =>
+        jsonResult(await bridge.execute("ps.list_layers", { documentId: documentId ?? null }, { timeoutClass: "fast" })),
+      ),
   );
 }
