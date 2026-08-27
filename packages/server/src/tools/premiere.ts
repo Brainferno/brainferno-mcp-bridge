@@ -7,6 +7,8 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import type { AppBridge, EvalOptions, JsonValue } from "../bridge/types.js";
+import type { JobRegistry } from "../jobs.js";
+import { runOrQueue, type ProgressExtra } from "./jobs.js";
 import { guard, imageResult, jsonResult } from "./result.js";
 
 /**
@@ -76,7 +78,30 @@ export async function findPresets(roots: string[], filter: string | undefined, l
   return out;
 }
 
-async function waitForAnyFile(paths: string[], timeoutMs: number): Promise<string> {
+export interface ExportSequenceOptions {
+  sequenceId?: string;
+  outputPath: string;
+  presetPath: string;
+  mode?: "immediately" | "queue_ame" | "queue_app";
+  full?: boolean;
+}
+
+/** Export a sequence through the panel; shared by pp_export_sequence and the pipelines. */
+export async function exportSequence(bridge: AppBridge, a: ExportSequenceOptions): Promise<JsonValue> {
+  const mode = a.mode ?? "immediately";
+  const info = await bridge.execute(
+    "pp.export_sequence",
+    { sequenceId: a.sequenceId ?? null, outputPath: a.outputPath, presetPath: a.presetPath, mode, full: a.full ?? true },
+    mode === "immediately" ? { ...render, timeoutMs: 30 * 60_000 } : slow,
+  );
+  if (mode === "immediately") {
+    // exportSequence may resolve before the file is fully flushed.
+    await waitForAnyFile([a.outputPath], 120_000).catch(() => undefined);
+  }
+  return info;
+}
+
+export async function waitForAnyFile(paths: string[], timeoutMs: number): Promise<string> {
   const start = Date.now();
   let lastSize = -1;
   let stable = 0;
@@ -101,7 +126,12 @@ async function waitForAnyFile(paths: string[], timeoutMs: number): Promise<strin
   throw new Error(`Premiere did not write the frame within ${Math.round(timeoutMs / 1000)}s (looked for ${paths.join(", ")}).`);
 }
 
-export function registerPremiereTools(server: McpServer, bridge: AppBridge): void {
+export interface PremiereToolOptions {
+  /** When given, pp_export_sequence runs as a job (progress, cancel, wait:false). */
+  jobs?: JobRegistry;
+}
+
+export function registerPremiereTools(server: McpServer, bridge: AppBridge, options: PremiereToolOptions = {}): void {
   // Params are validated by zod; JSON.stringify drops undefined optionals on the wire.
   const run = (name: string, params: unknown, opts: EvalOptions = slow) =>
     guard(async () => jsonResult(await bridge.execute(name, params as JsonValue, opts)));
@@ -550,21 +580,20 @@ export function registerPremiereTools(server: McpServer, bridge: AppBridge): voi
         presetPath: z.string().min(1).describe("Absolute .epr path."),
         mode: z.enum(["immediately", "queue_ame", "queue_app"]).optional().describe("Defaults to immediately."),
         full: z.boolean().optional().describe("Export the whole sequence (true, default) or only the in/out range."),
+        wait: z.boolean().optional().describe("Block until the export finishes (default). false returns a jobId at once; poll with cc_job_wait."),
       },
     },
-    async (a) =>
+    async (a, extra) =>
       guard(async () => {
-        const mode = a.mode ?? "immediately";
-        const info = await bridge.execute(
-          "pp.export_sequence",
-          { sequenceId: a.sequenceId ?? null, outputPath: a.outputPath, presetPath: a.presetPath, mode, full: a.full ?? true },
-          mode === "immediately" ? { ...render, timeoutMs: 30 * 60_000 } : slow,
+        const o: ExportSequenceOptions = { outputPath: a.outputPath, presetPath: a.presetPath, ...(a.sequenceId !== undefined ? { sequenceId: a.sequenceId } : {}), ...(a.mode !== undefined ? { mode: a.mode } : {}), ...(a.full !== undefined ? { full: a.full } : {}) };
+        if (!options.jobs) return jsonResult(await exportSequence(bridge, o));
+        return runOrQueue(
+          options.jobs,
+          "pp_export_sequence",
+          [{ name: "Export from Premiere Pro", recoveryTool: "pp_export_sequence", run: (ctx) => exportSequence(bridge, o).then((r) => (ctx.artifact(o.outputPath), r)) }],
+          (results) => results[0],
+          { wait: a.wait ?? true, timeoutMs: 30 * 60_000, extra: extra as ProgressExtra },
         );
-        if (mode === "immediately") {
-          // exportSequence may resolve before the file is fully flushed.
-          await waitForAnyFile([a.outputPath], 120_000).catch(() => undefined);
-        }
-        return jsonResult(info);
       }),
   );
 }

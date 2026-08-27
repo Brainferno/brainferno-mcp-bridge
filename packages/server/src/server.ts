@@ -1,9 +1,13 @@
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { BridgeServer } from "./bridge/socket.js";
 import type { Config } from "./config.js";
 import { IllustratorDelegate } from "./drivers/illustrator-delegate.js";
 import { OsScriptBridge } from "./drivers/osscript.js";
+import { JobRegistry } from "./jobs.js";
 import { setLogLevel } from "./logging.js";
 import { registerAfterEffectsTools } from "./tools/after-effects.js";
 import { registerAudioTools } from "./tools/audio.js";
@@ -11,7 +15,9 @@ import { registerAuditionTools } from "./tools/audition.js";
 import { registerDiagnosticTools } from "./tools/diagnostics.js";
 import { registerIllustratorTools } from "./tools/illustrator.js";
 import { registerIllustratorDelegateTools } from "./tools/illustrator-delegate.js";
+import { registerJobTools } from "./tools/jobs.js";
 import { registerPhotoshopTools } from "./tools/photoshop.js";
+import { registerPipelineTools } from "./tools/pipelines.js";
 import { registerPremiereTools } from "./tools/premiere.js";
 
 export interface BuiltServer {
@@ -20,6 +26,7 @@ export interface BuiltServer {
   illustratorDelegate: IllustratorDelegate;
   /** Illustrator is driven panel-less over COM/AppleScript, not through the hub. */
   illustratorBridge: OsScriptBridge;
+  jobs: JobRegistry;
 }
 
 /**
@@ -58,14 +65,27 @@ export function buildServer(config: Config): BuiltServer {
     token: config.illustratorMcpKey,
   });
 
+  // Job work folders sit beside the handshake file (~/.adobe-cc-mcp/work/<jobId>/).
+  const jobs = new JobRegistry({ workRoot: join(dirname(config.handshakeFilePath) || join(homedir(), ".adobe-cc-mcp"), "work") });
+  const audio = { ffmpegPath: config.ffmpegPath, ffprobePath: config.ffprobePath };
+
   registerDiagnosticTools(server, bridge, { allowRawScripts: config.allowRawScripts });
-  registerAfterEffectsTools(server, bridge.bridgeFor("after_effects"));
-  registerPremiereTools(server, bridge.bridgeFor("premiere"));
+  registerAfterEffectsTools(server, bridge.bridgeFor("after_effects"), { jobs });
+  registerPremiereTools(server, bridge.bridgeFor("premiere"), { jobs });
   registerPhotoshopTools(server, bridge.bridgeFor("photoshop"), { allowRawScripts: config.allowRawScripts });
   registerIllustratorTools(server, illustratorBridge);
   registerIllustratorDelegateTools(server, illustratorDelegate, config.illustratorMcpKey !== "");
   registerAuditionTools(server, bridge.bridgeFor("audition"));
-  registerAudioTools(server, { ffmpegPath: config.ffmpegPath, ffprobePath: config.ffprobePath });
+  registerAudioTools(server, audio);
+  registerJobTools(server, jobs);
+  registerPipelineTools(server, {
+    photoshop: bridge.bridgeFor("photoshop"),
+    afterEffects: bridge.bridgeFor("after_effects"),
+    premiere: bridge.bridgeFor("premiere"),
+    illustrator: illustratorBridge,
+    jobs,
+    audio,
+  });
 
-  return { server, bridge, illustratorDelegate, illustratorBridge };
+  return { server, bridge, illustratorDelegate, illustratorBridge, jobs };
 }

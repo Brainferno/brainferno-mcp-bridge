@@ -26,9 +26,19 @@ export interface AudioToolOptions {
 
 const TEN_MINUTES = 10 * 60_000;
 
-export function runProcess(exe: string, args: string[], timeoutMs: number): Promise<{ code: number | null; stdout: string; stderr: string }> {
+export function runProcess(exe: string, args: string[], timeoutMs: number, signal?: AbortSignal): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error(`${exe} was cancelled`));
+      return;
+    }
     const child = spawn(exe, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const onAbort = () => {
+      child.kill();
+      reject(new Error(`${exe} was cancelled`));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    child.on("close", () => signal?.removeEventListener("abort", onAbort));
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d: Buffer) => {
@@ -219,12 +229,50 @@ export function summarizeProbe(p: ProbeOutput) {
   };
 }
 
-export function registerAudioTools(server: McpServer, options: AudioToolOptions): void {
-  const ffmpeg = (a: string[], what: string, timeoutMs = TEN_MINUTES) =>
-    runProcess(options.ffmpegPath, a, timeoutMs).then((r) => (r.code === 0 ? r : fail(what, r.stderr)));
+const ensureDir = async (output: string) => mkdir(dirname(output), { recursive: true });
+const outInfo = async (output: string) => ({ output, sizeBytes: (await stat(output)).size });
 
-  const ensureDir = async (output: string) => mkdir(dirname(output), { recursive: true });
-  const outInfo = async (output: string) => ({ output, sizeBytes: (await stat(output)).size });
+function ffmpegRunner(options: AudioToolOptions, signal?: AbortSignal) {
+  return (a: string[], what: string, timeoutMs = TEN_MINUTES) => runProcess(options.ffmpegPath, a, timeoutMs, signal).then((r) => (r.code === 0 ? r : fail(what, r.stderr)));
+}
+
+export interface LoudnessTargets {
+  targetLufs: number;
+  truePeakDb: number;
+  loudnessRange: number;
+}
+
+/** Measure a file's loudness (first loudnorm pass). Shared by the tool and the pipelines. */
+export async function measureLoudness(options: AudioToolOptions, input: string, signal?: AbortSignal): Promise<Loudness> {
+  const r = await ffmpegRunner(options, signal)(args.measure(input, -16, -1.5, 11), "loudness measurement");
+  return toLoudness(parseLoudnormJson(r.stderr));
+}
+
+/** Two-pass EBU R128 normalization to a new file. Shared by the tool and the pipelines. */
+export async function normalizeLoudness(options: AudioToolOptions, input: string, output: string, t: LoudnessTargets, signal?: AbortSignal) {
+  const ffmpeg = ffmpegRunner(options, signal);
+  const pass1 = await ffmpeg(args.measure(input, t.targetLufs, t.truePeakDb, t.loudnessRange), "loudness measurement");
+  const before = parseLoudnormJson(pass1.stderr);
+  await ensureDir(output);
+  const pass2 = await ffmpeg(args.normalize(input, output, t.targetLufs, t.truePeakDb, t.loudnessRange, before), "loudness normalization");
+  const after = parseLoudnormJson(pass2.stderr);
+  return {
+    ...(await outInfo(output)),
+    target: { integratedLufs: t.targetLufs, truePeakDb: t.truePeakDb, loudnessRange: t.loudnessRange },
+    before: toLoudness(before),
+    after: { integratedLufs: Number(after["output_i"]), truePeakDb: Number(after["output_tp"]), loudnessRange: Number(after["output_lra"]) },
+  };
+}
+
+/** Denoise to a new file. Shared by the tool and the pipelines. */
+export async function denoise(options: AudioToolOptions, input: string, output: string, reductionDb: number, noiseFloorDb: number, signal?: AbortSignal) {
+  await ensureDir(output);
+  await ffmpegRunner(options, signal)(args.denoise(input, output, reductionDb, noiseFloorDb), "denoise");
+  return outInfo(output);
+}
+
+export function registerAudioTools(server: McpServer, options: AudioToolOptions): void {
+  const ffmpeg = ffmpegRunner(options);
 
   const input = z.string().min(1).describe("Absolute path of the input file (audio, or a video whose audio track is used).");
   const output = z.string().min(1).describe("Absolute path of the file to write; the extension picks the format (.wav, .mp3, .aac, .flac, .m4a…).");
@@ -253,11 +301,7 @@ export function registerAudioTools(server: McpServer, options: AudioToolOptions)
       inputSchema: { path: input },
       annotations: { readOnlyHint: true },
     },
-    async ({ path }) =>
-      guard(async () => {
-        const r = await ffmpeg(args.measure(path, -16, -1.5, 11), "loudness measurement");
-        return jsonResult(toLoudness(parseLoudnormJson(r.stderr)));
-      }),
+    async ({ path }) => guard(async () => jsonResult(await measureLoudness(options, path))),
   );
 
   server.registerTool(
@@ -275,23 +319,7 @@ export function registerAudioTools(server: McpServer, options: AudioToolOptions)
         loudnessRange: z.number().min(1).max(50).optional().describe("Target loudness range (LU). Defaults to 11."),
       },
     },
-    async (a) =>
-      guard(async () => {
-        const I = a.targetLufs ?? -16;
-        const TP = a.truePeakDb ?? -1.5;
-        const LRA = a.loudnessRange ?? 11;
-        const pass1 = await ffmpeg(args.measure(a.input, I, TP, LRA), "loudness measurement");
-        const before = parseLoudnormJson(pass1.stderr);
-        await ensureDir(a.output);
-        const pass2 = await ffmpeg(args.normalize(a.input, a.output, I, TP, LRA, before), "loudness normalization");
-        const after = parseLoudnormJson(pass2.stderr);
-        return jsonResult({
-          ...(await outInfo(a.output)),
-          target: { integratedLufs: I, truePeakDb: TP, loudnessRange: LRA },
-          before: toLoudness(before),
-          after: { integratedLufs: Number(after["output_i"]), truePeakDb: Number(after["output_tp"]), loudnessRange: Number(after["output_lra"]) },
-        });
-      }),
+    async (a) => guard(async () => jsonResult(await normalizeLoudness(options, a.input, a.output, { targetLufs: a.targetLufs ?? -16, truePeakDb: a.truePeakDb ?? -1.5, loudnessRange: a.loudnessRange ?? 11 }))),
   );
 
   server.registerTool(
@@ -371,12 +399,7 @@ export function registerAudioTools(server: McpServer, options: AudioToolOptions)
         noiseFloorDb: z.number().min(-80).max(-20).optional().describe("Estimated noise floor. Defaults to -30."),
       },
     },
-    async (a) =>
-      guard(async () => {
-        await ensureDir(a.output);
-        await ffmpeg(args.denoise(a.input, a.output, a.reductionDb ?? 12, a.noiseFloorDb ?? -30), "denoise");
-        return jsonResult(await outInfo(a.output));
-      }),
+    async (a) => guard(async () => jsonResult(await denoise(options, a.input, a.output, a.reductionDb ?? 12, a.noiseFloorDb ?? -30))),
   );
 
   server.registerTool(

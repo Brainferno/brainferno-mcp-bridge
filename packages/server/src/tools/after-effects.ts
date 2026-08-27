@@ -9,8 +9,10 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { jsStringLiteral } from "../bridge/script-escape.js";
 import type { AppBridge, JsonValue } from "../bridge/types.js";
+import type { JobRegistry } from "../jobs.js";
 import { log } from "../logging.js";
-import { errorResult, guard, imageResult, jsonResult } from "./result.js";
+import { runOrQueue, type ProgressExtra } from "./jobs.js";
+import { guard, imageResult, jsonResult } from "./result.js";
 
 /**
  * After Effects is ExtendScript-only (ES3): the scripts below deliberately use
@@ -462,13 +464,21 @@ async function waitForFile(path: string, timeoutMs: number): Promise<void> {
   throw new Error(`After Effects did not finish writing ${path} within ${Math.round(timeoutMs / 1000)}s. Is "Allow Scripts to Write Files and Access Network" enabled in Preferences > Scripting & Expressions?`);
 }
 
-function runAerender(exe: string, args: string[], timeoutMs: number): Promise<{ code: number | null; tail: string }> {
+function runAerender(exe: string, args: string[], timeoutMs: number, signal?: AbortSignal, onLine?: (line: string) => void): Promise<{ code: number | null; tail: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(exe, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     let out = "";
+    let partial = "";
     const keep = (d: Buffer) => {
-      out += d.toString();
+      const text = d.toString();
+      out += text;
       if (out.length > 8000) out = out.slice(-8000);
+      if (onLine) {
+        partial += text;
+        const lines = partial.split(/\r?\n/);
+        partial = lines.pop() ?? "";
+        for (const l of lines) if (l.includes("PROGRESS:") || l.includes("Finished") || /error/i.test(l)) onLine(l.trim());
+      }
     };
     child.stdout.on("data", keep);
     child.stderr.on("data", keep);
@@ -476,15 +486,52 @@ function runAerender(exe: string, args: string[], timeoutMs: number): Promise<{ 
       child.kill();
       reject(new Error(`aerender did not finish within ${Math.round(timeoutMs / 1000)}s`));
     }, timeoutMs);
+    const onAbort = () => {
+      child.kill();
+      reject(new Error("aerender was cancelled"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
     child.on("error", (e) => {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
       reject(e);
     });
     child.on("close", (code) => {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
       resolve({ code, tail: out });
     });
   });
+}
+
+export interface RenderCompOptions {
+  compName: string;
+  outputPath: string;
+  outputModule?: string;
+  renderSettings?: string;
+}
+
+/**
+ * Save the project, then render one comp with aerender. Shared by the
+ * ae_render_comp tool and the pipelines; throws with an actionable message.
+ */
+export async function renderCompHeadless(bridge: AppBridge, o: RenderCompOptions, ctx: { signal?: AbortSignal; log?: (line: string) => void } = {}): Promise<{ outputPath: string; compName: string; log: string }> {
+  const info = (await bridge.evaluate(saveProjectScript(undefined), { timeoutClass: "slow" })) as { path?: string };
+  const meta = (await bridge.evaluate(AERENDER_INFO, { timeoutClass: "fast" })) as { projectPath: string | null; appFolder: string; isWindows: boolean };
+  if (!info.path || !meta.projectPath) throw new Error("Project has no file. Save it first with ae_save_project.");
+  const exe = aerenderExecutable(meta.appFolder, meta.isWindows);
+  try {
+    await stat(exe);
+  } catch {
+    throw new Error(`aerender not found at ${exe}`);
+  }
+  const args = ["-project", meta.projectPath, "-comp", o.compName, "-output", o.outputPath];
+  if (o.outputModule) args.push("-OMtemplate", o.outputModule);
+  if (o.renderSettings) args.push("-RStemplate", o.renderSettings);
+  log.info(`aerender ${args.join(" ")}`);
+  const { code, tail } = await runAerender(exe, args, 30 * 60_000, ctx.signal, ctx.log);
+  if (code !== 0) throw new Error(`aerender exited with ${code}:\n${tail.slice(-1500)}`);
+  return { outputPath: o.outputPath, compName: o.compName, log: tail.slice(-600) };
 }
 
 // ---- registration --------------------------------------------------------------
@@ -502,7 +549,12 @@ const propertyPath = z
   .describe("Optional explicit property path of match names or display names from the layer, e.g. [\"ADBE Effect Parade\", \"Gaussian Blur\", \"Blurriness\"]. Overrides `property`.");
 const seconds = (what: string) => z.number().finite().nonnegative().describe(`${what}, in seconds.`);
 
-export function registerAfterEffectsTools(server: McpServer, bridge: AppBridge): void {
+export interface AfterEffectsToolOptions {
+  /** When given, ae_render_comp runs as a job (progress, cancel, wait:false). */
+  jobs?: JobRegistry;
+}
+
+export function registerAfterEffectsTools(server: McpServer, bridge: AppBridge, options: AfterEffectsToolOptions = {}): void {
   const run = (script: string, opts?: { timeoutClass?: "fast" | "slow" | "render"; timeoutMs?: number }) =>
     guard(async () => jsonResult(await bridge.evaluate(script, opts)));
 
@@ -853,27 +905,21 @@ export function registerAfterEffectsTools(server: McpServer, bridge: AppBridge):
         outputPath: z.string().min(1).describe("Absolute output path, e.g. C:/renders/comp.mp4 or .mov; aerender picks the format from the output module."),
         outputModule: z.string().min(1).optional().describe("Output module template name, e.g. 'H.264 - Match Render Settings' or 'Lossless'."),
         renderSettings: z.string().min(1).optional().describe("Render settings template, e.g. 'Best Settings'."),
+        wait: z.boolean().optional().describe("Block until the render finishes (default). false returns a jobId at once; poll with cc_job_wait."),
       },
       annotations: { destructiveHint: true },
     },
-    async ({ compName, outputPath, outputModule, renderSettings }) =>
+    async ({ compName, outputPath, outputModule, renderSettings, wait }, extra) =>
       guard(async () => {
-        const info = (await bridge.evaluate(saveProjectScript(undefined), { timeoutClass: "slow" })) as { path?: string };
-        const meta = (await bridge.evaluate(AERENDER_INFO, { timeoutClass: "fast" })) as { projectPath: string | null; appFolder: string; isWindows: boolean };
-        if (!info.path || !meta.projectPath) return errorResult("Project has no file. Save it first with ae_save_project.");
-        const exe = aerenderExecutable(meta.appFolder, meta.isWindows);
-        try {
-          await stat(exe);
-        } catch {
-          return errorResult(`aerender not found at ${exe}`);
-        }
-        const args = ["-project", meta.projectPath, "-comp", compName, "-output", outputPath];
-        if (outputModule) args.push("-OMtemplate", outputModule);
-        if (renderSettings) args.push("-RStemplate", renderSettings);
-        log.info(`aerender ${args.join(" ")}`);
-        const { code, tail } = await runAerender(exe, args, 30 * 60_000);
-        if (code !== 0) return errorResult(`aerender exited with ${code}:\n${tail.slice(-1500)}`);
-        return jsonResult({ outputPath, compName, log: tail.slice(-600) } as JsonValue);
+        const o: RenderCompOptions = { compName, outputPath, ...(outputModule !== undefined ? { outputModule } : {}), ...(renderSettings !== undefined ? { renderSettings } : {}) };
+        if (!options.jobs) return jsonResult(await renderCompHeadless(bridge, o));
+        return runOrQueue(
+          options.jobs,
+          "ae_render_comp",
+          [{ name: "Render with aerender", recoveryTool: "ae_render_comp", run: (ctx) => renderCompHeadless(bridge, o, { signal: ctx.signal, log: ctx.log }).then((r) => (ctx.artifact(r.outputPath), r)) }],
+          (results) => results[0],
+          { wait: wait ?? true, timeoutMs: 30 * 60_000, extra: extra as ProgressExtra },
+        );
       }),
   );
 }
