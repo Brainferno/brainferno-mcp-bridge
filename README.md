@@ -139,7 +139,9 @@ packages/
     src/drivers/     os-script lane (Illustrator), Illustrator-beta delegate
     src/tools/       per-application tool registration + result helpers
     test/            vitest (fake panels over real WebSockets)
-spikes/              throwaway validation panels (uxp-photoshop, cep-aftereffects)
+  bridge-client/     shared panel dial-out client (vendored into each panel by npm run panels:sync)
+  panel-uxp/         Photoshop (and later Premiere) UXP panel
+  panel-cep/         After Effects (and later Audition) CEP panel
 docs/                plan, protocol, spike findings
 ```
 

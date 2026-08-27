@@ -10,7 +10,7 @@ hub over a localhost WebSocket (on Windows), authenticate, and answer commands?*
 2. Open **Photoshop 2026**. Turn on developer mode: **Edit ▸ Preferences ▸ Plugins ▸
    Enable Developer Mode** (restart Photoshop if it asks).
 3. Open **Adobe UXP Developer Tool**. Click **Add Plugin** and pick
-   `spikes/uxp-photoshop/manifest.json`. Click **Load** (or **Load & Watch**).
+   `packages/panel-uxp/manifest.json`. Click **Load** (or **Load & Watch**).
 4. In Photoshop the panel appears under **Plugins ▸ adobe-cc-mcp bridge (spike)**.
    It reads the handshake file and connects on load; press **Connect** if it did not.
 
