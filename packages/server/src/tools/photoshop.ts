@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
-import type { AppBridge, JsonValue } from "../bridge/types.js";
+import type { AppBridge, EvalOptions, JsonValue } from "../bridge/types.js";
 import { log } from "../logging.js";
 import { guard, imageResult, jsonResult } from "./result.js";
 
@@ -37,8 +37,9 @@ const fast = { timeoutClass: "fast" as const };
 const slow = { timeoutClass: "slow" as const };
 
 export function registerPhotoshopTools(server: McpServer, bridge: AppBridge, options: PhotoshopToolOptions): void {
-  const run = (name: string, params: JsonValue, opts = slow) =>
-    guard(async () => jsonResult(await bridge.execute(name, params, opts)));
+  // Params are validated by zod; JSON.stringify drops undefined optionals on the wire.
+  const run = (name: string, params: unknown, opts: EvalOptions = slow) =>
+    guard(async () => jsonResult(await bridge.execute(name, params as JsonValue, opts)));
 
   // ---- read ---------------------------------------------------------------
   server.registerTool(
@@ -321,6 +322,6 @@ export function registerPhotoshopTools(server: McpServer, bridge: AppBridge, opt
       },
       annotations: { destructiveHint: true, openWorldHint: true },
     },
-    async ({ descriptors }) => run("ps.batch_play", { descriptors: descriptors as JsonValue }),
+    async ({ descriptors }) => run("ps.batch_play", { descriptors }),
   );
 }
