@@ -332,6 +332,15 @@
         const doc = activeDoc();
         const layer = findLayer(doc, p.layerId);
         doc.activeLayers = [layer];
+        // Filters need pixels. A text or smart-object layer would make Photoshop
+        // pop a "rasterize?" dialog, which blocks every command until someone
+        // clicks it — so rasterize first, silently.
+        const kind = String(layer.kind);
+        if (kind === "text" || kind === "smartObject") {
+          await batch([
+            { _obj: "rasterizeLayer", _target: [{ _ref: "layer", _enum: "ordinal", _value: "targetEnum" }], _options: { dialogOptions: "dontDisplay" } },
+          ]);
+        }
         let d;
         if (p.filter === "gaussianBlur") d = { _obj: "gaussianBlur", radius: { _unit: "pixelsUnit", _value: p.radius || 10 } };
         else if (p.filter === "motionBlur") d = { _obj: "motionBlur", angle: p.angle || 0, distance: { _unit: "pixelsUnit", _value: p.distance || 30 } };
