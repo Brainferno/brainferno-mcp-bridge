@@ -515,10 +515,11 @@ export function registerPremiereTools(server: McpServer, bridge: AppBridge): voi
       guard(async () => {
         const dir = join(tmpdir(), "adobe-cc-mcp", "previews");
         await mkdir(dir, { recursive: true });
-        const baseName = randomUUID();
+        // Premiere picks the format from the extension ("File Format is not supported" without one)
+        // and some builds append ".png" a second time.
+        const baseName = `${randomUUID()}.png`;
         await bridge.execute("pp.export_frame", { sequenceId: sequenceId ?? null, seconds: seconds ?? null, dir, baseName, maxDimension: maxDimension ?? 1024 }, slow);
-        // Premiere appends the extension itself; older builds doubled it.
-        const written = await waitForAnyFile([join(dir, `${baseName}.png`), join(dir, `${baseName}.png.png`), join(dir, baseName)], 30_000);
+        const written = await waitForAnyFile([join(dir, baseName), join(dir, `${baseName}.png`)], 30_000);
         return imageResult(written, "image/png", `Frame${seconds === undefined ? " at playhead" : ` at ${seconds}s`}`);
       }),
   );
