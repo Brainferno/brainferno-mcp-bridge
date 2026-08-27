@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+  <head>
+    <style>
+      /* Premiere Pro look: dark gray panel, near-black inputs with white text,
+         rounded gray buttons. Plain HTML controls (no Spectrum widgets) so the
+         panel renders the same in every Premiere UXP build. */
+      html, body { margin: 0; padding: 0; }
+      body { height: 100vh; overflow: hidden; box-sizing: border-box; padding: 10px; background-color: #232323; color: #e6e6e6; font-family: system-ui, sans-serif; font-size: 12px; }
+      .row { display: flex; flex-direction: row; align-items: center; gap: 8px; margin-bottom: 8px; }
+      .title { font-weight: 600; }
+      .badge { padding: 2px 9px; border-radius: 9px; background: #4a4a4a; font-size: 11px; }
+      .badge.on { background: #2f6f3a; color: #eafbea; }
+      .badge.off { background: #6b2b2b; color: #fbeaea; }
+      label { width: 42px; color: #bdbdbd; }
+      input { flex: 1; background: #141414; color: #ffffff; border: 1px solid #3d3d3d; border-radius: 4px; padding: 4px 6px; font-size: 12px; outline: none; }
+      input:focus { border-color: #6d9cf0; }
+      button { background: #4a4a4a; color: #f0f0f0; border: 1px solid #5a5a5a; border-radius: 6px; padding: 4px 12px; font-size: 12px; cursor: pointer; }
+      button:hover { background: #585858; }
+      button.cta { background: #2d6ad9; border-color: #3b78e7; color: #ffffff; }
+      button.cta:hover { background: #3b78e7; }
+      /* Height is set by fitLog() in main.js from the real panel height. */
+      #log { height: 160px; overflow-y: auto; overflow-x: hidden; white-space: pre-wrap; word-break: break-all; font-family: monospace; font-size: 11px; background: #141414; color: #e6e6e6; border: 1px solid #3d3d3d; padding: 6px; border-radius: 4px; box-sizing: border-box; }
+      .below { margin-top: 8px; margin-bottom: 4px; }
+      #hint { font-size: 10px; opacity: 0.7; }
+    </style>
+  </head>
+  <body>
+    <div class="row" id="r1"><span class="title">Brainferno MCP Bridge</span> <span id="status" class="badge off">disconnected</span></div>
+    <div class="row" id="r2"><button id="connect" class="cta">Connect</button><button id="kill">Kill switch</button></div>
+    <div class="row" id="r3"><label>Port</label><input id="port" placeholder="7897" /></div>
+    <div class="row" id="r4"><label>Token</label><input id="token" placeholder="auto from bridge.json, or paste" /></div>
+    <div id="log"></div>
+    <div class="row below" id="r5"><button id="copy">Copy log</button><button id="clear">Clear</button></div>
+    <div id="hint">Log also written to ~/.adobe-cc-mcp/panel-premiere.log</div>
+  </body>
+  <script src="bridge-client.js"></script>
+  <script src="commands.js"></script>
+  <script src="main.js"></script>
+</html>

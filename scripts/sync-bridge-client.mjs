@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const src = join(root, "packages", "bridge-client", "bridge-client.js");
-const targets = ["panel-uxp", "panel-cep"].map((p) => join(root, "packages", p, "bridge-client.js"));
+const targets = ["panel-uxp", "panel-uxp-ppro", "panel-cep"].map((p) => join(root, "packages", p, "bridge-client.js"));
 for (const t of targets) {
   copyFileSync(src, t);
   console.log("synced", t.replace(root + "\\", "").replace(root + "/", ""));
