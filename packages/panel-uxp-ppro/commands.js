@@ -289,7 +289,14 @@
     const inPt = sec(await it.getInPoint()) || 0;
     return start - inPt;
   }
-  async function components(p, chain, offset) {
+  /** Premiere adds a key at media time 0 when a param turns time-varying; hide keys outside the clip. */
+  function visibleKeys(times, offset, range) {
+    return times.map((t) => sec(t) + offset).filter((s) => !range || (s >= range[0] - 0.001 && s <= range[1] + 0.001));
+  }
+  async function clipRange(it) {
+    return [sec(await it.getStartTime()) || 0, sec(await it.getEndTime()) || 0];
+  }
+  async function components(p, chain, offset, range) {
     offset = offset || 0;
     const comps = locked(p, () => {
       const n = chain.getComponentCount();
@@ -304,7 +311,7 @@
           let timeVarying = false;
           try {
             timeVarying = q.isTimeVarying();
-            keyframes = q.getKeyframeListAsTickTimes().map((t) => sec(t) + offset);
+            keyframes = visibleKeys(q.getKeyframeListAsTickTimes(), offset, range);
           } catch (e) {}
           params.push({ index: j, name: q.displayName, timeVarying, keyframes, param: q });
         }
@@ -416,7 +423,7 @@
       const it = await clipAt(s, p);
       const chain = await it.getComponentChain();
       const offset = await clipTimeOffset(it);
-      const comps = await components(proj, chain, offset);
+      const comps = await components(proj, chain, offset, await clipRange(it));
       const firstFrame = secs(sec(await it.getInPoint()) || 0);
       const out = [];
       for (const c of comps) {
@@ -734,7 +741,7 @@
       } catch (e) {}
       let keyframeSeconds = [];
       try {
-        keyframeSeconds = locked(proj, () => q.param.getKeyframeListAsTickTimes().map((t) => sec(t) + offset));
+        keyframeSeconds = locked(proj, () => visibleKeys(q.param.getKeyframeListAsTickTimes(), offset, [clipStart, clipEnd || clipStart]));
       } catch (e) {}
       return { effect: comp.displayName, param: q.name, value: now, keyframed: keyed, keyframeSeconds };
     },
