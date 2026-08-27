@@ -245,6 +245,21 @@ el("copy").addEventListener("click", () => {
   }
 });
 
+// ---- theme: take the panel background from the host's current skin --------
+function applyHostTheme() {
+  try {
+    const env = JSON.parse(adobeCep.getHostEnvironment());
+    const c = env.appSkinInfo && env.appSkinInfo.panelBackgroundColor && env.appSkinInfo.panelBackgroundColor.color;
+    if (c) document.body.style.backgroundColor = "rgb(" + c.red + "," + c.green + "," + c.blue + ")";
+  } catch (e) {
+    /* keep the CSS default */
+  }
+}
+applyHostTheme();
+try {
+  adobeCep.addEventListener("com.adobe.csxs.events.ThemeColorChanged", applyHostTheme, null);
+} catch (e) {}
+
 // ---- boot ---------------------------------------------------------------
 log("---- panel loaded (" + PANEL_VERSION + ") ----");
 log("node: " + (nodeRequire ? "available" : "NOT available") + (nodeFs ? " (fs ok)" : ""));

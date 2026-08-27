@@ -3,22 +3,30 @@
   <head>
     <meta charset="utf-8" />
     <style>
-      html, body { height: 100%; margin: 0; padding: 0; overflow: hidden; background: #262626; }
-      body { display: flex; flex-direction: column; box-sizing: border-box; padding: 8px; font-family: system-ui, sans-serif; font-size: 12px; color: #ddd; }
-      .row { display: flex; flex-direction: row; align-items: center; gap: 6px; margin-bottom: 6px; flex-shrink: 0; }
-      .badge { padding: 2px 8px; border-radius: 10px; background: #555; }
-      .badge.on { background: #2e7d32; }
-      .badge.off { background: #7a2a2a; }
-      input { flex: 1; min-width: 60px; }
-      label { width: 40px; flex-shrink: 0; }
-      button { cursor: pointer; }
-      #log { flex: 1 1 0; min-height: 40px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; font-family: monospace; font-size: 11px; background: #1e1e1e; padding: 6px; border-radius: 4px; }
+      /* After Effects look: dark gray panel, near-black fields with white text,
+         rounded gray buttons with light text. The panel background is also
+         set live from the host's appSkinInfo in main.js. */
+      html, body { height: 100%; margin: 0; padding: 0; overflow: hidden; }
+      body { background: #232323; color: #d6d6d6; display: flex; flex-direction: column; box-sizing: border-box; padding: 10px; font-family: "Segoe UI", system-ui, sans-serif; font-size: 12px; }
+      .row { display: flex; flex-direction: row; align-items: center; gap: 6px; margin-bottom: 8px; flex-shrink: 0; }
+      .title { font-weight: 600; color: #e6e6e6; }
+      .badge { padding: 2px 9px; border-radius: 9px; background: #3d3d3d; color: #cfcfcf; font-size: 11px; }
+      .badge.on { background: #2f6f3a; color: #eafbea; }
+      .badge.off { background: #6b2b2b; color: #fbeaea; }
+      label { width: 42px; flex-shrink: 0; color: #b5b5b5; }
+      input { flex: 1; min-width: 60px; background: #0f0f0f; color: #ffffff; border: 1px solid #3a3a3a; border-radius: 3px; padding: 4px 6px; font-size: 12px; outline: none; }
+      input:focus { border-color: #5c9bd6; }
+      input::placeholder { color: #6f6f6f; }
+      button { background: #474747; color: #f2f2f2; border: 1px solid #5a5a5a; border-radius: 5px; padding: 4px 12px; font-size: 12px; cursor: pointer; }
+      button:hover { background: #575757; }
+      button:active { background: #3a3a3a; }
+      #log { flex: 1 1 0; min-height: 40px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; font-family: Consolas, monospace; font-size: 11px; background: #141414; color: #d0d0d0; border: 1px solid #333; padding: 6px; border-radius: 4px; }
       .below { margin-top: 8px; margin-bottom: 4px; }
-      #hint { flex-shrink: 0; font-size: 10px; color: #999; padding-bottom: 8px; }
+      #hint { flex-shrink: 0; font-size: 10px; color: #8a8a8a; padding-bottom: 6px; }
     </style>
   </head>
   <body>
-    <div class="row"><strong>adobe-cc-mcp bridge (CEP)</strong> <span id="status" class="badge off">disconnected</span></div>
+    <div class="row"><span class="title">adobe-cc-mcp bridge</span> <span id="status" class="badge off">disconnected</span></div>
     <div class="row"><button id="connect">Connect</button><button id="kill">Kill switch</button></div>
     <div class="row"><label>Port</label><input id="port" placeholder="7897" /></div>
     <div class="row"><label>Token</label><input id="token" placeholder="auto from bridge.json, or paste" /></div>
