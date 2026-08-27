@@ -51,50 +51,8 @@ function readHandshake() {
   return hs;
 }
 
-// ---- named commands (protocol v2) ----------------------------------------
-const commands = {
-  "ps.list_documents": async () => {
-    const { app } = require("photoshop");
-    const docs = [];
-    for (const doc of app.documents) {
-      docs.push({
-        id: doc.id,
-        name: doc.name,
-        path: doc.path || null,
-        width: doc.width,
-        height: doc.height,
-        resolution: doc.resolution,
-        mode: String(doc.mode),
-        layerCount: doc.layers.length,
-      });
-    }
-    return docs;
-  },
-  "ps.list_layers": async (params) => {
-    const { app } = require("photoshop");
-    const wanted = params && params.documentId != null ? params.documentId : null;
-    let doc = app.activeDocument;
-    if (wanted !== null) {
-      doc = null;
-      for (const d of app.documents) if (d.id === wanted) doc = d;
-      if (!doc) throw new Error("Document " + wanted + " not found");
-    }
-    if (!doc) throw new Error("No open document");
-    const out = [];
-    const walk = (layers, depth) => {
-      for (const layer of layers) {
-        out.push({ id: layer.id, name: layer.name, kind: String(layer.kind), visible: layer.visible, opacity: layer.opacity, depth });
-        if (layer.layers) walk(layer.layers, depth + 1);
-      }
-    };
-    walk(doc.layers, 0);
-    return out;
-  },
-  "ps.host_info": async () => {
-    const uxp = require("uxp");
-    return { app: uxp.host.name, version: uxp.host.version, uxpVersion: uxp.versions && uxp.versions.uxp };
-  },
-};
+// ---- named commands (protocol v2) — implemented in commands.js -----------
+const commands = AcmPhotoshopCommands;
 
 // ---- bridge client -------------------------------------------------------
 const bridge = AcmBridgeClient.create({

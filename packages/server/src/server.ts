@@ -60,7 +60,7 @@ export function buildServer(config: Config): BuiltServer {
   registerDiagnosticTools(server, bridge, { allowRawScripts: config.allowRawScripts });
   registerAfterEffectsTools(server, bridge.bridgeFor("after_effects"));
   registerPremiereTools(server, bridge.bridgeFor("premiere"));
-  registerPhotoshopTools(server, bridge.bridgeFor("photoshop"));
+  registerPhotoshopTools(server, bridge.bridgeFor("photoshop"), { allowRawScripts: config.allowRawScripts });
   registerIllustratorTools(server, illustratorBridge);
   registerIllustratorDelegateTools(server, illustratorDelegate, config.illustratorMcpKey !== "");
   registerAuditionTools(server, bridge.bridgeFor("audition"));
