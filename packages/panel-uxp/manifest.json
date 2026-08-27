@@ -1,7 +1,7 @@
 {
   "manifestVersion": 5,
   "id": "com.brainferno.adobe-cc-mcp.spike",
-  "name": "adobe-cc-mcp spike",
+  "name": "Brainferno MCP Bridge",
   "version": "0.1.0",
   "main": "index.html",
   "host": [
@@ -15,7 +15,7 @@
       "type": "panel",
       "id": "bridge",
       "label": {
-        "default": "adobe-cc-mcp bridge (spike)"
+        "default": "Brainferno MCP Bridge"
       },
       "minimumSize": {
         "width": 240,

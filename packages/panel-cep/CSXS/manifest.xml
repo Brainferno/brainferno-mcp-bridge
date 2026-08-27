@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<ExtensionManifest Version="7.0" ExtensionBundleId="com.brainferno.adobe-cc-mcp.cep-spike" ExtensionBundleVersion="0.1.0" ExtensionBundleName="adobe-cc-mcp CEP spike" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<ExtensionManifest Version="7.0" ExtensionBundleId="com.brainferno.adobe-cc-mcp.cep-spike" ExtensionBundleVersion="0.1.0" ExtensionBundleName="Brainferno MCP Bridge" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <ExtensionList>
     <Extension Id="com.brainferno.adobe-cc-mcp.cep-spike.panel" Version="0.1.0" />
   </ExtensionList>
@@ -31,7 +31,7 @@
         </Lifecycle>
         <UI>
           <Type>Panel</Type>
-          <Menu>adobe-cc-mcp bridge (CEP spike)</Menu>
+          <Menu>Brainferno MCP Bridge</Menu>
           <Geometry>
             <Size>
               <Height>560</Height>
