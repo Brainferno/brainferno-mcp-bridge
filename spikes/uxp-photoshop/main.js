@@ -146,9 +146,18 @@ const commands = {
 // ---- 2 + 3. socket + protocol -------------------------------------------
 let ws = null;
 let killed = false;
+let reconnectTimer = null;
 
 async function connect() {
   killed = false;
+  if (reconnectTimer !== null) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  if (ws) {
+    log("already connecting/connected");
+    return;
+  }
   const hs = readHandshake();
   const port = el("port").value || (hs && hs.port) || 7897;
   const token = el("token").value || (hs && hs.token) || "";
@@ -221,14 +230,19 @@ async function connect() {
     }
   };
 
+  const sock = ws;
   ws.onerror = (e) => log("socket error: " + (e && e.message ? e.message : JSON.stringify(e)));
   ws.onclose = (ev) => {
+    // Only the socket that is still current may schedule a retry; a stale
+    // socket closing late must not start a second retry loop.
+    if (ws !== sock) return;
     setStatus("disconnected");
     log("socket closed: code=" + ev.code + " reason=" + (ev.reason || "(none)"));
     ws = null;
     if (!killed) {
       log("reconnecting in 3s …");
-      setTimeout(() => {
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
         if (!killed && !ws) connect();
       }, 3000);
     }
