@@ -83,14 +83,14 @@ describe("After Effects tool scripts", () => {
   it("uses match names for transform properties and honors propertyPath", () => {
     expect(SAMPLES["keys"]).toContain('__prop(l, "position", null)');
     expect(SAMPLES["keysPath"]).toContain('["ADBE Effect Parade", "Gaussian Blur", "Blurriness"]');
-    expect(SAMPLES["props"]).toContain('property("ADBE Position").setValue([100, 200])');
+    expect(SAMPLES["props"]).toContain('v = [100, 200]; if (v !== null) { t.property("ADBE Position").setValue(v); }');
     expect(SAMPLES["props"]).toContain("l.parent = __layer(c, 1);");
     expect(SAMPLES["unparent"]).toContain("l.parent = null;");
   });
 
   it("converts hex colors to 0–1 RGB arrays", () => {
     expect(SAMPLES["solid"]).toContain("addSolid([1, 0.5333333333333333, 0]");
-    expect(SAMPLES["setText"]).toContain("td.fillColor = [0.9607843137254902, 0.6509803921568628, 0.13725490196078433]");
+    expect(SAMPLES["setText"]).toContain("v = [0.9607843137254902, 0.6509803921568628, 0.13725490196078433]; if (v !== null) { td.applyFill = true; td.fillColor = v; }");
   });
 
   it("applies easy ease only on keys that ask for it", () => {
