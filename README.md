@@ -50,20 +50,10 @@ them.
 | `cc_connected_apps` | all | Each app's lane, panel, engine, and connection state |
 | `cc_eval_script` | AE, Illustrator, Audition | Raw ExtendScript escape hatch — **opt-in** (`ADOBE_CC_MCP_ALLOW_RAW_SCRIPTS=1`) |
 | `ai_beta_status` / `ai_beta_list_tools` / `ai_beta_call` | Illustrator (Beta) | Delegate to Adobe's official Illustrator MCP for analyze/batch/export — **opt-in** via a key ([docs](docs/illustrator-beta.md)) |
-| `ae_project_info` | After Effects | Project path, item count, bit depth, dirty flag |
-| `ae_list_compositions` | After Effects | Every comp with size, duration, frame rate, layer count |
-| `ae_queue_render` | After Effects | Add a comp to the render queue with an output path |
-| `pp_project_info` | Premiere Pro | Project name, path, sequence count |
-| `pp_list_sequences` | Premiere Pro | Sequences with track counts |
-| `ps_list_documents` | Photoshop | Open documents with size, resolution, color mode |
-| `ps_list_layers` | Photoshop | Layers of a document, flattened with nesting depth |
-| `ai_list_documents` | Illustrator | Open documents with artboard count and color space |
-| `ai_create_document` | Illustrator | New document with one artboard (rgb/cmyk) |
-| `ai_create_shape` | Illustrator | Draw a rect, ellipse, line, polygon, or star with fill/stroke |
-| `ai_create_text` | Illustrator | Add point or area text with font, size, color |
-| `ai_save_document` | Illustrator | Save / Save As a native `.ai` |
-| `ai_export_artboard` | Illustrator | Export the active artboard to PNG/JPG (or the doc to SVG) |
-| `ai_get_preview` | Illustrator | Render the active artboard as an image you can see |
+| `ps_*` (18) | Photoshop | Documents (list/create/open/save/export/preview), layers (create/text/props/move/duplicate/delete), place image, fill, filters, resize, crop — [live run](docs/spikes/05-photoshop-tools-live.md) |
+| `ae_*` (24) | After Effects | Project/comps/footage, layers of every kind, keyframes + easing, expressions, effects + params, text, markers, frame preview, render queue, headless aerender — [live run](docs/spikes/06-aftereffects-tools-live.md) |
+| `pp_*` (28) | Premiere Pro | Project/sequences/items, get_sequence (tracks + clips), import, create sequence from media, insert/overwrite, ripple remove, move/trim/props, transitions, effects + keyframes, markers, frame preview, export presets, H.264/any-preset export (in-app or to Media Encoder) — [live run](docs/spikes/07-premiere-tools-live.md) |
+| `ai_*` (7) | Illustrator | Documents, shapes, text, save, export artboard, preview (panel-less OS-script lane) |
 | `au_document_info` | Audition | Active document's sample rate, duration, multitrack flag |
 
 Tools are always advertised, even when the application is closed — a closed app returns
@@ -140,7 +130,8 @@ packages/
     src/tools/       per-application tool registration + result helpers
     test/            vitest (fake panels over real WebSockets)
   bridge-client/     shared panel dial-out client (vendored into each panel by npm run panels:sync)
-  panel-uxp/         Photoshop (and later Premiere) UXP panel
+  panel-uxp/         Photoshop UXP panel
+  panel-uxp-ppro/    Premiere Pro UXP panel (needs Settings → Plugins → developer mode)
   panel-cep/         After Effects (and later Audition) CEP panel
 docs/                plan, protocol, spike findings
 ```
@@ -154,15 +145,16 @@ changes there ripple into every panel, so treat it as a stable contract.
 
 Early, and honest about it:
 
-- **Working** — MCP server, tool registration, the frozen v2 protocol, and the **hardened
-  bridge hub** (token auth by default, Origin/Host upgrade checks, per-socket result
-  matching, heartbeat, in-flight rejection on disconnect), error handling, tests.
-- **Not written yet** — the in-app panels and the Illustrator OS-script driver. Without
-  them, every tool correctly reports that its application is not connected. The UXP panel
-  (Photoshop, Premiere Pro), the CEP panel (After Effects, Audition), and the panel-less
-  Illustrator lane are the next pieces of work (see the phased build plan).
-- **Thin** — Audition and Illustrator have one tool each; Premiere has no export tool.
-  The surface grows as the panels and drivers land.
+- **Working (Windows-verified live)** — the hardened bridge hub (token auth by default,
+  Origin/Host upgrade checks, per-socket result matching, heartbeat), the frozen v2
+  protocol, the Photoshop and Premiere Pro UXP panels, the After Effects CEP panel, the
+  Illustrator OS-script lane and beta-MCP delegate, and the v1 tool sets for Photoshop,
+  After Effects, Premiere Pro, and Illustrator — each proven end to end with previews
+  you can see (`docs/spikes/05`–`07`).
+- **Next** — Audition (CEP + ffmpeg lane), cross-app `pipeline_*` tools with a job
+  registry, macOS verification, packaging/installers.
+- **Thin** — Audition has one tool; Illustrator's own lane covers create/save/export only
+  (Adobe's beta MCP adds analysis/batch/export).
 
 ## License
 
