@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { AppNotConnectedError, EvalTimeoutError, ScriptError } from "../bridge/types.js";
@@ -10,6 +12,22 @@ export function jsonResult(value: unknown): CallToolResult {
 
 export function textResult(text: string): CallToolResult {
   return { content: [{ type: "text", text }] };
+}
+
+/**
+ * Returns an image the model can see, plus a text block naming the file on
+ * disk so pipelines can pass the full-resolution path along. Callers keep the
+ * file small (export at a reduced scale) — image bytes count against context.
+ */
+export async function imageResult(filePath: string, mimeType: "image/png" | "image/jpeg", note?: string): Promise<CallToolResult> {
+  const data = (await readFile(filePath)).toString("base64");
+  return {
+    content: [
+      { type: "image", data, mimeType },
+      { type: "text", text: note === undefined ? filePath : `${note}
+${filePath}` },
+    ],
+  };
 }
 
 export function errorResult(message: string): CallToolResult {

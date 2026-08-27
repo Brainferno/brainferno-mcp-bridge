@@ -8,7 +8,7 @@ import { buildServer } from "./server.js";
 async function main(): Promise<void> {
   const config = loadConfig();
 
-  const { server, bridge, illustratorDelegate } = buildServer(config);
+  const { server, bridge, illustratorDelegate, illustratorBridge } = buildServer(config);
   await bridge.ready();
 
   const transport = new StdioServerTransport();
@@ -21,6 +21,7 @@ async function main(): Promise<void> {
       await server.close().catch((error: unknown) => log.warn("error closing MCP server", error));
       await bridge.close().catch((error: unknown) => log.warn("error closing bridge", error));
       await illustratorDelegate.close().catch((error: unknown) => log.warn("error closing delegate", error));
+      await illustratorBridge.close().catch((error: unknown) => log.warn("error closing illustrator bridge", error));
       process.exit(0);
     })();
   };

@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { BridgeServer } from "./bridge/socket.js";
 import type { Config } from "./config.js";
 import { IllustratorDelegate } from "./drivers/illustrator-delegate.js";
+import { OsScriptBridge } from "./drivers/osscript.js";
 import { setLogLevel } from "./logging.js";
 import { registerAfterEffectsTools } from "./tools/after-effects.js";
 import { registerAuditionTools } from "./tools/audition.js";
@@ -16,6 +17,8 @@ export interface BuiltServer {
   server: McpServer;
   bridge: BridgeServer;
   illustratorDelegate: IllustratorDelegate;
+  /** Illustrator is driven panel-less over COM/AppleScript, not through the hub. */
+  illustratorBridge: OsScriptBridge;
 }
 
 /**
@@ -48,6 +51,7 @@ export function buildServer(config: Config): BuiltServer {
     },
   );
 
+  const illustratorBridge = new OsScriptBridge({ appId: "illustrator", defaultTimeoutMs: config.evalTimeoutMs });
   const illustratorDelegate = new IllustratorDelegate({
     url: config.illustratorMcpUrl,
     token: config.illustratorMcpKey,
@@ -57,9 +61,9 @@ export function buildServer(config: Config): BuiltServer {
   registerAfterEffectsTools(server, bridge.bridgeFor("after_effects"));
   registerPremiereTools(server, bridge.bridgeFor("premiere"));
   registerPhotoshopTools(server, bridge.bridgeFor("photoshop"));
-  registerIllustratorTools(server, bridge.bridgeFor("illustrator"));
+  registerIllustratorTools(server, illustratorBridge);
   registerIllustratorDelegateTools(server, illustratorDelegate, config.illustratorMcpKey !== "");
   registerAuditionTools(server, bridge.bridgeFor("audition"));
 
-  return { server, bridge, illustratorDelegate };
+  return { server, bridge, illustratorDelegate, illustratorBridge };
 }

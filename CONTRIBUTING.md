@@ -24,7 +24,7 @@ acting as architect, never through a per-app branch. The full design lives in
 | Photoshop | UXP | Modern JS. Mutations must run inside `executeAsModal`. |
 | Premiere Pro (≥ 25.6) | UXP | Modern JS via `require("premierepro")`; promise-based — scripts may return a Promise, the panel awaits it. |
 | After Effects | ExtendScript | ES3. Wrap mutations in `app.beginUndoGroup`/`app.endUndoGroup`. |
-| Illustrator | ExtendScript | ES3. No public UXP exists — do not "upgrade" it. |
+| Illustrator | ExtendScript | ES3, via the os-script lane (COM / AppleScript — no panel). Scripts are one IIFE expression; put helper functions *inside* it. Coordinates are artboard-relative, y-down. |
 | Audition | ExtendScript | ES3, undocumented API reached via CEP `evalScript`. |
 
 **ES3 means:** `var` only — no `const`/`let`, no arrow functions, no template

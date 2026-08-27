@@ -58,6 +58,12 @@ them.
 | `ps_list_documents` | Photoshop | Open documents with size, resolution, color mode |
 | `ps_list_layers` | Photoshop | Layers of a document, flattened with nesting depth |
 | `ai_list_documents` | Illustrator | Open documents with artboard count and color space |
+| `ai_create_document` | Illustrator | New document with one artboard (rgb/cmyk) |
+| `ai_create_shape` | Illustrator | Draw a rect, ellipse, line, polygon, or star with fill/stroke |
+| `ai_create_text` | Illustrator | Add point or area text with font, size, color |
+| `ai_save_document` | Illustrator | Save / Save As a native `.ai` |
+| `ai_export_artboard` | Illustrator | Export the active artboard to PNG/JPG (or the doc to SVG) |
+| `ai_get_preview` | Illustrator | Render the active artboard as an image you can see |
 | `au_document_info` | Audition | Active document's sample rate, duration, multitrack flag |
 
 Tools are always advertised, even when the application is closed — a closed app returns
