@@ -4,15 +4,53 @@
   "name": "adobe-cc-mcp spike",
   "version": "0.1.0",
   "main": "index.html",
-  "host": [{ "app": "PS", "minVersion": "26.0.0" }],
+  "host": [
+    {
+      "app": "PS",
+      "minVersion": "26.0.0"
+    }
+  ],
   "entrypoints": [
     {
       "type": "panel",
       "id": "bridge",
-      "label": { "default": "adobe-cc-mcp bridge (spike)" },
-      "minimumSize": { "width": 260, "height": 200 },
-      "preferredDockedSize": { "width": 320, "height": 400 },
-      "preferredFloatingSize": { "width": 320, "height": 400 }
+      "label": {
+        "default": "adobe-cc-mcp bridge (spike)"
+      },
+      "minimumSize": {
+        "width": 260,
+        "height": 200
+      },
+      "preferredDockedSize": {
+        "width": 320,
+        "height": 400
+      },
+      "preferredFloatingSize": {
+        "width": 320,
+        "height": 400
+      },
+      "icons": [
+        {
+          "width": 23,
+          "height": 23,
+          "path": "icons/icon.png",
+          "scale": [
+            1,
+            2
+          ],
+          "theme": [
+            "darkest",
+            "dark",
+            "medium",
+            "lightest",
+            "light",
+            "all"
+          ],
+          "species": [
+            "chrome"
+          ]
+        }
+      ]
     }
   ],
   "requiredPermissions": {
@@ -26,5 +64,26 @@
     },
     "localFileSystem": "fullAccess"
   },
-  "icons": []
+  "icons": [
+    {
+      "width": 48,
+      "height": 48,
+      "path": "icons/icon.png",
+      "scale": [
+        1,
+        2
+      ],
+      "theme": [
+        "darkest",
+        "dark",
+        "medium",
+        "lightest",
+        "light",
+        "all"
+      ],
+      "species": [
+        "pluginList"
+      ]
+    }
+  ]
 }
