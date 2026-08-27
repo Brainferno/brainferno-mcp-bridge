@@ -8,7 +8,7 @@ import { buildServer } from "./server.js";
 async function main(): Promise<void> {
   const config = loadConfig();
 
-  const { server, bridge, illustratorDelegate, illustratorBridge } = buildServer(config);
+  const { server, bridge, illustratorDelegate, illustratorBridge, mediaEncoder } = buildServer(config);
   await bridge.ready();
 
   const transport = new StdioServerTransport();
@@ -22,6 +22,7 @@ async function main(): Promise<void> {
       await bridge.close().catch((error: unknown) => log.warn("error closing bridge", error));
       await illustratorDelegate.close().catch((error: unknown) => log.warn("error closing delegate", error));
       await illustratorBridge.close().catch((error: unknown) => log.warn("error closing illustrator bridge", error));
+      await mediaEncoder.stop().catch((error: unknown) => log.warn("error stopping Media Encoder service", error));
       process.exit(0);
     })();
   };

@@ -5,6 +5,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { BridgeServer } from "./bridge/socket.js";
 import type { Config } from "./config.js";
+import { AmeWebService } from "./drivers/ame-webservice.js";
 import { IllustratorDelegate } from "./drivers/illustrator-delegate.js";
 import { OsScriptBridge } from "./drivers/osscript.js";
 import { JobRegistry } from "./jobs.js";
@@ -16,6 +17,7 @@ import { registerDiagnosticTools } from "./tools/diagnostics.js";
 import { registerIllustratorTools } from "./tools/illustrator.js";
 import { registerIllustratorDelegateTools } from "./tools/illustrator-delegate.js";
 import { registerJobTools } from "./tools/jobs.js";
+import { registerMediaEncoderTools } from "./tools/media-encoder.js";
 import { registerPhotoshopTools } from "./tools/photoshop.js";
 import { registerPipelineTools } from "./tools/pipelines.js";
 import { registerPremiereTools } from "./tools/premiere.js";
@@ -27,6 +29,8 @@ export interface BuiltServer {
   /** Illustrator is driven panel-less over COM/AppleScript, not through the hub. */
   illustratorBridge: OsScriptBridge;
   jobs: JobRegistry;
+  /** Media Encoder's headless web service, started on demand. */
+  mediaEncoder: AmeWebService;
 }
 
 /**
@@ -78,6 +82,8 @@ export function buildServer(config: Config): BuiltServer {
   registerAuditionTools(server, bridge.bridgeFor("audition"));
   registerAudioTools(server, audio);
   registerJobTools(server, jobs);
+  const mediaEncoder = new AmeWebService({ exePath: config.ameWebServicePath, port: config.amePort, extraArgs: [], idleMs: config.ameIdleMs });
+  registerMediaEncoderTools(server, mediaEncoder, { jobs });
   registerPipelineTools(server, {
     photoshop: bridge.bridgeFor("photoshop"),
     afterEffects: bridge.bridgeFor("after_effects"),
@@ -87,5 +93,5 @@ export function buildServer(config: Config): BuiltServer {
     audio,
   });
 
-  return { server, bridge, illustratorDelegate, illustratorBridge, jobs };
+  return { server, bridge, illustratorDelegate, illustratorBridge, jobs, mediaEncoder };
 }

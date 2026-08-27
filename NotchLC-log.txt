@@ -1,1 +1,3 @@
-output_module.cpp(36) [main] INFO: AEX output plugin exit
+premiereImporter.cpp(778) [main] INFO: initialising importer
+main.cpp(35) [main] INFO: Premiere plugin startup
+main.cpp(35) [main] INFO: Premiere plugin startup

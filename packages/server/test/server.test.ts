@@ -24,6 +24,9 @@ const config: Config = {
   illustratorMcpKey: "",
   ffmpegPath: "ffmpeg",
   ffprobePath: "ffprobe",
+  ameWebServicePath: "",
+  amePort: 0,
+  ameIdleMs: 0,
   logLevel: "error",
 };
 

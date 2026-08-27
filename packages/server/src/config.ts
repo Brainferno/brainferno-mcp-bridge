@@ -54,6 +54,12 @@ export interface Config {
   /** ffmpeg / ffprobe executables for the audio process lane (name on PATH or absolute path). */
   ffmpegPath: string;
   ffprobePath: string;
+  /** ame_webservice_console(.exe) path; "" = auto-detect the newest Media Encoder. */
+  ameWebServicePath: string;
+  /** Port of the AME web service; 0 = read it from the ini beside the console. */
+  amePort: number;
+  /** Stop the AME web service after this idle time; 0 = keep it running. */
+  ameIdleMs: number;
   logLevel: LogLevel;
 }
 
@@ -120,6 +126,9 @@ export function loadConfig(): Config {
     illustratorMcpKey: illustratorKeyFromEnvOrFile(),
     ffmpegPath: process.env.ADOBE_CC_MCP_FFMPEG ?? "ffmpeg",
     ffprobePath: process.env.ADOBE_CC_MCP_FFPROBE ?? "ffprobe",
+    ameWebServicePath: process.env.ADOBE_CC_MCP_AME_WEBSERVICE ?? "",
+    amePort: intFromEnv("ADOBE_CC_MCP_AME_PORT", 0, { allowZero: true }),
+    ameIdleMs: intFromEnv("ADOBE_CC_MCP_AME_IDLE_MS", 10 * 60_000, { allowZero: true }),
     logLevel: logLevelFromEnv(),
   };
 }
