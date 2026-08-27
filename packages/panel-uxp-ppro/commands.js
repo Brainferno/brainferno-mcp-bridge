@@ -420,13 +420,44 @@
       return { saved: true, path: p.path || proj.path || null };
     },
 
+    "pp.create_project": async (p) => {
+      const proj = await ppro.Project.createProject(p.path);
+      if (!proj) throw new Error("Premiere could not create a project at " + p.path);
+      return { id: String(proj.guid), name: proj.name, path: proj.path || null };
+    },
+
     "pp.import_files": async (p) => {
       const proj = await project();
       const before = new Set((await walkItems(proj)).map((e) => e.id));
-      const ok = await proj.importFiles(p.paths, true, undefined, !!p.asNumberedStills);
-      if (!ok) throw new Error("Premiere refused the import: " + p.paths.join(", "));
+      // Windows Premiere wants native separators.
+      const paths = p.paths.map((x) => (/^[A-Za-z]:/.test(x) ? x.split("/").join("\\") : x));
+      const root = await proj.getRootItem();
+      const stills = !!p.asNumberedStills;
+      // The importFiles signature has shifted between builds; try the documented
+      // shapes in order and report the last host error if none is accepted.
+      const attempts = [
+        ["paths,suppressUI,rootBin,stills", () => proj.importFiles(paths, true, root, stills)],
+        ["paths,suppressUI,undefined,stills", () => proj.importFiles(paths, true, undefined, stills)],
+        ["paths,suppressUI", () => proj.importFiles(paths, true)],
+        ["paths", () => proj.importFiles(paths)],
+      ];
+      let ok = false;
+      let shape = null;
+      let lastErr = null;
+      for (const [name, fn] of attempts) {
+        try {
+          ok = await fn();
+          if (ok) {
+            shape = name;
+            break;
+          }
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+      if (!ok) throw new Error("Premiere refused the import of " + paths.join(", ") + (lastErr ? " (" + (lastErr.message || lastErr) + ")" : " (returned false)"));
       const after = await walkItems(proj);
-      return { imported: after.filter((e) => !before.has(e.id)).map(pub) };
+      return { imported: after.filter((e) => !before.has(e.id)).map(pub), signature: shape };
     },
 
     "pp.create_sequence": async (p) => {

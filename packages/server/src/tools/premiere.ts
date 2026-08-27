@@ -214,6 +214,16 @@ export function registerPremiereTools(server: McpServer, bridge: AppBridge): voi
   );
 
   server.registerTool(
+    "pp_create_project",
+    {
+      title: "Premiere Pro: create a project",
+      description: "Create a new .prproj at a path and make it the active project.",
+      inputSchema: { path: z.string().min(1).describe("Absolute path ending in .prproj (the folder must exist).") },
+    },
+    async ({ path }) => run("pp.create_project", { path }, slow),
+  );
+
+  server.registerTool(
     "pp_save_project",
     {
       title: "Premiere Pro: save the project",

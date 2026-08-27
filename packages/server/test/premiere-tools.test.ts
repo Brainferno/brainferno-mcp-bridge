@@ -60,6 +60,7 @@ describe("Premiere tools send named commands", () => {
       "pp_list_effects",
       "pp_get_clip_effects",
       "pp_open_project",
+      "pp_create_project",
       "pp_save_project",
       "pp_import_files",
       "pp_create_sequence",
