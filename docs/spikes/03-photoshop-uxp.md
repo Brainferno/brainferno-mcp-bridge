@@ -53,3 +53,12 @@ straight-line build from this spike (named command registry + `executeAsModal` +
 
 **Still open:** macOS leg; Premiere UXP leg (same panel stack); whether a narrower
 `network.domains` entry form exists that this UXP accepts.
+
+## Panel UI gotchas (for the production panel shell)
+
+- A panel entrypoint with `minimumSize` but **no `maximumSize`** gets no resize handle in
+  Photoshop. Set `maximumSize` (e.g. 4000×4000) to make it resizable.
+- UXP does not size `body` (or flex children) to the panel: `height: 100%`, `100vh`, and
+  `position: absolute; inset: 0` did not make a flex column fill the panel. What works: measure
+  `window.innerHeight`, subtract the fixed rows, and set the log box height by hand on `resize`
+  (plus a short interval as a safety net). See `fitLog()` in the spike.
