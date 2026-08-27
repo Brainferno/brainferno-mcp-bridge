@@ -124,25 +124,26 @@ application involved.
 `src/logging.ts`, which writes to stderr. A stray stdout write corrupts the protocol
 stream and the client silently disconnects.
 
-### Layout
+### Layout (npm workspaces)
 
 ```
-src/
-  index.ts           entry point, stdio transport, signal handling
-  server.ts          builds the McpServer and registers every tool
-  config.ts          environment configuration
-  logging.ts         stderr logger
-  apps.ts            the five hosts: lane, panel, and scripting engine each uses
-  bridge/
-    protocol.ts      wire format (v2, zod-validated) between server and panel
-    socket.ts        hardened WebSocket hub the panels connect to
-    types.ts         AppBridge interface and typed errors
-    handshake.ts     the {port, token} file panels read to find the bridge
-    script-escape.ts JS-source-safe string escaping for generated scripts
-  tools/
-    result.ts        result formatting and error guarding
-    <app>.ts         per-application tool registration
+packages/
+  protocol/          @adobe-cc-mcp/protocol — shared by server and panels
+    src/apps.ts      the five hosts: lane, panel, and scripting engine each uses
+    src/protocol.ts  wire format (v2, zod-validated) between server and panel
+  server/            adobe-cc-mcp — the MCP server (bin: dist/index.js)
+    src/index.ts     entry point, stdio transport, signal handling
+    src/server.ts    builds the McpServer and registers every tool
+    src/config.ts    environment configuration
+    src/bridge/      hub (socket.ts), handshake file, script escaping, errors
+    src/drivers/     os-script lane (Illustrator), Illustrator-beta delegate
+    src/tools/       per-application tool registration + result helpers
+    test/            vitest (fake panels over real WebSockets)
+spikes/              throwaway validation panels (uxp-photoshop, cep-aftereffects)
+docs/                plan, protocol, spike findings
 ```
+
+Root scripts fan out to the packages: `npm run build` (protocol, then server), `npm run typecheck`, `npm test`.
 
 The wire protocol is frozen at v2 and documented in [`docs/protocol.md`](docs/protocol.md);
 changes there ripple into every panel, so treat it as a stable contract.

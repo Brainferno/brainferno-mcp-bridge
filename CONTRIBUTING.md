@@ -91,8 +91,8 @@ long-blocking call.
 - **stdout is the MCP wire.** Never `console.log`; use `log` from
   `packages/server/src/logging.ts` (stderr).
 - Per-app work touches only `packages/server/src/tools/<app>.ts`, that app's panel glue, and
-  `test/` — shared core (`src/bridge/`, `src/server.ts`, `packages/server/src/tools/result.ts`,
-  `src/apps.ts`) changes go through the architect.
+  `test/` — shared core (`packages/protocol/`, `packages/server/src/bridge/`, `server.ts`,
+  `tools/result.ts`) changes go through the architect.
 - `npm run typecheck && npm test` must pass before every commit. Tests use the
   in-memory MCP transport plus a fake panel over a real WebSocket
   (`packages/server/test/server.test.ts`) — new tools get at least a not-connected-path test,
