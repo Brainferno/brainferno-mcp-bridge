@@ -64,7 +64,17 @@ const HELPERS = `
     return p;
   }
   function __layerInfo(l) {
-    var kind = l instanceof TextLayer ? "text" : l instanceof CameraLayer ? "camera" : l instanceof LightLayer ? "light" : l instanceof ShapeLayer ? "shape" : l.nullLayer ? "null" : l.adjustmentLayer ? "adjustment" : (l.source && l.source instanceof CompItem) ? "precomp" : (l.source && l.source.mainSource instanceof SolidSource) ? "solid" : "footage";
+    // instanceof against the layer classes is unreliable in AE ExtendScript; matchName is not.
+    var mn = l.matchName, kind;
+    if (mn === "ADBE Text Layer") { kind = "text"; }
+    else if (mn === "ADBE Camera Layer") { kind = "camera"; }
+    else if (mn === "ADBE Light Layer") { kind = "light"; }
+    else if (mn === "ADBE Vector Layer") { kind = "shape"; }
+    else if (l.nullLayer) { kind = "null"; }
+    else if (l.adjustmentLayer) { kind = "adjustment"; }
+    else if (l.source && l.source instanceof CompItem) { kind = "precomp"; }
+    else if (l.source && l.source.mainSource && l.source.mainSource instanceof SolidSource) { kind = "solid"; }
+    else { kind = "footage"; }
     return { index: l.index, name: l.name, kind: kind, enabled: l.enabled, inPoint: l.inPoint, outPoint: l.outPoint, startTime: l.startTime, parentIndex: l.parent ? l.parent.index : null, sourceId: l.source ? l.source.id : null };
   }
   function __compInfo(c) {
@@ -120,7 +130,7 @@ export function getLayerScript(compId: number, layerIndex: number): string {
   }
   var fx = l.property("ADBE Effect Parade"); info.effects = [];
   if (fx) { for (var j = 1; j <= fx.numProperties; j++) { var e = fx.property(j); info.effects.push({ index: j, name: e.name, matchName: e.matchName, enabled: e.enabled }); } }
-  if (l instanceof TextLayer) { info.text = l.property("ADBE Text Properties").property("ADBE Text Document").value.text; }
+  if (l.matchName === "ADBE Text Layer") { info.text = l.property("ADBE Text Properties").property("ADBE Text Document").value.text; }
   return info;`);
 }
 
@@ -281,7 +291,9 @@ export function setKeyframesScript(p: KeyframeParams): string {
       prop.setValueAtTime(keys[i].t, keys[i].v);
       if (keys[i].e) {
         var k = prop.nearestKeyIndex(keys[i].t);
-        var dims = prop.value instanceof Array ? prop.value.length : 1;
+        // Spatial properties (position, anchor point) take ONE ease; other
+        // multi-dimensional properties (scale) take one per dimension.
+        var dims = prop.isSpatial ? 1 : (prop.value instanceof Array ? prop.value.length : 1);
         var ease = []; for (var d = 0; d < dims; d++) { ease.push(new KeyframeEase(0, 33.3333)); }
         prop.setTemporalEaseAtKey(k, ease, ease);
       }
@@ -364,7 +376,7 @@ export interface SetTextParams {
 export function setTextScript(p: SetTextParams): string {
   return wrap(`
   var c = __comp(${num(p.compId)}); var l = __layer(c, ${num(p.layerIndex)});
-  if (!(l instanceof TextLayer)) { throw new Error("Layer " + l.index + " is not a text layer."); }
+  if (l.matchName !== "ADBE Text Layer") { throw new Error("Layer " + l.index + " is not a text layer."); }
   return __undo("Set text", function () {
     var st = l.property("ADBE Text Properties").property("ADBE Text Document");
     var td = st.value;
