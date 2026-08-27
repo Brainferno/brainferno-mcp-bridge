@@ -22,6 +22,8 @@ const config: Config = {
   allowedOrigins: [],
   illustratorMcpUrl: "http://localhost:18412/v1/mcp",
   illustratorMcpKey: "",
+  ffmpegPath: "ffmpeg",
+  ffprobePath: "ffprobe",
   logLevel: "error",
 };
 

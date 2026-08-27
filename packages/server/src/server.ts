@@ -6,6 +6,7 @@ import { IllustratorDelegate } from "./drivers/illustrator-delegate.js";
 import { OsScriptBridge } from "./drivers/osscript.js";
 import { setLogLevel } from "./logging.js";
 import { registerAfterEffectsTools } from "./tools/after-effects.js";
+import { registerAudioTools } from "./tools/audio.js";
 import { registerAuditionTools } from "./tools/audition.js";
 import { registerDiagnosticTools } from "./tools/diagnostics.js";
 import { registerIllustratorTools } from "./tools/illustrator.js";
@@ -64,6 +65,7 @@ export function buildServer(config: Config): BuiltServer {
   registerIllustratorTools(server, illustratorBridge);
   registerIllustratorDelegateTools(server, illustratorDelegate, config.illustratorMcpKey !== "");
   registerAuditionTools(server, bridge.bridgeFor("audition"));
+  registerAudioTools(server, { ffmpegPath: config.ffmpegPath, ffprobePath: config.ffprobePath });
 
   return { server, bridge, illustratorDelegate, illustratorBridge };
 }

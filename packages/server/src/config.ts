@@ -51,6 +51,9 @@ export interface Config {
    * it or put it in an error message.
    */
   illustratorMcpKey: string;
+  /** ffmpeg / ffprobe executables for the audio process lane (name on PATH or absolute path). */
+  ffmpegPath: string;
+  ffprobePath: string;
   logLevel: LogLevel;
 }
 
@@ -115,6 +118,8 @@ export function loadConfig(): Config {
       .filter((o) => o !== ""),
     illustratorMcpUrl: process.env.ADOBE_CC_MCP_ILLUSTRATOR_URL ?? DEFAULT_ILLUSTRATOR_MCP_URL,
     illustratorMcpKey: illustratorKeyFromEnvOrFile(),
+    ffmpegPath: process.env.ADOBE_CC_MCP_FFMPEG ?? "ffmpeg",
+    ffprobePath: process.env.ADOBE_CC_MCP_FFPROBE ?? "ffprobe",
     logLevel: logLevelFromEnv(),
   };
 }
