@@ -239,8 +239,8 @@
       frameRate,
       width,
       height,
-      inSeconds: sec(await s.getInPoint()),
-      outSeconds: sec(await s.getOutPoint()),
+      inSeconds: optSec(await s.getInPoint()),
+      outSeconds: optSec(await s.getOutPoint()),
       playerPositionSeconds: sec(await s.getPlayerPosition()),
       video: await tracks(s, "video"),
       audio: await tracks(s, "audio"),
@@ -248,12 +248,25 @@
   }
 
   // ---- effects -------------------------------------------------------------
-  function plainValue(v) {
+  function plainValue(v, depth) {
+    depth = depth || 0;
     if (v === null || v === undefined) return null;
     if (typeof v !== "object") return v;
     if (typeof v.x === "number" && typeof v.y === "number") return [v.x, v.y];
     if (typeof v.red === "number") return { r: v.red, g: v.green, b: v.blue, a: v.alpha };
-    return String(v);
+    // Premiere hands values back wrapped ({ value: ... }, sometimes twice).
+    if ("value" in v && depth < 3) return plainValue(v.value, depth + 1);
+    try {
+      return JSON.parse(JSON.stringify(v));
+    } catch (e) {
+      return String(v);
+    }
+  }
+
+  /** Premiere reports "unset" times as a huge negative number. */
+  function optSec(t) {
+    const s = sec(t);
+    return s === null || s < -100000 ? null : s;
   }
 
   function hostValue(v) {
@@ -625,9 +638,22 @@
         const names = await ppro.VideoFilterFactory.getMatchNames();
         const display = await ppro.VideoFilterFactory.getDisplayNames();
         const want = String(p.effect);
+        const lw = want.toLowerCase();
+        // Prefer Adobe's own effect of that name over third-party packs that
+        // reuse the display name (e.g. "Gaussian Blur" → "PR.ADBE Gaussian Blur",
+        // not "AE.Impact_Blur_FX").
         let idx = names.indexOf(want);
-        if (idx < 0) idx = display.findIndex((n) => n.toLowerCase() === want.toLowerCase());
-        if (idx < 0) idx = names.findIndex((n) => n.toLowerCase().indexOf(want.toLowerCase()) >= 0);
+        if (idx < 0) idx = names.findIndex((n) => n.toLowerCase() === "pr.adbe " + lw || n.toLowerCase() === "ae.adbe " + lw || n.toLowerCase() === "adbe " + lw);
+        if (idx < 0) idx = names.findIndex((n) => n.toLowerCase().indexOf("adbe ") >= 0 && n.toLowerCase().endsWith(" " + lw));
+        if (idx < 0) {
+          // Display-name match: among all rows with that display name, prefer an ADBE one.
+          const rows = [];
+          display.forEach((n, i) => {
+            if (String(n).toLowerCase() === lw) rows.push(i);
+          });
+          idx = rows.find((i) => /ADBE/.test(names[i] || "")) !== undefined ? rows.find((i) => /ADBE/.test(names[i] || "")) : rows.length ? rows[0] : -1;
+        }
+        if (idx < 0) idx = names.findIndex((n) => n.toLowerCase().indexOf(lw) >= 0);
         if (idx < 0) throw new Error("No video effect matching " + want + ". Call pp_list_effects.");
         applied = names[idx];
         comp = await ppro.VideoFilterFactory.createComponent(applied);
