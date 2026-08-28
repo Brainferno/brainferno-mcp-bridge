@@ -27,6 +27,8 @@
       sp-label { width: 40px; color: var(--uxp-host-text-color-secondary, #a0a0a0); }
       sp-textfield { flex: 1; }
       sp-action-button { min-width: 0; }
+      #connect { background-color: #1473e6; color: #ffffff; border-color: #1473e6; }
+      #connect:hover { background-color: #2680eb; }
       /* Height is set by fitLog() in main.js from the real panel height. */
       #log {
         height: 160px; overflow-y: auto; overflow-x: hidden; white-space: pre-wrap; word-break: break-all;
@@ -41,7 +43,7 @@
   <body>
     <div class="row head" id="r1"><img id="logo" src="icons/logo.svg" alt="Brainferno" /><span class="title">MCP Bridge</span> <span id="status" class="badge off">disconnected</span></div>
     <div class="row" id="r2">
-      <sp-button id="connect" size="s" variant="cta">Connect</sp-button>
+      <sp-action-button id="connect" size="s">Connect</sp-action-button>
       <sp-action-button id="kill" size="s">Kill switch</sp-action-button>
     </div>
     <div class="row" id="r3"><sp-label>Port</sp-label><sp-textfield id="port" size="s" placeholder="7897"></sp-textfield></div>
