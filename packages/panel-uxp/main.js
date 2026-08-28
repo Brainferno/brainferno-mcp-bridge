@@ -93,7 +93,7 @@ let lastFit = -1;
 function fitLog() {
   const total = window.innerHeight || (document.documentElement && document.documentElement.clientHeight) || 0;
   if (!total) return;
-  const used = heightOf("r1") + heightOf("r2") + heightOf("r3") + heightOf("r4") + heightOf("r5") + heightOf("hint") + 20;
+  const used = heightOf("r1") + heightOf("r2") + heightOf("r3") + heightOf("r4") + heightOf("r5") + heightOf("hint") + heightOf("credit") + 20;
   const h = Math.max(40, Math.floor(total - used));
   if (h !== lastFit) {
     lastFit = h;
