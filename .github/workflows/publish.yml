@@ -1,17 +1,18 @@
 name: Publish to npm
 
 # Publishes both packages when a version tag (v1.2.3) is pushed, after the same
-# checks CI runs. Authentication is npm "trusted publishing" (OpenID Connect):
-# npmjs.com → each package → Settings → Trusted Publisher → GitHub Actions,
-# repository Brainferno/brainferno-mcp-bridge, workflow publish.yml. No token
-# is stored anywhere; GitHub proves to npm that this workflow is running.
+# checks CI runs, then creates the GitHub release for that tag. Authentication
+# to npm is "trusted publishing" (OpenID Connect): npmjs.com → each package →
+# Settings → Trusted Publisher → GitHub Actions, repository
+# Brainferno/brainferno-mcp-bridge, workflow publish.yml. No token is stored
+# anywhere; GitHub proves to npm that this workflow is running.
 on:
   push:
     tags: ["v*"]
 
 permissions:
-  contents: read
-  id-token: write # required for trusted publishing + provenance
+  contents: write # create the GitHub release
+  id-token: write # trusted publishing + provenance
 
 jobs:
   publish:
@@ -29,13 +30,53 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
       - run: npm test
+
       - name: Check the tag matches the package versions
         run: |
           s=$(node -p "require('./packages/server/package.json').version")
           p=$(node -p "require('./packages/protocol/package.json').version")
           [ "v$s" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != server version v$s"; exit 1; }
           [ "$p" = "$s" ] || { echo "protocol version $p != server version $s"; exit 1; }
+
       - name: Publish @brainferno/mcp-bridge-protocol
         run: npm publish -w packages/protocol --access public --provenance
       - name: Publish brainferno-mcp-bridge
         run: npm publish -w packages/server --access public --provenance
+
+      - name: Pack the tarballs for the release page
+        run: |
+          mkdir -p release
+          npm pack -w packages/protocol --pack-destination release >/dev/null
+          npm pack -w packages/server --pack-destination release >/dev/null
+          ls -la release
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          # The section for this version: from "## v1.2.3" up to the next "## ".
+          awk -v tag="${GITHUB_REF_NAME}" '
+            $0 ~ "^## " tag "([ —-]|$)" { on=1; next }
+            on && /^## / { exit }
+            on { print }
+          ' CHANGELOG.md > release/notes.md
+          if [ ! -s release/notes.md ]; then
+            echo "No CHANGELOG.md section for ${GITHUB_REF_NAME}; see the commit list below." > release/notes.md
+          fi
+          {
+            echo
+            echo "Install: \`npm install -g brainferno-mcp-bridge@${GITHUB_REF_NAME#v}\` then \`brainferno-mcp-bridge-install\`."
+            echo
+            echo "npm: https://www.npmjs.com/package/brainferno-mcp-bridge/v/${GITHUB_REF_NAME#v}"
+          } >> release/notes.md
+          cat release/notes.md
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" release/*.tgz --clobber
+            gh release edit "${GITHUB_REF_NAME}" --notes-file release/notes.md
+          else
+            gh release create "${GITHUB_REF_NAME}" release/*.tgz \
+              --title "${GITHUB_REF_NAME}" --notes-file release/notes.md --verify-tag --latest
+          fi
