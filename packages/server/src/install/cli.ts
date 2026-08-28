@@ -22,11 +22,14 @@ import { APP_CHOICES, DEFAULT_HTTP_PORT, appsNeed, checkIllustratorKey, detectIn
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(here, "..", "..", "..", "..");
+const pkgRoot = resolve(here, "..", "..");
 const distIndex = resolve(here, "..", "index.js");
-const panelCep = join(repoRoot, "packages", "panel-cep");
-const panelUxp = join(repoRoot, "packages", "panel-uxp", "manifest.json");
-const panelUxpPpro = join(repoRoot, "packages", "panel-uxp-ppro", "manifest.json");
+// Installed from npm: the panels ship inside the package (panels/). From a git
+// checkout: they are sibling workspaces (packages/).
+const panelsDir = existsSync(join(pkgRoot, "panels")) ? join(pkgRoot, "panels") : resolve(pkgRoot, "..");
+const panelCep = join(panelsDir, "panel-cep");
+const panelUxp = join(panelsDir, "panel-uxp", "manifest.json");
+const panelUxpPpro = join(panelsDir, "panel-uxp-ppro", "manifest.json");
 
 const args = new Map<string, string | boolean>();
 for (let i = 2; i < process.argv.length; i++) {

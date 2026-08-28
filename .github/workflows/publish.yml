@@ -1,0 +1,40 @@
+name: Publish to npm
+
+# Publishes both packages when a version tag (v1.2.3) is pushed and CI is green.
+# Needs an npm granular access token with publish rights stored as the repository
+# secret NPM_TOKEN (npmjs.com → Access Tokens → Generate → Granular, packages:
+# brainferno-mcp-bridge and @brainferno/mcp-bridge-protocol, read and write).
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write # npm provenance
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+      - name: Check the tag matches package.json
+        run: |
+          v=$(node -p "require('./packages/server/package.json').version")
+          [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != package version v$v"; exit 1; }
+      - name: Publish @brainferno/mcp-bridge-protocol
+        run: npm publish -w packages/protocol --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish brainferno-mcp-bridge
+        run: npm publish -w packages/server --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -135,7 +135,15 @@ The full tool table is in [Tool reference](#tool-reference).
 - Optional: [ffmpeg](https://ffmpeg.org) on your PATH for the audio tools
   (`winget install ffmpeg` / `brew install ffmpeg`).
 
-### 1. Get the code and build it
+### 1. Install the package
+
+From npm (recommended):
+
+```bash
+npm install -g brainferno-mcp-bridge
+```
+
+Or from source, if you want to change it:
 
 ```bash
 git clone https://github.com/Brainferno/brainferno-mcp-bridge.git
@@ -147,7 +155,8 @@ npm run build
 ### 2. Run the installer
 
 ```bash
-npm run install-cc
+brainferno-mcp-bridge-install      # npm install
+npm run install-cc                 # source checkout
 ```
 
 It asks two questions and does the rest:
@@ -164,12 +173,13 @@ After Effects/Audition panel, sets Media Encoder's service address, opens or clo
 firewall port, prints the Photoshop/Premiere panel steps, and offers to register the server
 with Claude Code.
 
-Non-interactive examples:
+Non-interactive examples (from a source checkout, replace `brainferno-mcp-bridge-install`
+with `node packages/server/dist/install/cli.js`):
 
 ```bash
-node packages/server/dist/install/cli.js --apps all --mode local --yes --register
-node packages/server/dist/install/cli.js --apps ps,ae --mode local --yes          # Photoshop + After Effects only
-node packages/server/dist/install/cli.js --apps ppro,ame --mode shared --yes      # Premiere + Media Encoder, shared
+brainferno-mcp-bridge-install --apps all --mode local --yes --register
+brainferno-mcp-bridge-install --apps ps,ae --mode local --yes          # Photoshop + After Effects only
+brainferno-mcp-bridge-install --apps ppro,ame --mode shared --yes      # Premiere + Media Encoder, shared
 ```
 
 App names: `ps ae ppro ai au ame` or `all`. Re-run the installer any time to change apps
@@ -213,7 +223,8 @@ own hub never leaves loopback. An SSH alternative needs no server setting at all
 
 ### Updating
 
-`git pull && npm install && npm run build`, then re-run the installer (your choices are
+npm: `npm install -g brainferno-mcp-bridge@latest`. Source: `git pull && npm install && npm run build`.
+Then re-run the installer (your choices are
 kept) and reconnect in Claude Code (`/mcp` → brainferno → reconnect). Panels pick up changes
 on reload (UXP Developer Tool → Reload; CEP on reopen).
 

@@ -1,14 +1,22 @@
 {
   "name": "brainferno-mcp-bridge",
   "version": "0.1.0",
-  "private": true,
-  "description": "MCP server for production After Effects, Premiere, Photoshop, Illustrator, and Audition",
+  "description": "MCP server that lets an AI assistant drive Adobe Photoshop, After Effects, Premiere Pro, Illustrator, Audition and Media Encoder software. Independent project, not affiliated with Adobe.",
   "type": "module",
   "bin": {
     "brainferno-mcp-bridge": "./dist/index.js",
     "brainferno-mcp-bridge-install": "./dist/install/cli.js"
   },
   "main": "./dist/index.js",
+  "files": [
+    "dist",
+    "panels",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "THIRD_PARTY_NOTICES.md",
+    "CHANGELOG.md"
+  ],
   "engines": {
     "node": ">=20"
   },
@@ -16,7 +24,8 @@
     "build": "tsc -p tsconfig.build.json",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
-    "install_cc": "node dist/install/cli.js"
+    "install_cc": "node dist/install/cli.js",
+    "prepack": "node ../../scripts/prepack-server.mjs"
   },
   "dependencies": {
     "@brainferno/mcp-bridge-protocol": "0.1.0",
@@ -24,10 +33,32 @@
     "ws": "^8.21.3",
     "zod": "^3.25.76"
   },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "claude",
+    "adobe",
+    "photoshop",
+    "after-effects",
+    "premiere-pro",
+    "illustrator",
+    "audition",
+    "media-encoder",
+    "video",
+    "automation"
+  ],
   "license": "Apache-2.0",
+  "author": "Vincent Parker (Brainferno, LLC)",
+  "homepage": "https://github.com/Brainferno/brainferno-mcp-bridge#readme",
+  "bugs": {
+    "url": "https://github.com/Brainferno/brainferno-mcp-bridge/issues"
+  },
   "repository": {
     "type": "git",
-    "url": "https://github.com/Brainferno/brainferno-mcp-bridge.git"
+    "url": "git+https://github.com/Brainferno/brainferno-mcp-bridge.git",
+    "directory": "packages/server"
   },
-  "author": "Brainferno"
+  "publishConfig": {
+    "access": "public"
+  }
 }
