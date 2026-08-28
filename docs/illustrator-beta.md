@@ -73,3 +73,7 @@ needs to change: set the new address as `illustratorUrl` in `config.json` (or
 `claude mcp add` line carries a different URL, the installer stores it automatically. Only if
 Adobe changes the transport (away from Streamable HTTP + bearer) would
 `src/drivers/illustrator-delegate.ts` need an edit.
+
+## Live sweep of all 46 tools
+
+Every tool was called against a test document on 2026-08-28: 35 ok, 10 ok-with-quirk, 1 expected error (Vectorize without a raster). Per-tool arguments, return shapes and the gotchas are in `docs/spikes/12-illustrator-beta-sweep.md`.
