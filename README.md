@@ -32,7 +32,7 @@ shows the connection, a live log, and a kill switch:
 
 | After Effects (CEP panel) | Photoshop (UXP panel) |
 | :---: | :---: |
-| <img src="docs/images/panel-after-effects.png" alt="Brainferno MCP Bridge panel in After Effects" width="380"> | <img src="docs/images/panel-photoshop.png" alt="Brainferno MCP Bridge panel in Photoshop" width="380"> |
+| <img src="https://raw.githubusercontent.com/Brainferno/brainferno-mcp-bridge/main/docs/images/panel-after-effects.png" alt="Brainferno MCP Bridge panel in After Effects" width="380"> | <img src="https://raw.githubusercontent.com/Brainferno/brainferno-mcp-bridge/main/docs/images/panel-photoshop.png" alt="Brainferno MCP Bridge panel in Photoshop" width="380"> |
 
 ---
 
