@@ -1,5 +1,5 @@
-import { mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { mkdir, readdir, stat } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -18,6 +18,33 @@ import { errorResult, guard, jsonResult } from "./result.js";
 
 export interface MediaEncoderToolOptions {
   jobs?: JobRegistry;
+}
+
+/**
+ * AME writes `<basename>.<preset format extension>` regardless of the requested
+ * extension (an H.264 QuickTime preset yields .mov). Find the file it made.
+ */
+export async function resolveWrittenOutput(requested: string, since: number): Promise<string> {
+  try {
+    await stat(requested);
+    return requested;
+  } catch {
+    /* look for a sibling with another extension */
+  }
+  const dir = dirname(requested);
+  const base = basename(requested).replace(/\.[^.]+$/, "");
+  let best: { path: string; mtime: number } | null = null;
+  try {
+    for (const name of await readdir(dir)) {
+      if (!name.startsWith(base + ".")) continue;
+      const p = join(dir, name);
+      const s = await stat(p);
+      if (s.isFile() && s.mtimeMs >= since - 5000 && (best === null || s.mtimeMs > best.mtime)) best = { path: p, mtime: s.mtimeMs };
+    }
+  } catch {
+    /* unreadable dir */
+  }
+  return best?.path ?? requested;
 }
 
 const presetDoc = "Encoder preset: give presetPath (absolute .epr) or presetName (substring, resolved with the same search as pp_list_export_presets, e.g. 'H264 Match Source - High bitrate', 'MP3 128', 'Waveform Audio 48kHz').";
@@ -70,7 +97,7 @@ export function registerMediaEncoderTools(server: McpServer, ame: AmeWebService,
         presetDoc,
       inputSchema: {
         source: z.string().min(1).describe("Absolute path of the media file, .prproj, or FCP .xml."),
-        output: z.string().min(1).describe("Absolute output path; the preset decides the format, so match the extension (.mp4, .mp3, .mov…)."),
+        output: z.string().min(1).describe("Absolute output path. AME replaces the extension with the preset's format (e.g. its 'H264 Match Source' QuickTime preset writes .mov); the result reports the file actually written."),
         presetPath: z.string().min(1).optional(),
         presetName: z.string().min(1).optional(),
         sequenceId: z.string().min(1).optional().describe("For a .prproj source: the sequence GUID to render (default: the first sequence)."),
@@ -81,6 +108,7 @@ export function registerMediaEncoderTools(server: McpServer, ame: AmeWebService,
     async (a, extra) =>
       guard(async () => {
         const presetPath = await resolvePreset(a.presetPath, a.presetName);
+        const startedAt = Date.now();
         let ameJobId = "";
         const steps: JobStepDef[] = [
           {
@@ -113,8 +141,9 @@ export function registerMediaEncoderTools(server: McpServer, ame: AmeWebService,
                 onProgress: (j) => ctx.progress(`${j.jobStatus}${j.jobProgress ? ` ${j.jobProgress}%` : ""}${j.details ? ` — ${j.details}` : ""}`, Number(j.jobProgress) || undefined),
               });
               if (!isSuccessStatus(final.jobStatus)) throw new Error(`Media Encoder reported ${final.jobStatus}: ${final.details}`);
-              ctx.artifact(a.output);
-              return final;
+              const written = await resolveWrittenOutput(a.output, startedAt);
+              ctx.artifact(written);
+              return { ...final, output: written, ...(written !== a.output ? { note: "Media Encoder replaced the extension with the preset's format." } : {}) };
             },
           },
         ];
@@ -123,7 +152,16 @@ export function registerMediaEncoderTools(server: McpServer, ame: AmeWebService,
           for (const s of steps) await s.run({ jobId: "inline", workDir: "", signal: new AbortController().signal, log: () => {}, progress: () => {}, artifact: () => {} }, []);
           return jsonResult({ output: a.output, ameJobId, presetPath });
         }
-        return runOrQueue(options.jobs, "ame_encode", steps, (r) => ({ output: a.output, presetPath, ameJobId, final: r[2] as AmeJobInfo }), { wait: a.wait ?? true, timeoutMs: 6 * 60 * 60_000, extra: extra as ProgressExtra });
+        return runOrQueue(
+          options.jobs,
+          "ame_encode",
+          steps,
+          (r) => {
+            const final = r[2] as AmeJobInfo & { output?: string; note?: string };
+            return { output: final.output ?? a.output, requestedOutput: a.output, presetPath, ameJobId, final };
+          },
+          { wait: a.wait ?? true, timeoutMs: 6 * 60 * 60_000, extra: extra as ProgressExtra },
+        );
       }),
   );
 

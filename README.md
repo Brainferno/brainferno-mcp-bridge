@@ -56,6 +56,7 @@ them.
 | `ai_*` (7) | Illustrator | Documents, shapes, text, save, export artboard, preview (panel-less OS-script lane) |
 | `au_*` (12) | Audition | App/document state, 600+ menu commands (list/invoke), Favorites (hands-off effect chains), markers, transport, open/save/export, API dump — [live run](docs/spikes/08-audition-tools-live.md) |
 | `audio_*` (9) | ffmpeg (no Adobe app needed) | Probe, EBU R128 measure + two-pass normalize, convert/extract, trim, trim silence, denoise, mix, waveform image |
+| `ame_*` (6) | Media Encoder (headless) | Encode any media, a `.prproj` sequence, or FCP XML with an `.epr` preset through AME's built-in web service — started on demand, no window; status, history, cancel — [live run](docs/spikes/10-media-encoder-live.md) |
 | `pipeline_*` (4) | cross-app | `ps_to_ae`, `render_and_import` (AE → aerender → Premiere), `audio_roundtrip` (Premiere → ffmpeg → Premiere), `ai_to_ps` — one call, one job, per-step progress, failure names the step + recovery tool — [live run](docs/spikes/09-pipelines-live.md) |
 | `cc_job_*` (4) | jobs | `status`, `list`, `wait` (streams progress), `cancel`; long renders/exports take `wait:false` and return a jobId |
 
