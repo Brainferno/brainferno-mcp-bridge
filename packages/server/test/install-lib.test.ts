@@ -89,7 +89,7 @@ describe("installer pieces", () => {
     expect(firewallCommands("darwin", "shared", 7898)).toEqual([]);
     const c = mcpAddCommands({ mode: "shared", distIndex: "C:/x/index.js", port: 7898, token: "tok", addresses: ["192.168.1.51"] });
     expect(c.local).toContain('node "C:/x/index.js"');
-    expect(c.remote[0]).toBe('claude mcp add --scope user --transport http --header "Authorization: Bearer tok" adobe-cc http://192.168.1.51:7898/mcp');
+    expect(c.remote[0]).toBe('claude mcp add --scope user --transport http --header "Authorization: Bearer tok" brainferno http://192.168.1.51:7898/mcp');
     expect(mcpAddCommands({ mode: "local", distIndex: "i", port: 1, token: "", addresses: ["a"] }).remote).toEqual([]);
   });
 

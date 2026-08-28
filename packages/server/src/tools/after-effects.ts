@@ -857,7 +857,7 @@ export function registerAfterEffectsTools(server: McpServer, bridge: AppBridge, 
     },
     async ({ compId: id, time, maxDimension }) =>
       guard(async () => {
-        const dir = join(tmpdir(), "adobe-cc-mcp", "previews");
+        const dir = join(tmpdir(), "brainferno-mcp-bridge", "previews");
         await mkdir(dir, { recursive: true });
         const path = join(dir, `${randomUUID()}.png`).replace(/\\/g, "/");
         await bridge.evaluate(renderFrameScript(id, time ?? 0, path, maxDimension ?? 1024), { timeoutClass: "slow" });

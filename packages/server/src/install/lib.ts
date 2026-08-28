@@ -108,7 +108,7 @@ export async function checkIllustratorKey(url: string, key: string, timeoutMs = 
       method: "POST",
       signal: controller.signal,
       headers: { authorization: `Bearer ${key}`, "content-type": "application/json", accept: "application/json, text/event-stream" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "adobe-cc-mcp-installer", version: "0.1.0" } } }),
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "brainferno-mcp-bridge-installer", version: "0.1.0" } } }),
     });
     if (res.status === 401 || res.status === 403) return { ok: false, reason: "refused", detail: `HTTP ${res.status}` };
     if (!res.ok) return { ok: false, reason: "unexpected", detail: `HTTP ${res.status}` };
@@ -192,7 +192,7 @@ export function platformPaths(platform: NodeJS.Platform, home: string, appData?:
       ameIniCandidates: [2027, 2026, 2025, 2024].map((y) => join("/Applications", `Adobe Media Encoder ${y}`, "ame_webservice_config.ini")),
     };
   }
-  return { cepExtensionsDir: join(home, ".adobe-cc-mcp", "cep-extensions-unsupported"), csxsDebugCommands: [], ameIniCandidates: [] };
+  return { cepExtensionsDir: join(home, ".brainferno-mcp-bridge", "cep-extensions-unsupported"), csxsDebugCommands: [], ameIniCandidates: [] };
 }
 
 /** Windows Defender Firewall rule for the remote port, private networks only. */
@@ -206,7 +206,7 @@ export function firewallCommands(platform: NodeJS.Platform, mode: InstallMode, p
 
 /** The `claude mcp add` lines to print/run. */
 export function mcpAddCommands(o: { mode: InstallMode; distIndex: string; port: number; token: string; addresses: string[] }): { local: string; remote: string[] } {
-  const local = `claude mcp add --scope user adobe-cc -- node "${o.distIndex}"`;
-  const remote = o.mode === "shared" ? o.addresses.map((a) => `claude mcp add --scope user --transport http --header "Authorization: Bearer ${o.token}" adobe-cc http://${a}:${o.port}/mcp`) : [];
+  const local = `claude mcp add --scope user brainferno -- node "${o.distIndex}"`;
+  const remote = o.mode === "shared" ? o.addresses.map((a) => `claude mcp add --scope user --transport http --header "Authorization: Bearer ${o.token}" brainferno http://${a}:${o.port}/mcp`) : [];
   return { local, remote };
 }

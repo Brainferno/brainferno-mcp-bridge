@@ -2,8 +2,8 @@ import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 
-import type { AppId } from "@adobe-cc-mcp/protocol";
-import { APPS } from "@adobe-cc-mcp/protocol";
+import type { AppId } from "@brainferno/mcp-bridge-protocol";
+import { APPS } from "@brainferno/mcp-bridge-protocol";
 import { log } from "../logging.js";
 import { removeHandshake, writeHandshake } from "./handshake.js";
 import {
@@ -11,7 +11,7 @@ import {
   parsePanelFrame,
   type ServerFrame,
   type TimeoutClass,
-} from "@adobe-cc-mcp/protocol";
+} from "@brainferno/mcp-bridge-protocol";
 import {
   AppDisconnectedError,
   AppNotConnectedError,
@@ -490,7 +490,7 @@ export class BridgeServer {
       return `Open ${app.displayName}; it is driven directly and needs no panel.`;
     }
     const menu = app.panel === "uxp" ? "Plugins" : "Window > Extensions";
-    return `Open ${app.displayName} and launch the adobe-cc-mcp panel from its ${menu} menu.`;
+    return `Open ${app.displayName} and launch the brainferno-mcp-bridge panel from its ${menu} menu.`;
   }
 
   private send(socket: WebSocket, frame: ServerFrame): void {

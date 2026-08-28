@@ -1,5 +1,5 @@
 /*
- * adobe-cc-mcp Photoshop panel (UXP). The connection logic lives in the shared
+ * brainferno-mcp-bridge Photoshop panel (UXP). The connection logic lives in the shared
  * bridge-client.js (vendored by `npm run panels:sync`); this file holds only
  * what is Photoshop-specific: reading the handshake file with UXP's fs, the
  * named commands implemented against the `photoshop` module, logging, and UI.
@@ -19,7 +19,7 @@ function homeDir() {
 }
 
 // ---- logging (panel + mirror file; UXP fs has writeFileSync but no append) --
-const LOG_PATH = homeDir() + "/.adobe-cc-mcp/panel-photoshop.log";
+const LOG_PATH = homeDir() + "/.brainferno-mcp-bridge/panel-photoshop.log";
 let logBuffer = "";
 let logWriteError = null;
 function log(msg) {
@@ -46,7 +46,7 @@ function setStatus(state) {
 
 // ---- handshake file --------------------------------------------------------
 function readHandshake() {
-  const hs = JSON.parse(require("fs").readFileSync(homeDir() + "/.adobe-cc-mcp/bridge.json", "utf-8"));
+  const hs = JSON.parse(require("fs").readFileSync(homeDir() + "/.brainferno-mcp-bridge/bridge.json", "utf-8"));
   log("handshake read OK: port=" + hs.port + " protocol=" + hs.protocolVersion + " pid=" + hs.pid);
   return hs;
 }

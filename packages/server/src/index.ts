@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
-import { loadConfig } from "./config.js";
+import { loadConfig, migrateLegacyUserDir } from "./config.js";
 import { startHttpServer, type RunningHttpServer } from "./http.js";
 import { log } from "./logging.js";
 import { buildRuntime, createMcpServer } from "./server.js";
 
 async function main(): Promise<void> {
+  const migrated = migrateLegacyUserDir();
+  if (migrated) log.info(`copied settings from ${migrated} to ~/.brainferno-mcp-bridge (the old folder can be deleted)`);
   const config = loadConfig();
 
   const rt = buildRuntime(config);

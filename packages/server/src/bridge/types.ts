@@ -1,5 +1,5 @@
-import type { AppId } from "@adobe-cc-mcp/protocol";
-import type { TimeoutClass } from "@adobe-cc-mcp/protocol";
+import type { AppId } from "@brainferno/mcp-bridge-protocol";
+import type { TimeoutClass } from "@brainferno/mcp-bridge-protocol";
 
 /** A JSON value, as returned across the bridge from a host application. */
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };

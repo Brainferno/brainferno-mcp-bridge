@@ -1,6 +1,6 @@
 {
   "manifestVersion": 5,
-  "id": "com.brainferno.adobe-cc-mcp.spike",
+  "id": "com.brainferno.mcp-bridge.photoshop",
   "name": "Brainferno MCP Bridge",
   "version": "0.1.0",
   "main": "index.html",

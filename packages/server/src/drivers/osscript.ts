@@ -24,7 +24,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { APPS, type AppId } from "@adobe-cc-mcp/protocol";
+import { APPS, type AppId } from "@brainferno/mcp-bridge-protocol";
 import { jsStringLiteral } from "../bridge/script-escape.js";
 import {
   AppNotConnectedError,
@@ -202,7 +202,7 @@ export class OsScriptBridge implements AppBridge {
   constructor(private readonly options: OsScriptBridgeOptions) {
     this.appId = options.appId;
     this.runner = options.runner ?? platformRunner(options.appId);
-    this.workDir = options.workDir ?? join(tmpdir(), "adobe-cc-mcp", "osscript");
+    this.workDir = options.workDir ?? join(tmpdir(), "brainferno-mcp-bridge", "osscript");
   }
 
   /** The lane can launch the app itself, so it is always "reachable". */

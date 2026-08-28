@@ -543,7 +543,7 @@ export function registerPremiereTools(server: McpServer, bridge: AppBridge, opti
     },
     async ({ sequenceId, seconds, maxDimension }) =>
       guard(async () => {
-        const dir = join(tmpdir(), "adobe-cc-mcp", "previews");
+        const dir = join(tmpdir(), "brainferno-mcp-bridge", "previews");
         await mkdir(dir, { recursive: true });
         // Premiere picks the format from the extension ("File Format is not supported" without one)
         // and some builds append ".png" a second time.

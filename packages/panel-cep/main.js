@@ -1,5 +1,5 @@
 /*
- * adobe-cc-mcp CEP panel (After Effects, Audition). The connection logic lives
+ * brainferno-mcp-bridge CEP panel (After Effects, Audition). The connection logic lives
  * in the shared bridge-client.js (vendored by `npm run panels:sync`); this
  * file holds only what is CEP-specific: Node fs for the handshake file and
  * the log mirror, evalScript into ExtendScript (with host.jsx's __acmEval so
@@ -40,7 +40,7 @@ try {
 }
 const HOST_ID = hostEnv && hostEnv.appId ? hostEnv.appId : "AEFT";
 const APP_ID = HOST_ID === "AUDT" ? "audition" : "after_effects";
-const LOG_PATH = homeDir() ? homeDir() + "/.adobe-cc-mcp/panel-" + APP_ID.replace("_", "") + ".log" : null;
+const LOG_PATH = homeDir() ? homeDir() + "/.brainferno-mcp-bridge/panel-" + APP_ID.replace("_", "") + ".log" : null;
 
 function log(msg) {
   const line = "[" + new Date().toLocaleTimeString() + "] " + msg;
@@ -96,7 +96,7 @@ async function hostEval(script) {
 // ---- handshake -----------------------------------------------------------
 function readHandshake() {
   if (!nodeFs) throw new Error("Node fs not available (is --enable-nodejs set?)");
-  const hs = JSON.parse(nodeFs.readFileSync(homeDir() + "/.adobe-cc-mcp/bridge.json", "utf8"));
+  const hs = JSON.parse(nodeFs.readFileSync(homeDir() + "/.brainferno-mcp-bridge/bridge.json", "utf8"));
   log("handshake read OK: port=" + hs.port + " protocol=" + hs.protocolVersion + " pid=" + hs.pid);
   return hs;
 }

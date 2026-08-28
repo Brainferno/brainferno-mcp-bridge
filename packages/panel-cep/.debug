@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ExtensionList>
-  <Extension Id="com.brainferno.adobe-cc-mcp.cep-spike.panel">
+  <Extension Id="com.brainferno.mcp-bridge.cep.panel">
     <HostList>
       <Host Name="AEFT" Port="8093" />
       <Host Name="AUDT" Port="8094" />

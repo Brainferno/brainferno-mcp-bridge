@@ -5,12 +5,12 @@ import { WebSocket } from "ws";
 
 import { buildServer } from "../src/server.js";
 import type { BridgeServer } from "../src/bridge/socket.js";
-import { PROTOCOL_VERSION } from "@adobe-cc-mcp/protocol";
+import { PROTOCOL_VERSION } from "@brainferno/mcp-bridge-protocol";
 import type { Config } from "../src/config.js";
-import type { AppId } from "@adobe-cc-mcp/protocol";
+import type { AppId } from "@brainferno/mcp-bridge-protocol";
 
 // Port 0 lets the OS pick a free one; insecure mode skips auth and the handshake
-// file so tests never touch the real ~/.adobe-cc-mcp/bridge.json.
+// file so tests never touch the real ~/.brainferno-mcp-bridge/bridge.json.
 const config: Config = {
   bridgePort: 0,
   bridgeToken: "",
@@ -48,7 +48,7 @@ async function connectPanel(port: number, appId: AppId): Promise<WebSocket> {
   return panel;
 }
 
-describe("adobe-cc-mcp server", () => {
+describe("brainferno-mcp-bridge server", () => {
   let client: Client;
   let bridge: BridgeServer;
   let close: () => Promise<void>;
@@ -151,7 +151,7 @@ describe("adobe-cc-mcp server", () => {
   });
 });
 
-describe("adobe-cc-mcp server with an Illustrator delegate key", () => {
+describe("brainferno-mcp-bridge server with an Illustrator delegate key", () => {
   it("advertises the delegate tools when a key is configured", async () => {
     const built = buildServer({ ...config, illustratorMcpKey: "ilst_test" });
     await built.bridge.ready();

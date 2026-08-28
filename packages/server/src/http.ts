@@ -65,7 +65,7 @@ function reply(res: ServerResponse, status: number, body: unknown): void {
 }
 
 export async function startHttpServer(createSession: () => McpServer, o: HttpServerOptions): Promise<RunningHttpServer> {
-  if (!o.token || o.token.length < 16) throw new Error("Remote mode needs a token of at least 16 characters (ADOBE_CC_MCP_HTTP_TOKEN or httpToken in ~/.adobe-cc-mcp/config.json).");
+  if (!o.token || o.token.length < 16) throw new Error("Remote mode needs a token of at least 16 characters (BRAINFERNO_MCP_HTTP_TOKEN or httpToken in ~/.brainferno-mcp-bridge/config.json).");
   const path = o.path ?? "/mcp";
   const sessions = new Map<string, { transport: StreamableHTTPServerTransport; server: McpServer }>();
 
@@ -73,7 +73,7 @@ export async function startHttpServer(createSession: () => McpServer, o: HttpSer
     const url = new URL(req.url ?? "/", "http://localhost");
     if (url.pathname !== path) return reply(res, 404, { error: "not found" });
     if (!tokenMatches(req.headers["authorization"], o.token)) {
-      res.setHeader("www-authenticate", 'Bearer realm="adobe-cc-mcp"');
+      res.setHeader("www-authenticate", 'Bearer realm="brainferno-mcp-bridge"');
       return reply(res, 401, { jsonrpc: "2.0", error: { code: -32001, message: "Unauthorized: missing or wrong bearer token" }, id: null });
     }
     const sessionId = req.headers["mcp-session-id"];

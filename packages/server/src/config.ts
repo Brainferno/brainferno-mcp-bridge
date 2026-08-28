@@ -1,6 +1,6 @@
 /** Runtime configuration, read once at startup from the environment. */
 
-import { readFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -11,6 +11,38 @@ export const DEFAULT_ILLUSTRATOR_MCP_URL = "http://localhost:18412/v1/mcp";
 export type LogLevel = "error" | "warn" | "info" | "debug";
 
 const LOG_LEVELS: readonly LogLevel[] = ["error", "warn", "info", "debug"];
+
+const LEGACY_ENV_PREFIX = "ADOBE_CC_MCP_";
+const warnedLegacy = new Set<string>();
+/** Read BRAINFERNO_MCP_X, falling back to the pre-rename ADOBE_CC_MCP_X with a one-time warning. */
+export function envValue(name: string): string | undefined {
+  const v = process.env[name];
+  if (v !== undefined) return v;
+  const legacy = name.replace(/^BRAINFERNO_MCP_/, LEGACY_ENV_PREFIX);
+  const l = process.env[legacy];
+  if (l !== undefined && !warnedLegacy.has(legacy)) {
+    warnedLegacy.add(legacy);
+    console.error(`[brainferno-mcp-bridge] WARN ${legacy} is deprecated; rename it to ${name}`);
+  }
+  return l;
+}
+
+/** Settings live in ~/.brainferno-mcp-bridge; copy config.json from the pre-rename ~/.adobe-cc-mcp once. */
+export function migrateLegacyUserDir(home: string = homedir()): string | null {
+  const next = join(home, ".brainferno-mcp-bridge");
+  const old = join(home, ".adobe-cc-mcp");
+  try {
+    if (!existsSync(join(next, "config.json")) && existsSync(join(old, "config.json"))) {
+      mkdirSync(next, { recursive: true });
+      copyFileSync(join(old, "config.json"), join(next, "config.json"));
+      try { chmodSync(join(next, "config.json"), 0o600); } catch { /* Windows */ }
+      return old;
+    }
+  } catch {
+    /* best effort */
+  }
+  return null;
+}
 
 export interface Config {
   /** TCP port the in-app panels dial back to (0 lets the OS pick one). */
@@ -69,12 +101,12 @@ export interface Config {
   httpHost: string;
   /** Bearer token every remote request must present. */
   httpToken: string;
-  /** Which applications get their tools registered (installer choice; env ADOBE_CC_MCP_APPS overrides). */
+  /** Which applications get their tools registered (installer choice; env BRAINFERNO_MCP_APPS overrides). */
   enabledApps: InstallableApp[];
   logLevel: LogLevel;
 }
 
-/** Keys the installer may write to `~/.adobe-cc-mcp/config.json` (mode 600). */
+/** Keys the installer may write to `~/.brainferno-mcp-bridge/config.json` (mode 600). */
 /** Everything the installer can switch on or off. */
 export const INSTALLABLE_APPS = ["photoshop", "after_effects", "premiere", "illustrator", "audition", "media_encoder"] as const;
 export type InstallableApp = (typeof INSTALLABLE_APPS)[number];
@@ -122,7 +154,7 @@ export interface UserConfigFile {
 }
 
 export function userConfigPath(): string {
-  return join(homedir(), ".adobe-cc-mcp", "config.json");
+  return join(homedir(), ".brainferno-mcp-bridge", "config.json");
 }
 
 /** The user config file, or {} when missing/malformed. */
@@ -150,13 +182,13 @@ export function readUserConfig(): UserConfigFile {
  * user can paste it once without editing the client config. "" = disabled.
  */
 function illustratorKeyFromEnvOrFile(file: UserConfigFile): string {
-  const fromEnv = process.env.ADOBE_CC_MCP_ILLUSTRATOR_KEY;
+  const fromEnv = envValue("BRAINFERNO_MCP_ILLUSTRATOR_KEY");
   if (fromEnv !== undefined && fromEnv !== "") return fromEnv;
   return file.illustratorKey ?? "";
 }
 
 function intFromEnv(name: string, fallback: number, { allowZero = false } = {}): number {
-  const raw = process.env[name];
+  const raw = envValue(name);
   if (raw === undefined || raw === "") return fallback;
   const parsed = Number.parseInt(raw, 10);
   const floor = allowZero ? 0 : 1;
@@ -167,15 +199,15 @@ function intFromEnv(name: string, fallback: number, { allowZero = false } = {}):
 }
 
 function boolFromEnv(name: string): boolean {
-  const raw = process.env[name];
+  const raw = envValue(name);
   return raw === "1" || raw === "true";
 }
 
 function logLevelFromEnv(): LogLevel {
-  const raw = process.env.ADOBE_CC_MCP_LOG_LEVEL;
+  const raw = envValue("BRAINFERNO_MCP_LOG_LEVEL");
   if (raw === undefined || raw === "") return "info";
   if (!LOG_LEVELS.includes(raw as LogLevel)) {
-    throw new Error(`ADOBE_CC_MCP_LOG_LEVEL must be one of ${LOG_LEVELS.join(", ")}, got ${raw}`);
+    throw new Error(`BRAINFERNO_MCP_LOG_LEVEL must be one of ${LOG_LEVELS.join(", ")}, got ${raw}`);
   }
   return raw as LogLevel;
 }
@@ -185,29 +217,29 @@ export function loadConfig(): Config {
   return {
     // Port 0 is allowed so the OS can assign one (used in tests); the handshake
     // file makes the real port discoverable regardless.
-    bridgePort: intFromEnv("ADOBE_CC_MCP_BRIDGE_PORT", 7897, { allowZero: true }),
-    bridgeToken: process.env.ADOBE_CC_MCP_BRIDGE_TOKEN ?? "",
-    bridgeInsecure: boolFromEnv("ADOBE_CC_MCP_BRIDGE_INSECURE"),
-    evalTimeoutMs: intFromEnv("ADOBE_CC_MCP_EVAL_TIMEOUT_MS", 30_000),
+    bridgePort: intFromEnv("BRAINFERNO_MCP_BRIDGE_PORT", 7897, { allowZero: true }),
+    bridgeToken: envValue("BRAINFERNO_MCP_BRIDGE_TOKEN") ?? "",
+    bridgeInsecure: boolFromEnv("BRAINFERNO_MCP_BRIDGE_INSECURE"),
+    evalTimeoutMs: intFromEnv("BRAINFERNO_MCP_EVAL_TIMEOUT_MS", 30_000),
     // 0 disables the heartbeat.
-    heartbeatIntervalMs: intFromEnv("ADOBE_CC_MCP_HEARTBEAT_MS", 15_000, { allowZero: true }),
-    allowRawScripts: boolFromEnv("ADOBE_CC_MCP_ALLOW_RAW_SCRIPTS"),
-    handshakeFilePath: process.env.ADOBE_CC_MCP_HANDSHAKE_FILE ?? defaultHandshakePath(),
-    allowedOrigins: (process.env.ADOBE_CC_MCP_ALLOWED_ORIGINS ?? "")
+    heartbeatIntervalMs: intFromEnv("BRAINFERNO_MCP_HEARTBEAT_MS", 15_000, { allowZero: true }),
+    allowRawScripts: boolFromEnv("BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS"),
+    handshakeFilePath: envValue("BRAINFERNO_MCP_HANDSHAKE_FILE") ?? defaultHandshakePath(),
+    allowedOrigins: (envValue("BRAINFERNO_MCP_ALLOWED_ORIGINS") ?? "")
       .split(",")
       .map((o) => o.trim())
       .filter((o) => o !== ""),
-    illustratorMcpUrl: process.env.ADOBE_CC_MCP_ILLUSTRATOR_URL ?? file.illustratorUrl ?? DEFAULT_ILLUSTRATOR_MCP_URL,
+    illustratorMcpUrl: envValue("BRAINFERNO_MCP_ILLUSTRATOR_URL") ?? file.illustratorUrl ?? DEFAULT_ILLUSTRATOR_MCP_URL,
     illustratorMcpKey: illustratorKeyFromEnvOrFile(file),
-    ffmpegPath: process.env.ADOBE_CC_MCP_FFMPEG ?? "ffmpeg",
-    ffprobePath: process.env.ADOBE_CC_MCP_FFPROBE ?? "ffprobe",
-    ameWebServicePath: process.env.ADOBE_CC_MCP_AME_WEBSERVICE ?? "",
-    amePort: intFromEnv("ADOBE_CC_MCP_AME_PORT", 0, { allowZero: true }),
-    ameIdleMs: intFromEnv("ADOBE_CC_MCP_AME_IDLE_MS", 10 * 60_000, { allowZero: true }),
-    httpPort: intFromEnv("ADOBE_CC_MCP_HTTP_PORT", file.httpPort ?? 0, { allowZero: true }),
-    httpHost: process.env.ADOBE_CC_MCP_HTTP_HOST ?? file.httpHost ?? "127.0.0.1",
-    httpToken: process.env.ADOBE_CC_MCP_HTTP_TOKEN ?? file.httpToken ?? "",
-    enabledApps: parseApps(process.env.ADOBE_CC_MCP_APPS, file.enabledApps ?? INSTALLABLE_APPS),
+    ffmpegPath: envValue("BRAINFERNO_MCP_FFMPEG") ?? "ffmpeg",
+    ffprobePath: envValue("BRAINFERNO_MCP_FFPROBE") ?? "ffprobe",
+    ameWebServicePath: envValue("BRAINFERNO_MCP_AME_WEBSERVICE") ?? "",
+    amePort: intFromEnv("BRAINFERNO_MCP_AME_PORT", 0, { allowZero: true }),
+    ameIdleMs: intFromEnv("BRAINFERNO_MCP_AME_IDLE_MS", 10 * 60_000, { allowZero: true }),
+    httpPort: intFromEnv("BRAINFERNO_MCP_HTTP_PORT", file.httpPort ?? 0, { allowZero: true }),
+    httpHost: envValue("BRAINFERNO_MCP_HTTP_HOST") ?? file.httpHost ?? "127.0.0.1",
+    httpToken: envValue("BRAINFERNO_MCP_HTTP_TOKEN") ?? file.httpToken ?? "",
+    enabledApps: parseApps(envValue("BRAINFERNO_MCP_APPS"), file.enabledApps ?? INSTALLABLE_APPS),
     logLevel: logLevelFromEnv(),
   };
 }

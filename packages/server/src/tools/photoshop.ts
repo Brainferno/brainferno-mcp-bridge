@@ -138,7 +138,7 @@ export function registerPhotoshopTools(server: McpServer, bridge: AppBridge, opt
     },
     async ({ maxDimension }) =>
       guard(async () => {
-        const dir = join(tmpdir(), "adobe-cc-mcp", "previews");
+        const dir = join(tmpdir(), "brainferno-mcp-bridge", "previews");
         await mkdir(dir, { recursive: true });
         const path = join(dir, `${randomUUID()}.png`);
         const info = await bridge.execute("ps.preview", { path, maxDimension: maxDimension ?? 1024 }, slow);
@@ -307,7 +307,7 @@ export function registerPhotoshopTools(server: McpServer, bridge: AppBridge, opt
 
   // ---- escape hatch -------------------------------------------------------
   if (!options.allowRawScripts) {
-    log.info("ps_batch_play is disabled; set ADOBE_CC_MCP_ALLOW_RAW_SCRIPTS=1 to enable");
+    log.info("ps_batch_play is disabled; set BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS=1 to enable");
     return;
   }
   server.registerTool(

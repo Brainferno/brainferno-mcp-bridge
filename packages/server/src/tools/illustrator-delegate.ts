@@ -33,7 +33,7 @@ export function registerIllustratorDelegateTools(
 ): void {
   if (!enabled) {
     log.info(
-      "illustrator delegate disabled; set ADOBE_CC_MCP_ILLUSTRATOR_KEY (from Illustrator > MCP & Tools) to enable",
+      "illustrator delegate disabled; set BRAINFERNO_MCP_ILLUSTRATOR_KEY (from Illustrator > MCP & Tools) to enable",
     );
     return;
   }

@@ -1,6 +1,6 @@
 # Bridge wire protocol — v2 (FROZEN)
 
-This is the contract between the `adobe-cc-mcp` server's hub and the companion panel
+This is the contract between the `brainferno-mcp-bridge` server's hub and the companion panel
 inside each Creative Cloud application. It is **frozen**: every panel codebase (UXP and
 CEP) is built against it, so a change here ripples into all of them. Amend it only through
 the protocol-guardian review, and prefer adding a new command name over changing a frame.
@@ -30,7 +30,7 @@ panel  ──ws──▶  hub          hub ──ws──▶  panel
    an explicitly configured one is accepted; everything else — a real web origin, or the
    literal `null` a sandboxed/`file:`/`data:` document sends — is rejected `403`. The `Host`
    must be loopback (DNS-rebinding guard). A per-process connection cap also bounds churn.
-2. **Discover.** The panel reads `~/.adobe-cc-mcp/bridge.json` (the handshake file) to
+2. **Discover.** The panel reads `~/.brainferno-mcp-bridge/bridge.json` (the handshake file) to
    learn the port and token. It is written mode-600 when the server starts listening.
 3. **Hello.** Within **3 s** the panel MUST send a `hello` carrying the token (in the frame,
    or as `?token=` on the upgrade URL — UXP WebSockets cannot set headers). Any other frame

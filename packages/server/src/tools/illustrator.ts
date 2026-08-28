@@ -378,7 +378,7 @@ export function registerIllustratorTools(server: McpServer, bridge: AppBridge): 
     },
     async ({ maxDimension }) =>
       guard(async () => {
-        const dir = join(tmpdir(), "adobe-cc-mcp", "previews");
+        const dir = join(tmpdir(), "brainferno-mcp-bridge", "previews");
         await mkdir(dir, { recursive: true });
         const path = join(dir, `${randomUUID()}.png`);
         const info = await bridge.evaluate(previewScript(path.replace(/\\/g, "/"), maxDimension ?? 1024), {

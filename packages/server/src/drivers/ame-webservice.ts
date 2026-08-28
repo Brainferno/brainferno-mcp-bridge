@@ -280,7 +280,7 @@ export class AmeWebService {
         this.touch();
         return found;
       }
-      if (!exe) throw new Error("Adobe Media Encoder's ame_webservice_console was not found. Install Media Encoder or set ADOBE_CC_MCP_AME_WEBSERVICE to its path.");
+      if (!exe) throw new Error("Adobe Media Encoder's ame_webservice_console was not found. Install Media Encoder or set BRAINFERNO_MCP_AME_WEBSERVICE to its path.");
       this.exe = exe;
       log.info(`starting Media Encoder web service: ${exe} ${this.options.extraArgs.join(" ")}`);
       this.child = spawn(exe, this.options.extraArgs, { stdio: "ignore", windowsHide: true, detached: process.platform !== "win32" });

@@ -1,5 +1,5 @@
 {
-  "name": "adobe-cc-mcp-workspace",
+  "name": "brainferno-mcp-bridge-workspace",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -7,9 +7,9 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -w @adobe-cc-mcp/protocol && npm run build -w adobe-cc-mcp",
-    "dev": "npm run dev -w adobe-cc-mcp",
-    "start": "npm run start -w adobe-cc-mcp",
+    "build": "npm run build -w @brainferno/mcp-bridge-protocol && npm run build -w brainferno-mcp-bridge",
+    "dev": "npm run dev -w brainferno-mcp-bridge",
+    "start": "npm run start -w brainferno-mcp-bridge",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
     "panels:sync": "node scripts/sync-bridge-client.mjs",

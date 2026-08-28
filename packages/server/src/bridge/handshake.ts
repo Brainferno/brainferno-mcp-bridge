@@ -26,7 +26,7 @@ export interface Handshake {
 
 /** Default location of the handshake file. */
 export function defaultHandshakePath(): string {
-  return join(homedir(), ".adobe-cc-mcp", "bridge.json");
+  return join(homedir(), ".brainferno-mcp-bridge", "bridge.json");
 }
 
 /**

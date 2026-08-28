@@ -4,7 +4,7 @@
     "noEmit": true,
     "baseUrl": ".",
     "paths": {
-      "@adobe-cc-mcp/protocol": [
+      "@brainferno/mcp-bridge-protocol": [
         "packages/protocol/src/index.ts"
       ]
     }

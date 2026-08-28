@@ -1,7 +1,7 @@
 {
-  "name": "@adobe-cc-mcp/protocol",
+  "name": "@brainferno/mcp-bridge-protocol",
   "version": "0.1.0",
-  "description": "Shared hosts + wire protocol (v2) for adobe-cc-mcp",
+  "description": "Shared hosts + wire protocol (v2) for brainferno-mcp-bridge",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

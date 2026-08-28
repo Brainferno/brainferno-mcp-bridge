@@ -6,7 +6,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 
-import { DEFAULT_ILLUSTRATOR_MCP_URL, readUserConfig, userConfigPath } from "../config.js";
+import { DEFAULT_ILLUSTRATOR_MCP_URL, migrateLegacyUserDir, readUserConfig, userConfigPath } from "../config.js";
 import { APP_CHOICES, DEFAULT_HTTP_PORT, appsNeed, checkIllustratorKey, detectInstalledApps, extractIllustratorKey, extractIllustratorUrl, firewallCommands, lanAddresses, mcpAddCommands, mergeUserConfig, pickApps, platformPaths, rewriteAmeIni, type InstallMode } from "./lib.js";
 
 /**
@@ -47,7 +47,7 @@ const warn = (s: string) => say(`  ! ${s}`);
 function run(cmd: string[], opts: { elevate?: boolean } = {}): { code: number; out: string } {
   if (opts.elevate && process.platform === "win32") {
     // One UAC prompt for the admin-only steps (Program Files, firewall).
-    const ps = join(tmpdir(), `adobe-cc-mcp-elevated-${process.pid}.ps1`);
+    const ps = join(tmpdir(), `brainferno-mcp-bridge-elevated-${process.pid}.ps1`);
     writeFileSync(ps, cmd.map((c) => (/\s/.test(c) ? `"${c.replace(/"/g, '`"')}"` : c)).join(" ") + "\nexit $LASTEXITCODE\n");
     const r = spawnSync("powershell", ["-NoProfile", "-Command", `$p = Start-Process -FilePath powershell -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File "${ps}"' -Verb RunAs -Wait -PassThru; exit $p.ExitCode`], { encoding: "utf8" });
     return { code: r.status ?? 1, out: (r.stdout ?? "") + (r.stderr ?? "") };
@@ -77,6 +77,8 @@ async function main(): Promise<void> {
   };
 
   // ---- 0. which apps ------------------------------------------------------
+  const migratedFrom = migrateLegacyUserDir();
+  if (migratedFrom) ok(`copied your settings from ${migratedFrom} to ${dirname(userConfigPath())}`);
   const existing = readUserConfig();
   const detected = detectInstalledApps();
   const preset = existing.enabledApps ?? (detected.length ? detected : APP_CHOICES.map((c) => c.id));
@@ -171,7 +173,7 @@ async function main(): Promise<void> {
       const linkName = "com.brainferno.mcp-bridge.cep";
       const target = join(paths.cepExtensionsDir, linkName);
       // Drop older links to the same panel folder (the spike name), or a stale one under our name.
-      for (const entry of [linkName, "com.brainferno.adobe-cc-mcp.cep-spike"]) {
+      for (const entry of [linkName, "com.brainferno.mcp-bridge.cep"]) {
         const p = join(paths.cepExtensionsDir, entry);
         try {
           const st = lstatSync(p);
@@ -257,10 +259,13 @@ async function main(): Promise<void> {
   say(`  ${cmds.local}`);
   const wantRegister = flag("register") || (!flag("yes") && (await ask("Run that now? (y/n)", "y")).toLowerCase().startsWith("y"));
   if (wantRegister) {
-    const r = run(["claude", "mcp", "remove", "--scope", "user", "adobe-cc"]);
-    void r;
-    const r2 = run(["claude", "mcp", "add", "--scope", "user", "adobe-cc", "--", "node", distIndex]);
-    if (r2.code === 0) ok("registered as 'adobe-cc' (user scope)");
+    // Replace our own entry, and retire the pre-rename alias in both scopes.
+    for (const scope of ["user", "local"]) {
+      run(["claude", "mcp", "remove", "--scope", scope, "brainferno"]);
+      run(["claude", "mcp", "remove", "--scope", scope, "adobe-cc"]);
+    }
+    const r2 = run(["claude", "mcp", "add", "--scope", "user", "brainferno", "--", "node", distIndex]);
+    if (r2.code === 0) ok("registered as 'brainferno' (user scope)");
     else warn(`claude mcp add failed: ${r2.out.trim().split("\n")[0] ?? ""} — run the line above yourself`);
   }
   if (mode === "shared") {
@@ -270,7 +275,7 @@ async function main(): Promise<void> {
     say("  The wire is plain HTTP: use it on a trusted LAN, a VPN, or Tailscale.");
   }
   say("");
-  say("Done. Start or restart the server (in Claude Code: /mcp → adobe-cc → reconnect) to apply.");
+  say("Done. Start or restart the server (in Claude Code: /mcp → brainferno → reconnect) to apply.");
   rl.close();
 }
 

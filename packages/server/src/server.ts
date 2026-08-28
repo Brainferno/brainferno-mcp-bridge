@@ -58,8 +58,8 @@ export function buildRuntime(config: Config): Runtime {
   });
   const illustratorBridge = new OsScriptBridge({ appId: "illustrator", defaultTimeoutMs: config.evalTimeoutMs });
   const illustratorDelegate = new IllustratorDelegate({ url: config.illustratorMcpUrl, token: config.illustratorMcpKey });
-  // Job work folders sit beside the handshake file (~/.adobe-cc-mcp/work/<jobId>/).
-  const jobs = new JobRegistry({ workRoot: join(dirname(config.handshakeFilePath) || join(homedir(), ".adobe-cc-mcp"), "work") });
+  // Job work folders sit beside the handshake file (~/.brainferno-mcp-bridge/work/<jobId>/).
+  const jobs = new JobRegistry({ workRoot: join(dirname(config.handshakeFilePath) || join(homedir(), ".brainferno-mcp-bridge"), "work") });
   const mediaEncoder = new AmeWebService({ exePath: config.ameWebServicePath, port: config.amePort, extraArgs: [], idleMs: config.ameIdleMs });
   const audio = { ffmpegPath: config.ffmpegPath, ffprobePath: config.ffprobePath };
   return { config, bridge, illustratorBridge, illustratorDelegate, jobs, mediaEncoder, audio };
@@ -74,7 +74,7 @@ export function buildRuntime(config: Config): Runtime {
 export function createMcpServer(rt: Runtime): McpServer {
   const { config, bridge, jobs } = rt;
   const server = new McpServer(
-    { name: "adobe-cc-mcp", version: "0.1.0" },
+    { name: "brainferno-mcp-bridge", version: "0.1.0" },
     {
       capabilities: { tools: {} },
       instructions:

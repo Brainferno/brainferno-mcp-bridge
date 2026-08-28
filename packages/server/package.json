@@ -1,12 +1,12 @@
 {
-  "name": "adobe-cc-mcp",
+  "name": "brainferno-mcp-bridge",
   "version": "0.1.0",
   "private": true,
   "description": "MCP server for production After Effects, Premiere, Photoshop, Illustrator, and Audition",
   "type": "module",
   "bin": {
-    "adobe-cc-mcp": "./dist/index.js",
-    "adobe-cc-mcp-install": "./dist/install/cli.js"
+    "brainferno-mcp-bridge": "./dist/index.js",
+    "brainferno-mcp-bridge-install": "./dist/install/cli.js"
   },
   "main": "./dist/index.js",
   "engines": {
@@ -19,7 +19,7 @@
     "install_cc": "node dist/install/cli.js"
   },
   "dependencies": {
-    "@adobe-cc-mcp/protocol": "0.1.0",
+    "@brainferno/mcp-bridge-protocol": "0.1.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "ws": "^8.21.3",
     "zod": "^3.25.76"
@@ -27,7 +27,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Brainferno/adobe-cc-mcp.git"
+    "url": "https://github.com/Brainferno/brainferno-mcp-bridge.git"
   },
   "author": "Brainferno"
 }

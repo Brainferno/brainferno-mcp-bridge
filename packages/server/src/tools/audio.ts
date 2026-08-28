@@ -55,7 +55,7 @@ export function runProcess(exe: string, args: string[], timeoutMs: number, signa
     }, timeoutMs);
     child.on("error", (e: NodeJS.ErrnoException) => {
       clearTimeout(timer);
-      reject(e.code === "ENOENT" ? new Error(`${exe} was not found. Install ffmpeg (https://ffmpeg.org) or set ADOBE_CC_MCP_FFMPEG / ADOBE_CC_MCP_FFPROBE to its path.`) : e);
+      reject(e.code === "ENOENT" ? new Error(`${exe} was not found. Install ffmpeg (https://ffmpeg.org) or set BRAINFERNO_MCP_FFMPEG / BRAINFERNO_MCP_FFPROBE to its path.`) : e);
     });
     child.on("close", (code) => {
       clearTimeout(timer);
@@ -453,7 +453,7 @@ export function registerAudioTools(server: McpServer, options: AudioToolOptions)
     },
     async (a) =>
       guard(async () => {
-        const dir = join(tmpdir(), "adobe-cc-mcp", "previews");
+        const dir = join(tmpdir(), "brainferno-mcp-bridge", "previews");
         await mkdir(dir, { recursive: true });
         const out = join(dir, `${randomUUID()}.png`);
         await ffmpeg(args.waveform(a.path, out, a.width ?? 1200, a.height ?? 300, a.color ?? "#f5a623"), "waveform render", 120_000);

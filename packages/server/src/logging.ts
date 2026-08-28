@@ -16,7 +16,7 @@ export function setLogLevel(level: LogLevel): void {
 
 function emit(level: LogLevel, message: string, detail?: unknown): void {
   if (RANK[level] > RANK[threshold]) return;
-  const line = `[adobe-cc-mcp] ${level.toUpperCase()} ${message}`;
+  const line = `[brainferno-mcp-bridge] ${level.toUpperCase()} ${message}`;
   process.stderr.write(detail === undefined ? `${line}\n` : `${line} ${format(detail)}\n`);
 }
 

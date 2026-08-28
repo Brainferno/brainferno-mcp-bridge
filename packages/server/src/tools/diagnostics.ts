@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
-import { APPS, APP_IDS, type AppId } from "@adobe-cc-mcp/protocol";
+import { APPS, APP_IDS, type AppId } from "@brainferno/mcp-bridge-protocol";
 import type { BridgeServer } from "../bridge/socket.js";
 import { log } from "../logging.js";
 import { guard, jsonResult } from "./result.js";
@@ -58,7 +58,7 @@ export function registerDiagnosticTools(
   );
 
   if (!options.allowRawScripts) {
-    log.info("raw-script tool (cc_eval_script) is disabled; set ADOBE_CC_MCP_ALLOW_RAW_SCRIPTS=1 to enable");
+    log.info("raw-script tool (cc_eval_script) is disabled; set BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS=1 to enable");
     return;
   }
 

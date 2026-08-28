@@ -1,5 +1,5 @@
 /*
- * adobe-cc-mcp bridge client — the dial-out half of protocol v2, shared by
+ * brainferno-mcp-bridge bridge client — the dial-out half of protocol v2, shared by
  * every in-app panel (UXP: Photoshop/Premiere; CEP: After Effects/Audition).
  *
  * Plain script, no module system, no syntax newer than ES2017: it runs inside

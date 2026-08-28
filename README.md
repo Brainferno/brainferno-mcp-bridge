@@ -1,4 +1,4 @@
-# Brainferno MCP Bridge (`adobe-cc-mcp`)
+# Brainferno MCP Bridge (`brainferno-mcp-bridge`)
 
 **Let an AI assistant run your Adobe video and graphics pipeline.**
 
@@ -127,8 +127,8 @@ The full tool table is in [Tool reference](#tool-reference).
 ### 1. Get the code and build it
 
 ```bash
-git clone https://github.com/Brainferno/adobe-cc-mcp.git
-cd adobe-cc-mcp
+git clone https://github.com/Brainferno/brainferno-mcp-bridge.git
+cd brainferno-mcp-bridge
 npm install
 npm run build
 ```
@@ -147,7 +147,7 @@ It asks two questions and does the rest:
 2. **Who may use it?** — *Only this computer* (default) or *Shared on my network*
    (other computers connect with a token).
 
-Then it: writes `~/.adobe-cc-mcp/config.json`, asks for your Illustrator MCP key if you
+Then it: writes `~/.brainferno-mcp-bridge/config.json`, asks for your Illustrator MCP key if you
 chose Illustrator (paste the line Illustrator shows; it is checked on the spot), links the
 After Effects/Audition panel, sets Media Encoder's service address, opens or closes the
 firewall port, prints the Photoshop/Premiere panel steps, and offers to register the server
@@ -181,29 +181,29 @@ Open it once per app; it connects on its own and shows a log and a kill switch.
 
 ### 4. Talk to it
 
-In Claude Code: `/mcp` shows **adobe-cc** connected. Try: *"Which Adobe apps are
+In Claude Code: `/mcp` shows **brainferno** connected. Try: *"Which Adobe apps are
 connected?"* (`cc_connected_apps`), then anything from the examples above.
 
 ### Using it from another computer
 
 In *shared* mode the server also speaks MCP over HTTP on port 7898 and refuses every
-request without the bearer token (`~/.adobe-cc-mcp/config.json` → `httpToken`; the
+request without the bearer token (`~/.brainferno-mcp-bridge/config.json` → `httpToken`; the
 installer prints the exact line). On the other computer:
 
 ```bash
 claude mcp add --scope user --transport http \
-  --header "Authorization: Bearer <token>" adobe-cc http://<studio-pc>:7898/mcp
+  --header "Authorization: Bearer <token>" brainferno http://<studio-pc>:7898/mcp
 ```
 
 The Adobe apps, panels, media and previews all stay on the studio PC; only commands and
 results travel. The wire is plain HTTP — use a trusted LAN, a VPN, or Tailscale. The panels'
 own hub never leaves loopback. An SSH alternative needs no server setting at all:
-`claude mcp add adobe-cc -- ssh user@studio-pc node <path>/packages/server/dist/index.js`.
+`claude mcp add brainferno -- ssh user@studio-pc node <path>/packages/server/dist/index.js`.
 
 ### Updating
 
 `git pull && npm install && npm run build`, then re-run the installer (your choices are
-kept) and reconnect in Claude Code (`/mcp` → adobe-cc → reconnect). Panels pick up changes
+kept) and reconnect in Claude Code (`/mcp` → brainferno → reconnect). Panels pick up changes
 on reload (UXP Developer Tool → Reload; CEP on reopen).
 
 ---
@@ -214,7 +214,7 @@ Creative Cloud applications do not share one automation surface, so the server r
 each app down the lane it has:
 
 ```
-MCP client  <--stdio / HTTP+token-->  adobe-cc-mcp  <--ws://127.0.0.1:7897-->  UXP panel   (Photoshop, Premiere Pro)
+MCP client  <--stdio / HTTP+token-->  brainferno-mcp-bridge  <--ws://127.0.0.1:7897-->  UXP panel   (Photoshop, Premiere Pro)
                                                      <--                     -->  CEP panel   (After Effects, Audition)
                                                      --- osascript / COM ------->  Illustrator (no panel)
                                                      --- HTTP :8080 ----------->  Media Encoder web service (headless)
@@ -229,7 +229,7 @@ MCP client  <--stdio / HTTP+token-->  adobe-cc-mcp  <--ws://127.0.0.1:7897-->  U
   MCP server inside Illustrator.
 - **Long work is a job**: aerender, Media Encoder, exports and pipelines run in a registry
   with steps, progress notifications, cancel, and a per-job work folder under
-  `~/.adobe-cc-mcp/work/`.
+  `~/.brainferno-mcp-bridge/work/`.
 
 Two scripting engines, on purpose:
 
@@ -262,7 +262,7 @@ The wire protocol is documented in [`docs/protocol.md`](docs/protocol.md).
 | `ame_*` (6) | Media Encoder (headless) | Encode media / `.prproj` sequence / FCP XML with an `.epr` preset; status, history, cancel, service start/stop — [live run](docs/spikes/10-media-encoder-live.md) |
 | `audio_*` (9) | ffmpeg | Probe, R128 measure + two-pass normalize, convert/extract, trim, trim silence, denoise, mix, waveform image |
 | `pipeline_*` (4) | cross-app | `ps_to_ae`, `render_and_import`, `audio_roundtrip`, `ai_to_ps` — one call, one job, failure names the step + recovery tool — [live run](docs/spikes/09-pipelines-live.md) |
-| `cc_eval_script` | After Effects, Illustrator, Audition | Raw ExtendScript escape hatch — **opt-in** (`ADOBE_CC_MCP_ALLOW_RAW_SCRIPTS=1`) |
+| `cc_eval_script` | After Effects, Illustrator, Audition | Raw ExtendScript escape hatch — **opt-in** (`BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS=1`) |
 
 Tools are always advertised for the apps you chose, even when an app is closed — a closed
 app returns an actionable "not connected" error rather than vanishing mid-session.
@@ -271,25 +271,25 @@ app returns an actionable "not connected" error rather than vanishing mid-sessio
 
 ## Configuration
 
-The installer writes `~/.adobe-cc-mcp/config.json` (`enabledApps`, `illustratorKey`,
+The installer writes `~/.brainferno-mcp-bridge/config.json` (`enabledApps`, `illustratorKey`,
 `illustratorUrl`, `httpPort`, `httpHost`, `httpToken`). Environment variables override it:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `ADOBE_CC_MCP_APPS` | *(all)* | Apps to register, e.g. `ps,ae` |
-| `ADOBE_CC_MCP_BRIDGE_PORT` | `7897` | Port the panels dial back to (`0` = OS-assigned) |
-| `ADOBE_CC_MCP_BRIDGE_TOKEN` | *(empty → generated)* | Panel hub secret; empty generates a random per-run token |
-| `ADOBE_CC_MCP_BRIDGE_INSECURE` | *(off)* | `1` disables hub auth and the handshake file (debug only) |
-| `ADOBE_CC_MCP_HANDSHAKE_FILE` | `~/.adobe-cc-mcp/bridge.json` | Where the `{port, token}` file panels read is written |
-| `ADOBE_CC_MCP_EVAL_TIMEOUT_MS` | `30000` | How long to wait for a "slow" script result |
-| `ADOBE_CC_MCP_HEARTBEAT_MS` | `15000` | Ping cadence for detecting a dead panel |
-| `ADOBE_CC_MCP_ALLOW_RAW_SCRIPTS` | *(off)* | `1` registers the `cc_eval_script` escape hatch |
-| `ADOBE_CC_MCP_ILLUSTRATOR_KEY` / `_URL` | *(config.json)* / `http://localhost:18412/v1/mcp` | Adobe's Illustrator MCP key and endpoint |
-| `ADOBE_CC_MCP_FFMPEG` / `_FFPROBE` | `ffmpeg` / `ffprobe` | Executables for the `audio_*` lane |
-| `ADOBE_CC_MCP_AME_WEBSERVICE` | *(auto-detect)* | Path to Media Encoder's `ame_webservice_console` |
-| `ADOBE_CC_MCP_AME_PORT` / `_AME_IDLE_MS` | *(from its ini)* / `600000` | Media Encoder service port; idle time before it is stopped |
-| `ADOBE_CC_MCP_HTTP_PORT` / `_HTTP_HOST` / `_HTTP_TOKEN` | *(off)* / `127.0.0.1` / *(none)* | Remote mode (set by the installer's *shared* choice) |
-| `ADOBE_CC_MCP_LOG_LEVEL` | `info` | `error` \| `warn` \| `info` \| `debug` |
+| `BRAINFERNO_MCP_APPS` | *(all)* | Apps to register, e.g. `ps,ae` |
+| `BRAINFERNO_MCP_BRIDGE_PORT` | `7897` | Port the panels dial back to (`0` = OS-assigned) |
+| `BRAINFERNO_MCP_BRIDGE_TOKEN` | *(empty → generated)* | Panel hub secret; empty generates a random per-run token |
+| `BRAINFERNO_MCP_BRIDGE_INSECURE` | *(off)* | `1` disables hub auth and the handshake file (debug only) |
+| `BRAINFERNO_MCP_HANDSHAKE_FILE` | `~/.brainferno-mcp-bridge/bridge.json` | Where the `{port, token}` file panels read is written |
+| `BRAINFERNO_MCP_EVAL_TIMEOUT_MS` | `30000` | How long to wait for a "slow" script result |
+| `BRAINFERNO_MCP_HEARTBEAT_MS` | `15000` | Ping cadence for detecting a dead panel |
+| `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS` | *(off)* | `1` registers the `cc_eval_script` escape hatch |
+| `BRAINFERNO_MCP_ILLUSTRATOR_KEY` / `_URL` | *(config.json)* / `http://localhost:18412/v1/mcp` | Adobe's Illustrator MCP key and endpoint |
+| `BRAINFERNO_MCP_FFMPEG` / `_FFPROBE` | `ffmpeg` / `ffprobe` | Executables for the `audio_*` lane |
+| `BRAINFERNO_MCP_AME_WEBSERVICE` | *(auto-detect)* | Path to Media Encoder's `ame_webservice_console` |
+| `BRAINFERNO_MCP_AME_PORT` / `_AME_IDLE_MS` | *(from its ini)* / `600000` | Media Encoder service port; idle time before it is stopped |
+| `BRAINFERNO_MCP_HTTP_PORT` / `_HTTP_HOST` / `_HTTP_TOKEN` | *(off)* / `127.0.0.1` / *(none)* | Remote mode (set by the installer's *shared* choice) |
+| `BRAINFERNO_MCP_LOG_LEVEL` | `info` | `error` \| `warn` \| `info` \| `debug` |
 
 ## Security
 
@@ -297,14 +297,14 @@ The installer writes `~/.adobe-cc-mcp/config.json` (`enabledApps`, `illustratorK
   applications. It requires a token by default (auto-generated, written mode-600 to the
   handshake file the panels read), rejects web `Origin`s and non-loopback `Host`s, and
   matches each result to the socket that issued the command. Never run it with
-  `ADOBE_CC_MCP_BRIDGE_INSECURE=1` on a shared machine.
+  `BRAINFERNO_MCP_BRIDGE_INSECURE=1` on a shared machine.
 - Remote mode (*shared*) is off by default. When on, every request needs the bearer token;
   there is no anonymous path. The wire is plain HTTP — keep it to a trusted network, VPN or
   tunnel.
 - Media Encoder's built-in service has no password of its own and listens on a LAN address
   unless pinned to loopback; the installer's *local* choice pins it (one admin prompt), and
   the server only runs it while a job is active plus a short idle window.
-- Keys and tokens are stored in `~/.adobe-cc-mcp/config.json`, never logged, never put in
+- Keys and tokens are stored in `~/.brainferno-mcp-bridge/config.json`, never logged, never put in
   error messages.
 - `cc_eval_script` (raw script) is opt-in and off by default.
 
@@ -330,15 +330,15 @@ from tool call to result with no Adobe application involved.
 
 ```
 packages/
-  protocol/          @adobe-cc-mcp/protocol — shared by server and panels
+  protocol/          @brainferno/mcp-bridge-protocol — shared by server and panels
     src/apps.ts      the five hosts: lane, panel, and scripting engine each uses
     src/protocol.ts  wire format (v2, zod-validated) between server and panel
-  server/            adobe-cc-mcp — the MCP server (bin: dist/index.js) and installer (dist/install/cli.js)
+  server/            brainferno-mcp-bridge — the MCP server (bin: dist/index.js) and installer (dist/install/cli.js)
     src/index.ts     entry point: stdio transport, optional HTTP listener, signal handling
     src/server.ts    runtime (hub, drivers, jobs) + per-session McpServer with every tool
     src/http.ts      remote mode: Streamable HTTP + bearer token
     src/jobs.ts      job registry (steps, progress, cancel, work folders)
-    src/config.ts    environment + ~/.adobe-cc-mcp/config.json
+    src/config.ts    environment + ~/.brainferno-mcp-bridge/config.json
     src/bridge/      hub (socket.ts), handshake file, script escaping, errors
     src/drivers/     os-script lane (Illustrator), Illustrator MCP delegate, Media Encoder web service
     src/tools/       per-application tools, audio lane, pipelines, jobs

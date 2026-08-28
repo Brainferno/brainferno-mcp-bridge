@@ -36,7 +36,7 @@ function log(msg) {
   console.log(line);
   logBuffer += line + "\n";
   try {
-    if (LOG_PATH === null) LOG_PATH = homeDir() + "/.adobe-cc-mcp/panel-premiere.log";
+    if (LOG_PATH === null) LOG_PATH = homeDir() + "/.brainferno-mcp-bridge/panel-premiere.log";
     require("fs").writeFileSync(LOG_PATH, logBuffer, "utf-8");
   } catch (e) {
     if (logWriteError === null) {
@@ -54,7 +54,7 @@ function setStatus(state) {
 
 // ---- handshake file --------------------------------------------------------
 function readHandshake() {
-  const hs = JSON.parse(require("fs").readFileSync(homeDir() + "/.adobe-cc-mcp/bridge.json", "utf-8"));
+  const hs = JSON.parse(require("fs").readFileSync(homeDir() + "/.brainferno-mcp-bridge/bridge.json", "utf-8"));
   log("handshake read OK: port=" + hs.port + " protocol=" + hs.protocolVersion + " pid=" + hs.pid);
   return hs;
 }
