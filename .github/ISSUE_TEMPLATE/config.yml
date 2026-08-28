@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Setup and usage questions
+    url: https://github.com/Brainferno/brainferno-mcp-bridge/discussions
+    about: Ask how to install, connect a panel, or drive an app. Bugs and feature requests go in the templates.
+  - name: Security issue
+    url: https://github.com/Brainferno/brainferno-mcp-bridge/security/advisories/new
+    about: Report a vulnerability privately (remote mode, tokens, script execution).

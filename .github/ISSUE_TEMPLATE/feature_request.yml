@@ -1,0 +1,38 @@
+name: Feature request
+description: A tool, pipeline, or app capability you would like.
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: app
+    attributes:
+      label: Application
+      options:
+        - Photoshop
+        - After Effects
+        - Premiere Pro
+        - Illustrator
+        - Audition
+        - Media Encoder
+        - Audio (ffmpeg) lane
+        - Pipelines / jobs
+        - Installer / packaging
+        - Remote mode
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: task
+    attributes:
+      label: What would you ask the assistant to do?
+      description: Describe it as a prompt, e.g. "Add a lower third from this PSD at 4 s and fade it out."
+    validations:
+      required: true
+  - type: textarea
+    id: today
+    attributes:
+      label: How do you do it in the app today?
+      description: Menu path, script, or panel — this tells us which API to reach for.
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else

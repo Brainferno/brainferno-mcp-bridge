@@ -2,19 +2,39 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]
+    tags: ["v*"]
   pull_request:
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  test:
+    name: ${{ matrix.os }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [20, 22]
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ matrix.node }}
           cache: npm
+
+      # The audio lane test runs a real ffmpeg when one is on PATH (and skips otherwise).
+      - name: Install ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
       - run: npm test
+
+      - name: Check the panels are in sync with the shared bridge client
+        if: runner.os == 'Linux'
+        run: |
+          npm run panels:sync
+          git diff --exit-code -- packages/panel-uxp/bridge-client.js packages/panel-uxp-ppro/bridge-client.js packages/panel-cep/bridge-client.js

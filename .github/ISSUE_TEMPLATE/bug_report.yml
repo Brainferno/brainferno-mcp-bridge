@@ -1,0 +1,59 @@
+name: Bug report
+description: Something did not work as described.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. The more of the fields below you fill in, the faster it gets fixed.
+        Never paste keys or tokens (Illustrator MCP key, remote token, bridge token).
+  - type: dropdown
+    id: app
+    attributes:
+      label: Application
+      options:
+        - Photoshop
+        - After Effects
+        - Premiere Pro
+        - Illustrator
+        - Audition
+        - Media Encoder
+        - Audio (ffmpeg) lane
+        - Pipelines / jobs
+        - Installer
+        - Remote mode
+        - Other / not sure
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Adobe app version, OS, Node version, and the Brainferno MCP Bridge commit or release.
+      placeholder: "Premiere Pro 26.3.2, Windows 11, Node 22.x, v0.1.0"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The tool you called (e.g. `pp_insert_clip`), the arguments, and the exact error text.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+  - type: textarea
+    id: log
+    attributes:
+      label: Panel log
+      description: Paste the panel's log (Copy log button) or the file under ~/.brainferno-mcp-bridge/. Remove anything private.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: The panel shows "connected" in the app (or `cc_connected_apps` lists it as connected).
+        - label: I re-ran the installer after updating (`npm run install-cc`).
