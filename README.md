@@ -72,17 +72,23 @@ npm install
 npm run build
 ```
 
-Then run the installer. It asks one question — **only this computer** or **shared on my
-network** — and sets everything that depends on it (remote listener + token, firewall rule,
-Media Encoder's service address), links the After Effects/Audition panel, prints the
-Photoshop/Premiere UXP steps, and offers to register the server with Claude Code:
+Then run the installer. It asks **which applications** to control (pre-checked from what is
+installed: Photoshop, After Effects, Premiere Pro, Illustrator, Audition, Media Encoder — any
+mix), then **only this computer** or **shared on my network**, and sets everything that
+depends on those answers: which tools the server registers, the remote listener + token, the
+firewall rule, Media Encoder's service address, the Illustrator MCP key, the After
+Effects/Audition panel link, the Photoshop/Premiere UXP steps, and the `claude mcp add` line:
 
 ```bash
 npm run install-cc
 # or non-interactive:
-node packages/server/dist/install/cli.js --mode local --yes --register
-node packages/server/dist/install/cli.js --mode shared --yes    # prints the remote line + token
+node packages/server/dist/install/cli.js --apps all --mode local --yes --register
+node packages/server/dist/install/cli.js --apps ps,ae --mode local --yes        # Photoshop + After Effects only
+node packages/server/dist/install/cli.js --apps ppro,ame --mode shared --yes    # Premiere + Media Encoder, shared
 ```
+
+App names: `ps ae ppro ai au ame` (or full names). The choice is saved as `enabledApps` in
+`~/.adobe-cc-mcp/config.json`; `ADOBE_CC_MCP_APPS=ps,ae` overrides it for one run.
 
 Re-run it any time to switch modes. By hand, the local registration is:
 

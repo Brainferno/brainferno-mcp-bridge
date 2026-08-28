@@ -69,11 +69,50 @@ export interface Config {
   httpHost: string;
   /** Bearer token every remote request must present. */
   httpToken: string;
+  /** Which applications get their tools registered (installer choice; env ADOBE_CC_MCP_APPS overrides). */
+  enabledApps: InstallableApp[];
   logLevel: LogLevel;
 }
 
 /** Keys the installer may write to `~/.adobe-cc-mcp/config.json` (mode 600). */
+/** Everything the installer can switch on or off. */
+export const INSTALLABLE_APPS = ["photoshop", "after_effects", "premiere", "illustrator", "audition", "media_encoder"] as const;
+export type InstallableApp = (typeof INSTALLABLE_APPS)[number];
+
+export function parseApps(raw: string | undefined, fallback: readonly InstallableApp[] = INSTALLABLE_APPS): InstallableApp[] {
+  if (raw === undefined || raw.trim() === "" || raw.trim().toLowerCase() === "all") return [...fallback];
+  const aliases: Record<string, InstallableApp> = {
+    ps: "photoshop",
+    photoshop: "photoshop",
+    ae: "after_effects",
+    aftereffects: "after_effects",
+    after_effects: "after_effects",
+    "after-effects": "after_effects",
+    ppro: "premiere",
+    pr: "premiere",
+    premiere: "premiere",
+    premierepro: "premiere",
+    ai: "illustrator",
+    illustrator: "illustrator",
+    au: "audition",
+    audition: "audition",
+    ame: "media_encoder",
+    mediaencoder: "media_encoder",
+    media_encoder: "media_encoder",
+    "media-encoder": "media_encoder",
+  };
+  const out: InstallableApp[] = [];
+  for (const part of raw.split(/[,\s]+/)) {
+    const id = aliases[part.trim().toLowerCase()];
+    if (!id) throw new Error(`Unknown app "${part}". Use: ${INSTALLABLE_APPS.join(", ")}`);
+    if (!out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
 export interface UserConfigFile {
+  /** Apps whose tools are registered; missing = all. */
+  enabledApps?: InstallableApp[];
   illustratorKey?: string;
   /** Adobe's Illustrator MCP endpoint; override when the shipping release moves it. */
   illustratorUrl?: string;
@@ -91,6 +130,10 @@ export function readUserConfig(): UserConfigFile {
   try {
     const parsed = JSON.parse(readFileSync(userConfigPath(), "utf8")) as Record<string, unknown>;
     const out: UserConfigFile = {};
+    if (Array.isArray(parsed["enabledApps"])) {
+      const apps = (parsed["enabledApps"] as unknown[]).filter((a): a is InstallableApp => typeof a === "string" && (INSTALLABLE_APPS as readonly string[]).includes(a));
+      out.enabledApps = apps;
+    }
     if (typeof parsed["illustratorKey"] === "string") out.illustratorKey = parsed["illustratorKey"];
     if (typeof parsed["illustratorUrl"] === "string") out.illustratorUrl = parsed["illustratorUrl"];
     if (typeof parsed["httpPort"] === "number") out.httpPort = parsed["httpPort"];
@@ -164,6 +207,7 @@ export function loadConfig(): Config {
     httpPort: intFromEnv("ADOBE_CC_MCP_HTTP_PORT", file.httpPort ?? 0, { allowZero: true }),
     httpHost: process.env.ADOBE_CC_MCP_HTTP_HOST ?? file.httpHost ?? "127.0.0.1",
     httpToken: process.env.ADOBE_CC_MCP_HTTP_TOKEN ?? file.httpToken ?? "",
+    enabledApps: parseApps(process.env.ADOBE_CC_MCP_APPS, file.enabledApps ?? INSTALLABLE_APPS),
     logLevel: logLevelFromEnv(),
   };
 }

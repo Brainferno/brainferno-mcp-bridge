@@ -2,7 +2,8 @@ import { createServer } from "node:http";
 
 import { describe, expect, it } from "vitest";
 
-import { checkIllustratorKey, extractIllustratorKey, extractIllustratorUrl, firewallCommands, mcpAddCommands, mergeUserConfig, platformPaths, rewriteAmeIni } from "../src/install/lib.js";
+import { INSTALLABLE_APPS, parseApps } from "../src/config.js";
+import { appsNeed, checkIllustratorKey, extractIllustratorKey, extractIllustratorUrl, firewallCommands, mcpAddCommands, mergeUserConfig, pickApps, platformPaths, rewriteAmeIni } from "../src/install/lib.js";
 
 describe("installer: Illustrator key", () => {
   it("accepts a bare key or the whole claude mcp add line", () => {
@@ -39,6 +40,27 @@ describe("installer: Illustrator key", () => {
     expect((await checkIllustratorKey(url, "ilst_bad")) as { reason: string }).toMatchObject({ ok: false, reason: "refused" });
     await new Promise<void>((r) => server.close(() => r()));
     expect((await checkIllustratorKey(url, "ilst_good")) as { reason: string }).toMatchObject({ ok: false, reason: "not-running" });
+  });
+});
+
+describe("installer: choosing apps", () => {
+  it("parses numbers, names, aliases and 'all'", () => {
+    expect(pickApps("1,3", [])).toEqual(["photoshop", "premiere"]);
+    expect(pickApps("2 5", [])).toEqual(["after_effects", "audition"]);
+    expect(pickApps("all", [])).toEqual([...INSTALLABLE_APPS]);
+    expect(pickApps("", ["audition"])).toEqual(["audition"]);
+    expect(pickApps("ps, AE", [])).toEqual(["photoshop", "after_effects"]);
+    expect(parseApps("ppro,ame")).toEqual(["premiere", "media_encoder"]);
+    expect(() => parseApps("indesign")).toThrow(/Unknown app/);
+  });
+
+  it("stores a subset, drops the key when everything is chosen", () => {
+    expect(mergeUserConfig({}, "local", { apps: ["photoshop", "after_effects"] })).toEqual({ enabledApps: ["photoshop", "after_effects"] });
+    expect(mergeUserConfig({ enabledApps: ["audition"] }, "local", { apps: [...INSTALLABLE_APPS] })).toEqual({});
+    expect(appsNeed(["photoshop"], "uxp")).toBe(true);
+    expect(appsNeed(["photoshop"], "cep")).toBe(false);
+    expect(appsNeed(["after_effects", "audition"], "cep")).toBe(true);
+    expect(appsNeed(["illustrator"], "illustrator-key")).toBe(true);
   });
 });
 

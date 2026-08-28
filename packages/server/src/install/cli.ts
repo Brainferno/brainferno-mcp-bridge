@@ -7,11 +7,11 @@ import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 
 import { DEFAULT_ILLUSTRATOR_MCP_URL, readUserConfig, userConfigPath } from "../config.js";
-import { DEFAULT_HTTP_PORT, checkIllustratorKey, extractIllustratorKey, extractIllustratorUrl, firewallCommands, lanAddresses, mcpAddCommands, mergeUserConfig, platformPaths, rewriteAmeIni, type InstallMode } from "./lib.js";
+import { APP_CHOICES, DEFAULT_HTTP_PORT, appsNeed, checkIllustratorKey, detectInstalledApps, extractIllustratorKey, extractIllustratorUrl, firewallCommands, lanAddresses, mcpAddCommands, mergeUserConfig, pickApps, platformPaths, rewriteAmeIni, type InstallMode } from "./lib.js";
 
 /**
  * Interactive installer:
- *   node dist/install/cli.js [--mode local|shared] [--token T] [--port N] [--yes] [--no-panels] [--no-ame] [--no-firewall] [--register]
+ *   node dist/install/cli.js [--apps ps,ae,ppro,ai,au,ame|all] [--mode local|shared] [--token T] [--port N] [--yes] [--no-panels] [--no-ame] [--no-firewall] [--register]
  *                            [--illustrator-key K|"claude mcp add … line"] [--illustrator-url U] [--no-illustrator]
  *
  * Asks one question — "only this computer" or "shared on my network" — and
@@ -34,7 +34,7 @@ for (let i = 2; i < process.argv.length; i++) {
   if (!a.startsWith("--")) continue;
   const [k, v] = a.slice(2).split("=", 2);
   if (v !== undefined) args.set(k!, v);
-  else if (process.argv[i + 1] && !process.argv[i + 1]!.startsWith("--") && ["mode", "token", "port", "host", "illustrator-key", "illustrator-url"].includes(k!)) args.set(k!, process.argv[++i]!);
+  else if (process.argv[i + 1] && !process.argv[i + 1]!.startsWith("--") && ["mode", "token", "port", "host", "illustrator-key", "illustrator-url", "apps"].includes(k!)) args.set(k!, process.argv[++i]!);
   else args.set(k!, true);
 }
 const flag = (k: string) => args.get(k) === true;
@@ -76,6 +76,28 @@ async function main(): Promise<void> {
     return a === "" ? def : a;
   };
 
+  // ---- 0. which apps ------------------------------------------------------
+  const existing = readUserConfig();
+  const detected = detectInstalledApps();
+  const preset = existing.enabledApps ?? (detected.length ? detected : APP_CHOICES.map((c) => c.id));
+  let apps = str("apps") !== undefined ? pickApps(str("apps")!, preset) : undefined;
+  if (!apps) {
+    if (flag("yes")) apps = [...preset];
+    else {
+      say("");
+      say("Which applications should this server control?");
+      APP_CHOICES.forEach((c, i) => say(`  ${i + 1}) ${c.label.padEnd(14)} ${detected.includes(c.id) ? "(installed)" : "(not found)"}${preset.includes(c.id) ? "  ←" : ""}`));
+      const a = await ask("Numbers like 1,2,5 — or 'all'", preset.map((id) => APP_CHOICES.findIndex((c) => c.id === id) + 1).join(","));
+      apps = pickApps(a, preset);
+    }
+  }
+  if (apps.length === 0) {
+    warn("no applications chosen; nothing to install");
+    process.exit(1);
+  }
+  say("");
+  say(`Apps: ${APP_CHOICES.filter((c) => apps!.includes(c.id)).map((c) => c.label).join(", ")}`);
+
   // ---- 1. the question ----------------------------------------------------
   let mode = str("mode") as InstallMode | undefined;
   if (!mode) {
@@ -90,10 +112,9 @@ async function main(): Promise<void> {
   say(`Mode: ${mode === "local" ? "only this computer" : "shared on my network"}`);
 
   // ---- 2. Illustrator MCP key (Adobe's own server inside Illustrator) ------
-  const existing = readUserConfig();
   let illustratorKey: string | null | undefined = undefined;
   let illustratorUrl: string | null | undefined = str("illustrator-url") ?? undefined;
-  if (!flag("no-illustrator")) {
+  if (!flag("no-illustrator") && appsNeed(apps, "illustrator-key")) {
     let pasted = str("illustrator-key");
     if (pasted === undefined && !flag("yes")) {
       say("");
@@ -131,6 +152,7 @@ async function main(): Promise<void> {
     ...(str("host") !== undefined ? { host: str("host")! } : {}),
     ...(illustratorKey !== undefined ? { illustratorKey } : {}),
     ...(illustratorUrl !== undefined ? { illustratorUrl } : {}),
+    apps,
   });
   mkdirSync(dirname(userConfigPath()), { recursive: true });
   writeFileSync(userConfigPath(), JSON.stringify(next, null, 2) + "\n");
@@ -143,7 +165,7 @@ async function main(): Promise<void> {
 
   // ---- 4. CEP panel (After Effects, Audition) -----------------------------
   const paths = platformPaths(process.platform, homedir(), process.env["APPDATA"]);
-  if (!flag("no-panels")) {
+  if (!flag("no-panels") && appsNeed(apps, "cep")) {
     try {
       mkdirSync(paths.cepExtensionsDir, { recursive: true });
       const linkName = "com.brainferno.mcp-bridge.cep";
@@ -181,7 +203,7 @@ async function main(): Promise<void> {
   }
 
   // ---- 4. Media Encoder web-service address --------------------------------
-  if (!flag("no-ame")) {
+  if (!flag("no-ame") && appsNeed(apps, "ame-ini")) {
     const ini = paths.ameIniCandidates.find((p) => existsSync(p));
     if (!ini) warn("Media Encoder not found; skipped its web-service address.");
     else {
@@ -218,12 +240,15 @@ async function main(): Promise<void> {
   }
 
   // ---- 6. UXP panels (Photoshop, Premiere) --------------------------------
-  say("");
-  say("UXP panels (Photoshop, Premiere Pro) load through Adobe's UXP Developer Tool:");
-  say(`  Photoshop : Add Plugin → ${panelUxp} → Load`);
-  say(`  Premiere  : Add Plugin → ${panelUxpPpro} → Load   (first enable Settings → Plugins → developer mode, restart Premiere)`);
-  say("  Then Window → Extensions (UXP) → Brainferno MCP Bridge in each app.");
-  say("  After Effects / Audition: Window → Extensions → Brainferno MCP Bridge.");
+  if (appsNeed(apps, "uxp") || appsNeed(apps, "cep")) {
+    say("");
+    say("Panels:");
+    if (apps.includes("photoshop") || apps.includes("premiere")) say("  UXP panels load through Adobe's UXP Developer Tool (Add Plugin → manifest → Load):");
+    if (apps.includes("photoshop")) say(`    Photoshop : ${panelUxp}`);
+    if (apps.includes("premiere")) say(`    Premiere  : ${panelUxpPpro}   (first enable Settings → Plugins → developer mode, restart Premiere)`);
+    if (apps.includes("photoshop") || apps.includes("premiere")) say("    Then Window → Extensions (UXP) → Brainferno MCP Bridge in each app.");
+    if (apps.includes("after_effects") || apps.includes("audition")) say(`  ${[apps.includes("after_effects") ? "After Effects" : "", apps.includes("audition") ? "Audition" : ""].filter(Boolean).join(" / ")}: Window → Extensions → Brainferno MCP Bridge.`);
+  }
 
   // ---- 7. register with Claude Code ---------------------------------------
   const cmds = mcpAddCommands({ mode, distIndex, port: next.httpPort ?? port, token: next.httpToken ?? "", addresses: lanAddresses() });

@@ -20,7 +20,16 @@ The Adobe panels keep dialing the loopback hub (7897, its own token) — never e
 
 ## Installer (`npm run install-cc` / `adobe-cc-mcp-install`)
 
-One question — *Only this computer* or *Shared on my network* — drives every switch:
+First question — **which applications** (numbers or names; pre-checked from the app folders
+found on disk; `--apps ps,ae,ppro,ai,au,ame|all`). Saved as `enabledApps` (omitted when all
+six are chosen). The server registers only those apps' tools, `cc_connected_apps` lists only
+them, and a pipeline appears only when every app it needs is on (e.g. `pipeline_ps_to_ae`
+needs Photoshop + After Effects). The audio (ffmpeg) and job tools are always on. Each setup
+step below runs only when a chosen app needs it (CEP link for AE/AU, UXP steps for PS/PPro,
+Illustrator key, Media Encoder ini). Verified: `--apps ps,ae` → 2 panel lines printed,
+Illustrator/AME steps skipped, server test shows PS/AE tools + `pipeline_ps_to_ae` only.
+
+Second question — *Only this computer* or *Shared on my network* — drives every switch:
 
 | Step | local | shared |
 | --- | --- | --- |

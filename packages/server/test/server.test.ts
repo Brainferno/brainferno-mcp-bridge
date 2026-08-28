@@ -30,6 +30,7 @@ const config: Config = {
   httpPort: 0,
   httpHost: "127.0.0.1",
   httpToken: "",
+  enabledApps: ["photoshop", "after_effects", "premiere", "illustrator", "audition", "media_encoder"],
   logLevel: "error",
 };
 
@@ -167,5 +168,29 @@ describe("adobe-cc-mcp server with an Illustrator delegate key", () => {
     await built.server.close();
     await built.bridge.close();
     await built.illustratorDelegate.close();
+  });
+});
+
+describe("app choice", () => {
+  it("registers only the chosen apps and the pipelines they allow", async () => {
+    const built = buildServer({ ...config, enabledApps: ["photoshop", "after_effects"] });
+    await built.bridge.ready();
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    const c = new Client({ name: "subset", version: "0" });
+    await Promise.all([c.connect(ct), built.server.connect(st)]);
+    const names = (await c.listTools()).tools.map((t) => t.name);
+    expect(names).toContain("ps_list_documents");
+    expect(names).toContain("ae_list_compositions");
+    expect(names).toContain("pipeline_ps_to_ae");
+    expect(names).toContain("audio_probe");
+    expect(names).not.toContain("pp_list_sequences");
+    expect(names).not.toContain("au_document_info");
+    expect(names).not.toContain("ame_encode");
+    expect(names).not.toContain("pipeline_render_and_import");
+    const apps = JSON.parse(((await c.callTool({ name: "cc_connected_apps", arguments: {} })).content as { type: string; text: string }[])[0]!.text) as { appId: string }[];
+    expect(apps.map((a) => a.appId).sort()).toEqual(["after_effects", "photoshop"]);
+    await c.close();
+    await built.server.close();
+    await built.bridge.close();
   });
 });

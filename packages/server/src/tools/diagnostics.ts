@@ -14,6 +14,8 @@ export interface DiagnosticOptions {
    * execution at user privilege on any connected host.
    */
   allowRawScripts: boolean;
+  /** Apps to list in cc_connected_apps; missing = all five. */
+  enabledApps?: readonly AppId[];
 }
 
 /** Host ids whose engine can evaluate a raw ExtendScript string. */
@@ -43,7 +45,7 @@ export function registerDiagnosticTools(
       guard(async () => {
         const connected = new Set(bridge.connectedApps());
         return jsonResult(
-          APP_IDS.map((id) => ({
+          (options.enabledApps ?? APP_IDS).map((id) => ({
             appId: id,
             displayName: APPS[id].displayName,
             lane: APPS[id].lane,

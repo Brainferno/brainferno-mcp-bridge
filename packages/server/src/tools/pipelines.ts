@@ -26,6 +26,8 @@ export interface PipelineDeps {
   illustrator: AppBridge;
   jobs: JobRegistry;
   audio: AudioToolOptions;
+  /** Installer choice: a pipeline is registered only when every app it needs is enabled. Missing = all. */
+  enabled?: Set<string>;
 }
 
 const wait = z.boolean().optional().describe("Block until the pipeline finishes (default). false returns a jobId at once; poll with cc_job_wait.");
@@ -36,8 +38,10 @@ const safeName = (s: string) => s.replace(/[^\w.-]+/g, "_").slice(0, 60) || "out
 export function registerPipelineTools(server: McpServer, deps: PipelineDeps): void {
   const runPipeline = (kind: string, steps: JobStepDef[], finalize: (results: unknown[]) => unknown, doWait: boolean | undefined, extra: unknown) =>
     runOrQueue(deps.jobs, kind, steps, (results) => finalize(results), { wait: doWait ?? true, timeoutMs: 30 * 60_000, extra: extra as ProgressExtra });
+  const on = (...apps: string[]) => !deps.enabled || apps.every((a) => deps.enabled!.has(a));
 
   // ---- Photoshop → After Effects ---------------------------------------------
+  if (on("photoshop", "after_effects"))
   server.registerTool(
     "pipeline_ps_to_ae",
     {
@@ -94,6 +98,7 @@ export function registerPipelineTools(server: McpServer, deps: PipelineDeps): vo
   );
 
   // ---- After Effects → aerender → Premiere ---------------------------------
+  if (on("after_effects", "premiere"))
   server.registerTool(
     "pipeline_render_and_import",
     {
@@ -170,6 +175,7 @@ export function registerPipelineTools(server: McpServer, deps: PipelineDeps): vo
   );
 
   // ---- Premiere audio → ffmpeg → Premiere ----------------------------------
+  if (on("premiere"))
   server.registerTool(
     "pipeline_audio_roundtrip",
     {
@@ -270,6 +276,7 @@ export function registerPipelineTools(server: McpServer, deps: PipelineDeps): vo
   );
 
   // ---- Illustrator → Photoshop ---------------------------------------------
+  if (on("illustrator", "photoshop"))
   server.registerTool(
     "pipeline_ai_to_ps",
     {

@@ -84,16 +84,22 @@ export function createMcpServer(rt: Runtime): McpServer {
     },
   );
 
-  registerDiagnosticTools(server, bridge, { allowRawScripts: config.allowRawScripts });
-  registerAfterEffectsTools(server, bridge.bridgeFor("after_effects"), { jobs });
-  registerPremiereTools(server, bridge.bridgeFor("premiere"), { jobs });
-  registerPhotoshopTools(server, bridge.bridgeFor("photoshop"), { allowRawScripts: config.allowRawScripts });
-  registerIllustratorTools(server, rt.illustratorBridge);
-  registerIllustratorDelegateTools(server, rt.illustratorDelegate, config.illustratorMcpKey !== "");
-  registerAuditionTools(server, bridge.bridgeFor("audition"));
+  // The installer's app choice: only chosen apps get tools (and pipelines that need them).
+  const on = new Set(config.enabledApps);
+  const appIds = (["after_effects", "premiere", "photoshop", "illustrator", "audition"] as const).filter((id) => on.has(id));
+
+  registerDiagnosticTools(server, bridge, { allowRawScripts: config.allowRawScripts, enabledApps: appIds });
+  if (on.has("after_effects")) registerAfterEffectsTools(server, bridge.bridgeFor("after_effects"), { jobs });
+  if (on.has("premiere")) registerPremiereTools(server, bridge.bridgeFor("premiere"), { jobs });
+  if (on.has("photoshop")) registerPhotoshopTools(server, bridge.bridgeFor("photoshop"), { allowRawScripts: config.allowRawScripts });
+  if (on.has("illustrator")) {
+    registerIllustratorTools(server, rt.illustratorBridge);
+    registerIllustratorDelegateTools(server, rt.illustratorDelegate, config.illustratorMcpKey !== "");
+  }
+  if (on.has("audition")) registerAuditionTools(server, bridge.bridgeFor("audition"));
   registerAudioTools(server, rt.audio);
   registerJobTools(server, jobs);
-  registerMediaEncoderTools(server, rt.mediaEncoder, { jobs });
+  if (on.has("media_encoder")) registerMediaEncoderTools(server, rt.mediaEncoder, { jobs });
   registerPipelineTools(server, {
     photoshop: bridge.bridgeFor("photoshop"),
     afterEffects: bridge.bridgeFor("after_effects"),
@@ -101,6 +107,7 @@ export function createMcpServer(rt: Runtime): McpServer {
     illustrator: rt.illustratorBridge,
     jobs,
     audio: rt.audio,
+    enabled: on,
   });
   return server;
 }

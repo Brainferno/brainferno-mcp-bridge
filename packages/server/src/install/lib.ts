@@ -2,7 +2,57 @@ import { randomBytes } from "node:crypto";
 import { networkInterfaces } from "node:os";
 import { join } from "node:path";
 
-import type { UserConfigFile } from "../config.js";
+import { existsSync, readdirSync } from "node:fs";
+
+import { INSTALLABLE_APPS, parseApps, type InstallableApp, type UserConfigFile } from "../config.js";
+
+export interface AppChoice {
+  id: InstallableApp;
+  label: string;
+  /** Regex on the install folder name (Program Files\Adobe on Windows, /Applications on macOS). */
+  folder: RegExp;
+  /** What the installer has to set up for it. */
+  needs: ("cep" | "uxp" | "illustrator-key" | "ame-ini")[];
+}
+
+export const APP_CHOICES: readonly AppChoice[] = [
+  { id: "photoshop", label: "Photoshop", folder: /^Adobe Photoshop/i, needs: ["uxp"] },
+  { id: "after_effects", label: "After Effects", folder: /^Adobe After Effects/i, needs: ["cep"] },
+  { id: "premiere", label: "Premiere Pro", folder: /^Adobe Premiere Pro/i, needs: ["uxp"] },
+  { id: "illustrator", label: "Illustrator", folder: /^Adobe Illustrator/i, needs: ["illustrator-key"] },
+  { id: "audition", label: "Audition", folder: /^Adobe Audition/i, needs: ["cep"] },
+  { id: "media_encoder", label: "Media Encoder", folder: /^Adobe Media Encoder/i, needs: ["ame-ini"] },
+];
+
+/** Which of the six are installed, judged by their app folders. */
+export function detectInstalledApps(platform: NodeJS.Platform = process.platform): InstallableApp[] {
+  const root = platform === "win32" ? join(process.env["ProgramFiles"] ?? "C:\\Program Files", "Adobe") : platform === "darwin" ? "/Applications" : "";
+  if (!root || !existsSync(root)) return [];
+  let names: string[];
+  try {
+    names = readdirSync(root);
+  } catch {
+    return [];
+  }
+  return APP_CHOICES.filter((c) => names.some((n) => c.folder.test(n))).map((c) => c.id);
+}
+
+/** "1,3,5", "1 3", "all", or app names → app ids (in canonical order). */
+export function pickApps(answer: string, fallback: readonly InstallableApp[]): InstallableApp[] {
+  const a = answer.trim().toLowerCase();
+  if (a === "" ) return [...fallback];
+  if (a === "all" || a === "*") return [...INSTALLABLE_APPS];
+  if (/^[\d,\s]+$/.test(a)) {
+    const idx = a.split(/[,\s]+/).filter(Boolean).map(Number);
+    return APP_CHOICES.filter((_, i) => idx.includes(i + 1)).map((c) => c.id);
+  }
+  // Names like "ps, ae" — the config parser throws on unknown names.
+  return parseApps(answer);
+}
+
+export function appsNeed(apps: readonly InstallableApp[], need: AppChoice["needs"][number]): boolean {
+  return APP_CHOICES.some((c) => apps.includes(c.id) && c.needs.includes(need));
+}
 
 /**
  * Pure pieces of the installer, kept apart from the interactive CLI so they
@@ -74,8 +124,13 @@ export async function checkIllustratorKey(url: string, key: string, timeoutMs = 
 }
 
 /** Apply the chosen mode to the user config file (other keys untouched). */
-export function mergeUserConfig(existing: UserConfigFile, mode: InstallMode, o: { port?: number; token?: string; host?: string; illustratorKey?: string | null; illustratorUrl?: string | null } = {}): UserConfigFile {
+export function mergeUserConfig(existing: UserConfigFile, mode: InstallMode, o: { port?: number; token?: string; host?: string; illustratorKey?: string | null; illustratorUrl?: string | null; apps?: readonly InstallableApp[] } = {}): UserConfigFile {
   const next: UserConfigFile = { ...existing };
+  if (o.apps !== undefined) {
+    const all = INSTALLABLE_APPS.every((a) => o.apps!.includes(a));
+    if (all) delete next.enabledApps;
+    else next.enabledApps = INSTALLABLE_APPS.filter((a) => o.apps!.includes(a));
+  }
   if (o.illustratorKey !== undefined) {
     if (o.illustratorKey === null) delete next.illustratorKey;
     else next.illustratorKey = o.illustratorKey;
