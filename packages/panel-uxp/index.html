@@ -19,6 +19,9 @@
       .badge.off { background: #6b2b2b; color: #fbeaea; }
       sp-label { width: 42px; }
       sp-textfield { flex: 1; }
+      sp-action-button { min-width: 0; }
+      #connect { background-color: #1473e6; color: #ffffff; border-color: #1473e6; }
+      #connect:hover { background-color: #2680eb; }
       /* Height is set by fitLog() in main.js from the real panel height. */
       #log { height: 160px; overflow-y: auto; overflow-x: hidden; white-space: pre-wrap; word-break: break-all; font-family: monospace; font-size: 11px; background: rgba(0, 0, 0, 0.28); color: var(--uxp-host-text-color); border: 1px solid var(--uxp-host-border-color); padding: 6px; border-radius: 4px; box-sizing: border-box; }
       .below { margin-top: 8px; margin-bottom: 4px; }
@@ -27,11 +30,11 @@
   </head>
   <body>
     <div class="row head" id="r1"><img id="logo" src="icons/logo.svg" alt="Brainferno" /><span class="title">MCP Bridge</span> <span id="status" class="badge off">disconnected</span></div>
-    <div class="row" id="r2"><sp-button id="connect" size="s" variant="cta">Connect</sp-button><sp-button id="kill" size="s" variant="secondary">Kill switch</sp-button></div>
+    <div class="row" id="r2"><sp-action-button id="connect" size="s">Connect</sp-action-button><sp-action-button id="kill" size="s">Kill switch</sp-action-button></div>
     <div class="row" id="r3"><sp-label>Port</sp-label><sp-textfield id="port" placeholder="7897"></sp-textfield></div>
     <div class="row" id="r4"><sp-label>Token</sp-label><sp-textfield id="token" placeholder="auto from bridge.json, or paste"></sp-textfield></div>
     <div id="log"></div>
-    <div class="row below" id="r5"><sp-button id="copy" size="s" variant="secondary">Copy log</sp-button><sp-button id="clear" size="s" variant="secondary">Clear</sp-button></div>
+    <div class="row below" id="r5"><sp-action-button id="copy" size="s">Copy log</sp-action-button><sp-action-button id="clear" size="s">Clear</sp-action-button></div>
     <div id="hint">Log also written to ~/.brainferno-mcp-bridge/panel-photoshop.log</div>
   </body>
   <script src="bridge-client.js"></script>
