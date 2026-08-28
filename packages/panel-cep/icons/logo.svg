@@ -3,15 +3,15 @@
   <defs>
     <style>
       .cls-1 {
-        fill: url(#linear-gradient-2);
+        fill: #fe8800;
       }
 
       .cls-2 {
-        fill: url(#linear-gradient-4);
+        fill: #fe8800;
       }
 
       .cls-3 {
-        fill: url(#linear-gradient-3);
+        fill: #fe8800;
       }
 
       .cls-4 {
@@ -19,7 +19,7 @@
       }
 
       .cls-5 {
-        fill: url(#linear-gradient);
+        fill: #fe8800;
       }
     </style>
     <linearGradient id="linear-gradient" x1="238.56" y1="28.88" x2="238.56" y2="4.57" gradientUnits="userSpaceOnUse">
