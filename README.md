@@ -1,5 +1,9 @@
 # Brainferno MCP Bridge (`brainferno-mcp-bridge`)
 
+[![CI](https://github.com/Brainferno/brainferno-mcp-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/Brainferno/brainferno-mcp-bridge/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Brainferno/brainferno-mcp-bridge)](https://github.com/Brainferno/brainferno-mcp-bridge/releases)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 **Let an AI assistant run your Adobe video and graphics pipeline.**
 
 Brainferno MCP Bridge is an [MCP](https://modelcontextprotocol.io) server that gives Claude
