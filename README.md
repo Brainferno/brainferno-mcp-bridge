@@ -23,6 +23,13 @@ the way. Every action is one undo step in the app, so you can always step back.
 > Status: v0.1 — every tool verified live on Windows (Adobe 2026 apps). macOS paths are
 > written but not yet run. See [Status](#status).
 
+The companion panel inside each app — here in Adobe After Effects and Adobe Photoshop —
+shows the connection, a live log, and a kill switch:
+
+| After Effects (CEP panel) | Photoshop (UXP panel) |
+| :---: | :---: |
+| <img src="docs/images/panel-after-effects.png" alt="Brainferno MCP Bridge panel in After Effects" width="380"> | <img src="docs/images/panel-photoshop.png" alt="Brainferno MCP Bridge panel in Photoshop" width="380"> |
+
 ---
 
 ## What you can ask for
