@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { readdir, readFile, stat } from "node:fs/promises";
+import { request } from "node:http";
 import { networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -178,6 +179,26 @@ export async function portFromIni(exePath: string): Promise<number> {
   return 8080;
 }
 
+export function httpRequest(baseUrl: string, method: "GET" | "POST" | "DELETE", path: string, body?: string, timeoutMs = 15_000): Promise<{ status: number; text: string }> {
+  const url = new URL(baseUrl + path);
+  return new Promise((resolve, reject) => {
+    const headers: Record<string, string | number> = { Host: url.host, Connection: "close" };
+    if (body !== undefined) {
+      headers["Content-Type"] = "application/xml";
+      headers["Content-Length"] = Buffer.byteLength(body);
+    }
+    const req = request({ host: url.hostname, port: Number(url.port) || 80, method, path: url.pathname + url.search, headers }, (res) => {
+      let text = "";
+      res.setEncoding("utf8");
+      res.on("data", (d: string) => (text += d));
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, text }));
+    });
+    req.setTimeout(timeoutMs, () => req.destroy(new Error(`Media Encoder web service did not answer ${method} ${path} within ${Math.round(timeoutMs / 1000)} s`)));
+    req.on("error", reject);
+    req.end(body);
+  });
+}
+
 /** Loopback first, then every non-internal IPv4 address — the service may bind either. */
 export function candidateHosts(): string[] {
   const hosts = ["127.0.0.1"];
@@ -208,20 +229,14 @@ export class AmeWebService {
     return this.baseUrl !== null;
   }
 
-  private async http(method: "GET" | "POST" | "DELETE", path: string, body?: string, timeoutMs = 15_000): Promise<{ status: number; text: string }> {
-    if (!this.baseUrl) throw new Error("Media Encoder web service is not running.");
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const res = await fetch(this.baseUrl + path, {
-        method,
-        signal: controller.signal,
-        ...(body !== undefined ? { body, headers: { "content-type": "application/xml" } } : {}),
-      });
-      return { status: res.status, text: await res.text() };
-    } finally {
-      clearTimeout(timer);
-    }
+  /**
+   * Raw node:http on purpose: the service parses header names case-sensitively
+   * and never answers a POST whose `content-length` is lowercase (as `fetch`
+   * sends it). Verified live on 26.3.2.
+   */
+  private http(method: "GET" | "POST" | "DELETE", path: string, body?: string, timeoutMs = 15_000): Promise<{ status: number; text: string }> {
+    if (!this.baseUrl) return Promise.reject(new Error("Media Encoder web service is not running."));
+    return httpRequest(this.baseUrl, method, path, body, timeoutMs);
   }
 
   /** Find a service already answering on any local address (started by us or by the user). */
@@ -229,11 +244,8 @@ export class AmeWebService {
     for (const host of candidateHosts()) {
       const url = `http://${host}:${port}`;
       try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 1500);
-        const res = await fetch(`${url}/server`, { signal: controller.signal });
-        clearTimeout(timer);
-        if (res.ok && /<ServerStatus>/.test(await res.text())) return url;
+        const res = await httpRequest(url, "GET", "/server", undefined, 1500);
+        if (res.status === 200 && /<ServerStatus>/.test(res.text)) return url;
       } catch {
         /* not here */
       }
@@ -327,15 +339,24 @@ export class AmeWebService {
     return parseHistory(r.text);
   }
 
-  async submit(req: AmeSubmitRequest): Promise<AmeJobInfo & { submitResult: string }> {
-    const r = await this.http("POST", "/job", buildManifest(req), 60_000);
-    this.touch();
-    const info = parseJob(r.text);
-    const submitResult = tag(r.text, "SubmitResult") || (r.status === 200 ? "Accepted" : `HTTP ${r.status}`);
-    if (r.status !== 200 || !/accept/i.test(submitResult)) {
+  async submit(req: AmeSubmitRequest, opts: { busyWaitMs?: number; signal?: AbortSignal } = {}): Promise<AmeJobInfo & { submitResult: string }> {
+    const manifest = buildManifest(req);
+    const deadline = Date.now() + (opts.busyWaitMs ?? 30 * 60_000);
+    for (;;) {
+      // The service loads the source before answering; a .prproj comes in through
+      // Dynamic Link and can take minutes on a cold renderer.
+      const r = await this.http("POST", "/job", manifest, 10 * 60_000);
+      this.touch();
+      const info = parseJob(r.text);
+      const submitResult = tag(r.text, "SubmitResult") || (r.status === 200 ? "Accepted" : `HTTP ${r.status}`);
+      if (r.status === 200 && /accept/i.test(submitResult)) return { ...info, submitResult };
+      // One job at a time: "Busy" while another job (maybe submitted elsewhere) runs.
+      if (/busy/i.test(submitResult) && Date.now() < deadline && !opts.signal?.aborted) {
+        await new Promise((res) => setTimeout(res, 3000));
+        continue;
+      }
       throw new Error(`Media Encoder refused the job (${submitResult}): ${info.details || r.text.slice(0, 300)}`);
     }
-    return { ...info, submitResult };
   }
 
   async cancel(jobId: string): Promise<AmeJobInfo> {

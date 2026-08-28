@@ -97,7 +97,7 @@ export function registerMediaEncoderTools(server: McpServer, ame: AmeWebService,
             recoveryTool: "ame_encode",
             run: async (ctx) => {
               await mkdir(dirname(a.output), { recursive: true });
-              const info = await serialized(() => ame.submit({ sourcePath: a.source, presetPath, destinationPath: a.output, overwrite: a.overwrite ?? true, ...(a.sequenceId !== undefined ? { sequenceGuid: a.sequenceId } : {}) }));
+              const info = await serialized(() => ame.submit({ sourcePath: a.source, presetPath, destinationPath: a.output, overwrite: a.overwrite ?? true, ...(a.sequenceId !== undefined ? { sequenceGuid: a.sequenceId } : {}) }, { signal: ctx.signal }));
               ameJobId = info.jobId;
               ctx.log(`AME job ${info.jobId}: ${info.jobStatus} ${info.details}`);
               return info;
