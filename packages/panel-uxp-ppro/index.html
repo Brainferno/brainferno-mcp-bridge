@@ -38,7 +38,7 @@
       }
       #kill, #clear { margin-left: 3px; }
       .below { margin-top: 8px; margin-bottom: 4px; }
-      #hint { font-size: 10px; opacity: 0.6; }
+      #hint { margin-top: 4px; font-size: 10px; opacity: 0.6; }
       #credit { font-size: 10px; opacity: 0.55; text-align: center; margin-top: 6px; }
     </style>
   </head>
@@ -51,11 +51,11 @@
     <div class="row" id="r3"><sp-label>Port</sp-label><sp-textfield id="port" size="s" placeholder="7897"></sp-textfield></div>
     <div class="row" id="r4"><sp-label>Token</sp-label><sp-textfield id="token" size="s" placeholder="auto from bridge.json, or paste"></sp-textfield></div>
     <div id="log"></div>
+    <div id="hint">Log also written to ~/.brainferno-mcp-bridge/panel-premiere.log</div>
     <div class="row below" id="r5">
       <sp-action-button id="copy" size="s">Copy log</sp-action-button>
       <sp-action-button id="clear" size="s">Clear</sp-action-button>
     </div>
-    <div id="hint">Log also written to ~/.brainferno-mcp-bridge/panel-premiere.log</div>
     <div id="credit">Created by Vincent Parker - Brainferno, LLC</div>
   </body>
   <script src="bridge-client.js"></script>

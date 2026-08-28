@@ -29,7 +29,7 @@
       button:active { background: #3a3a3a; }
       #log { flex: 1 1 0; min-height: 40px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; font-family: Consolas, monospace; font-size: 11px; background: #141414; color: #d0d0d0; border: 1px solid #333; padding: 6px; border-radius: 4px; }
       .below { margin-top: 8px; margin-bottom: 4px; }
-      #hint { flex-shrink: 0; font-size: 10px; color: #8a8a8a; padding-bottom: 6px; }
+      #hint { margin-top: 4px; flex-shrink: 0; font-size: 10px; color: #8a8a8a; padding-bottom: 6px; }
       #credit { font-size: 10px; opacity: 0.55; text-align: center; margin-top: 6px; }
     </style>
   </head>
@@ -39,8 +39,8 @@
     <div class="row"><label>Port</label><input id="port" placeholder="7897" /></div>
     <div class="row"><label>Token</label><input id="token" placeholder="auto from bridge.json, or paste" /></div>
     <div id="log"></div>
-    <div class="row below"><button id="copy">Copy log</button><button id="clear">Clear</button></div>
     <div id="hint">Log also written to ~/.brainferno-mcp-bridge/panel-aftereffects.log</div>
+    <div class="row below"><button id="copy">Copy log</button><button id="clear">Clear</button></div>
     <div id="credit">Created by Vincent Parker - Brainferno, LLC</div>
     <script src="bridge-client.js"></script>
     <script src="main.js"></script>
