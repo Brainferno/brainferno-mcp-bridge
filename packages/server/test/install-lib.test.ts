@@ -1,6 +1,46 @@
+import { createServer } from "node:http";
+
 import { describe, expect, it } from "vitest";
 
-import { firewallCommands, mcpAddCommands, mergeUserConfig, platformPaths, rewriteAmeIni } from "../src/install/lib.js";
+import { checkIllustratorKey, extractIllustratorKey, extractIllustratorUrl, firewallCommands, mcpAddCommands, mergeUserConfig, platformPaths, rewriteAmeIni } from "../src/install/lib.js";
+
+describe("installer: Illustrator key", () => {
+  it("accepts a bare key or the whole claude mcp add line", () => {
+    const line = 'claude mcp add --transport http --header "Authorization: Bearer ilst_AbC123-xyz" --scope user illustrator http://localhost:18412/v1/mcp';
+    expect(extractIllustratorKey(line)).toBe("ilst_AbC123-xyz");
+    expect(extractIllustratorKey("  ilst_AbC123-xyz ")).toBe("ilst_AbC123-xyz");
+    expect(extractIllustratorKey("nope")).toBeNull();
+    expect(extractIllustratorKey("")).toBeNull();
+    expect(extractIllustratorUrl(line)).toBe("http://localhost:18412/v1/mcp");
+    expect(extractIllustratorUrl("ilst_x")).toBeNull();
+  });
+
+  it("stores and clears the key/url through the merge", () => {
+    const c = mergeUserConfig({}, "local", { illustratorKey: "ilst_1", illustratorUrl: "http://localhost:1/mcp" });
+    expect(c).toEqual({ illustratorKey: "ilst_1", illustratorUrl: "http://localhost:1/mcp" });
+    expect(mergeUserConfig(c, "local", { illustratorKey: null, illustratorUrl: null })).toEqual({});
+    expect(mergeUserConfig(c, "local")).toEqual(c);
+  });
+
+  it("checks a key against an MCP endpoint", async () => {
+    const server = createServer((req, res) => {
+      if (req.headers.authorization !== "Bearer ilst_good") {
+        res.writeHead(401);
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: "2025-03-26", capabilities: {}, serverInfo: { name: "illustrator-mcp", version: "1" } } }));
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const addr = server.address();
+    const url = `http://127.0.0.1:${typeof addr === "object" && addr ? addr.port : 0}/v1/mcp`;
+    expect(await checkIllustratorKey(url, "ilst_good")).toEqual({ ok: true, serverName: "illustrator-mcp" });
+    expect((await checkIllustratorKey(url, "ilst_bad")) as { reason: string }).toMatchObject({ ok: false, reason: "refused" });
+    await new Promise<void>((r) => server.close(() => r()));
+    expect((await checkIllustratorKey(url, "ilst_good")) as { reason: string }).toMatchObject({ ok: false, reason: "not-running" });
+  });
+});
 
 describe("installer pieces", () => {
   it("merges the mode into the user config without touching other keys", () => {

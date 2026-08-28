@@ -6,12 +6,13 @@ import { basename, dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 
-import { readUserConfig, userConfigPath } from "../config.js";
-import { DEFAULT_HTTP_PORT, firewallCommands, lanAddresses, mcpAddCommands, mergeUserConfig, platformPaths, rewriteAmeIni, type InstallMode } from "./lib.js";
+import { DEFAULT_ILLUSTRATOR_MCP_URL, readUserConfig, userConfigPath } from "../config.js";
+import { DEFAULT_HTTP_PORT, checkIllustratorKey, extractIllustratorKey, extractIllustratorUrl, firewallCommands, lanAddresses, mcpAddCommands, mergeUserConfig, platformPaths, rewriteAmeIni, type InstallMode } from "./lib.js";
 
 /**
  * Interactive installer:
  *   node dist/install/cli.js [--mode local|shared] [--token T] [--port N] [--yes] [--no-panels] [--no-ame] [--no-firewall] [--register]
+ *                            [--illustrator-key K|"claude mcp add … line"] [--illustrator-url U] [--no-illustrator]
  *
  * Asks one question — "only this computer" or "shared on my network" — and
  * sets every switch that depends on it: the remote MCP listener + token, the
@@ -33,7 +34,7 @@ for (let i = 2; i < process.argv.length; i++) {
   if (!a.startsWith("--")) continue;
   const [k, v] = a.slice(2).split("=", 2);
   if (v !== undefined) args.set(k!, v);
-  else if (process.argv[i + 1] && !process.argv[i + 1]!.startsWith("--") && ["mode", "token", "port", "host"].includes(k!)) args.set(k!, process.argv[++i]!);
+  else if (process.argv[i + 1] && !process.argv[i + 1]!.startsWith("--") && ["mode", "token", "port", "host", "illustrator-key", "illustrator-url"].includes(k!)) args.set(k!, process.argv[++i]!);
   else args.set(k!, true);
 }
 const flag = (k: string) => args.get(k) === true;
@@ -88,11 +89,49 @@ async function main(): Promise<void> {
   say("");
   say(`Mode: ${mode === "local" ? "only this computer" : "shared on my network"}`);
 
-  // ---- 2. user config (remote listener + token) ---------------------------
+  // ---- 2. Illustrator MCP key (Adobe's own server inside Illustrator) ------
   const existing = readUserConfig();
+  let illustratorKey: string | null | undefined = undefined;
+  let illustratorUrl: string | null | undefined = str("illustrator-url") ?? undefined;
+  if (!flag("no-illustrator")) {
+    let pasted = str("illustrator-key");
+    if (pasted === undefined && !flag("yes")) {
+      say("");
+      say("Illustrator has its own MCP server (Beta today; the shipping release may change the address).");
+      say("In Illustrator: Preferences → MCP (Beta) shows a 'claude mcp add … Bearer ilst_…' line.");
+      say(`Paste that whole line or just the key here${existing.illustratorKey ? " (Enter keeps the saved key)" : " (Enter skips)"}.`);
+      pasted = (await rl.question("Illustrator key: ")).trim();
+    }
+    if (pasted !== undefined && pasted !== "") {
+      const key = extractIllustratorKey(pasted);
+      if (!key) warn("that did not look like a key; nothing saved");
+      else {
+        illustratorKey = key;
+        const fromLine = extractIllustratorUrl(pasted);
+        if (fromLine && fromLine !== DEFAULT_ILLUSTRATOR_MCP_URL) illustratorUrl = fromLine;
+      }
+    }
+    const keyToCheck = illustratorKey ?? existing.illustratorKey;
+    const urlToCheck = illustratorUrl ?? existing.illustratorUrl ?? DEFAULT_ILLUSTRATOR_MCP_URL;
+    if (keyToCheck) {
+      const check = await checkIllustratorKey(urlToCheck, keyToCheck);
+      if (check.ok) ok(`Illustrator MCP key accepted by ${check.serverName ?? "the server"} at ${urlToCheck}`);
+      else if (check.reason === "not-running") warn(`Illustrator MCP not reachable at ${urlToCheck} (is Illustrator open with MCP enabled?) — key saved anyway`);
+      else if (check.reason === "refused") warn(`Illustrator refused the key (${check.detail}) — saved anyway; re-run with the current key from Illustrator`);
+      else warn(`could not verify the Illustrator key (${check.detail}) — saved anyway`);
+    } else ok("Illustrator MCP delegate skipped (no key); the panel-less ai_* tools work without it");
+  }
+
+  // ---- 3. user config (remote listener + token) ---------------------------
   const port = Number(str("port") ?? existing.httpPort ?? DEFAULT_HTTP_PORT);
   const token = str("token") ?? (mode === "shared" ? existing.httpToken : undefined);
-  const next = mergeUserConfig(existing, mode, { port, ...(token !== undefined ? { token } : {}), ...(str("host") !== undefined ? { host: str("host")! } : {}) });
+  const next = mergeUserConfig(existing, mode, {
+    port,
+    ...(token !== undefined ? { token } : {}),
+    ...(str("host") !== undefined ? { host: str("host")! } : {}),
+    ...(illustratorKey !== undefined ? { illustratorKey } : {}),
+    ...(illustratorUrl !== undefined ? { illustratorUrl } : {}),
+  });
   mkdirSync(dirname(userConfigPath()), { recursive: true });
   writeFileSync(userConfigPath(), JSON.stringify(next, null, 2) + "\n");
   try {
@@ -102,7 +141,7 @@ async function main(): Promise<void> {
   }
   ok(`wrote ${userConfigPath()}${mode === "shared" ? ` (remote port ${next.httpPort}, token set)` : " (remote mode off)"}`);
 
-  // ---- 3. CEP panel (After Effects, Audition) -----------------------------
+  // ---- 4. CEP panel (After Effects, Audition) -----------------------------
   const paths = platformPaths(process.platform, homedir(), process.env["APPDATA"]);
   if (!flag("no-panels")) {
     try {

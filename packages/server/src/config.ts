@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import { defaultHandshakePath } from "./bridge/handshake.js";
 
-const DEFAULT_ILLUSTRATOR_MCP_URL = "http://localhost:18412/v1/mcp";
+export const DEFAULT_ILLUSTRATOR_MCP_URL = "http://localhost:18412/v1/mcp";
 
 export type LogLevel = "error" | "warn" | "info" | "debug";
 
@@ -75,6 +75,8 @@ export interface Config {
 /** Keys the installer may write to `~/.adobe-cc-mcp/config.json` (mode 600). */
 export interface UserConfigFile {
   illustratorKey?: string;
+  /** Adobe's Illustrator MCP endpoint; override when the shipping release moves it. */
+  illustratorUrl?: string;
   httpPort?: number;
   httpHost?: string;
   httpToken?: string;
@@ -90,6 +92,7 @@ export function readUserConfig(): UserConfigFile {
     const parsed = JSON.parse(readFileSync(userConfigPath(), "utf8")) as Record<string, unknown>;
     const out: UserConfigFile = {};
     if (typeof parsed["illustratorKey"] === "string") out.illustratorKey = parsed["illustratorKey"];
+    if (typeof parsed["illustratorUrl"] === "string") out.illustratorUrl = parsed["illustratorUrl"];
     if (typeof parsed["httpPort"] === "number") out.httpPort = parsed["httpPort"];
     if (typeof parsed["httpHost"] === "string") out.httpHost = parsed["httpHost"];
     if (typeof parsed["httpToken"] === "string") out.httpToken = parsed["httpToken"];
@@ -151,7 +154,7 @@ export function loadConfig(): Config {
       .split(",")
       .map((o) => o.trim())
       .filter((o) => o !== ""),
-    illustratorMcpUrl: process.env.ADOBE_CC_MCP_ILLUSTRATOR_URL ?? DEFAULT_ILLUSTRATOR_MCP_URL,
+    illustratorMcpUrl: process.env.ADOBE_CC_MCP_ILLUSTRATOR_URL ?? file.illustratorUrl ?? DEFAULT_ILLUSTRATOR_MCP_URL,
     illustratorMcpKey: illustratorKeyFromEnvOrFile(file),
     ffmpegPath: process.env.ADOBE_CC_MCP_FFMPEG ?? "ffmpeg",
     ffprobePath: process.env.ADOBE_CC_MCP_FFPROBE ?? "ffprobe",

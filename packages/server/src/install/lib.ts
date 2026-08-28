@@ -27,9 +27,63 @@ export function lanAddresses(): string[] {
   return out;
 }
 
+/**
+ * The Illustrator MCP key as the user pasted it: either the bare `ilst_…` key or
+ * the whole `claude mcp add … --header "Authorization: Bearer ilst_…" …` line
+ * Illustrator shows. Returns null when nothing key-like is in there.
+ */
+export function extractIllustratorKey(input: string): string | null {
+  const s = input.trim();
+  if (s === "") return null;
+  const bearer = /Bearer\s+([A-Za-z0-9_.-]+)/i.exec(s);
+  if (bearer) return bearer[1] ?? null;
+  if (/^[A-Za-z0-9_.-]{12,}$/.test(s)) return s;
+  return null;
+}
+
+/** The endpoint URL from a pasted `claude mcp add` line, if it carries one. */
+export function extractIllustratorUrl(input: string): string | null {
+  const m = /(https?:\/\/[^\s"']+\/mcp)\b/i.exec(input);
+  return m ? (m[1] ?? null) : null;
+}
+
+export type IllustratorKeyCheck = { ok: true; serverName: string | null } | { ok: false; reason: "not-running" | "refused" | "unexpected"; detail: string };
+
+/** Try an MCP initialize against Adobe's Illustrator endpoint with the key. */
+export async function checkIllustratorKey(url: string, key: string, timeoutMs = 4000): Promise<IllustratorKeyCheck> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      signal: controller.signal,
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "adobe-cc-mcp-installer", version: "0.1.0" } } }),
+    });
+    if (res.status === 401 || res.status === 403) return { ok: false, reason: "refused", detail: `HTTP ${res.status}` };
+    if (!res.ok) return { ok: false, reason: "unexpected", detail: `HTTP ${res.status}` };
+    const text = await res.text();
+    const m = /"serverInfo"\s*:\s*\{[^}]*"name"\s*:\s*"([^"]+)"/.exec(text);
+    return { ok: true, serverName: m ? (m[1] ?? null) : null };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, reason: /ECONNREFUSED|abort|fetch failed/i.test(msg) ? "not-running" : "unexpected", detail: msg };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Apply the chosen mode to the user config file (other keys untouched). */
-export function mergeUserConfig(existing: UserConfigFile, mode: InstallMode, o: { port?: number; token?: string; host?: string } = {}): UserConfigFile {
+export function mergeUserConfig(existing: UserConfigFile, mode: InstallMode, o: { port?: number; token?: string; host?: string; illustratorKey?: string | null; illustratorUrl?: string | null } = {}): UserConfigFile {
   const next: UserConfigFile = { ...existing };
+  if (o.illustratorKey !== undefined) {
+    if (o.illustratorKey === null) delete next.illustratorKey;
+    else next.illustratorKey = o.illustratorKey;
+  }
+  if (o.illustratorUrl !== undefined) {
+    if (o.illustratorUrl === null) delete next.illustratorUrl;
+    else next.illustratorUrl = o.illustratorUrl;
+  }
   if (mode === "local") {
     delete next.httpPort;
     delete next.httpHost;

@@ -59,3 +59,17 @@ reconnects automatically once you open it. A `401` means the key was regenerated
 > This runs on your machine (Adobe's server is on *your* localhost). A remote/cloud Claude session
 > cannot reach it. To enumerate the real tool list, run `ai_beta_list_tools` locally with Illustrator
 > Beta open.
+
+## Installer and the move from Beta to the shipping release
+
+`npm run install-cc` asks for the Illustrator key: paste the whole `claude mcp add … Bearer ilst_…`
+line Illustrator shows, or just the key. The installer checks it against the endpoint right away
+(accepted / Illustrator not running / refused) and saves it to `~/.adobe-cc-mcp/config.json`
+(`illustratorKey`). Flags: `--illustrator-key`, `--illustrator-url`, `--no-illustrator`.
+
+When the official release ships and the endpoint or key format changes, nothing in the tools
+needs to change: set the new address as `illustratorUrl` in `config.json` (or
+`ADOBE_CC_MCP_ILLUSTRATOR_URL`), paste the new key, and re-run the installer. If the pasted
+`claude mcp add` line carries a different URL, the installer stores it automatically. Only if
+Adobe changes the transport (away from Streamable HTTP + bearer) would
+`src/drivers/illustrator-delegate.ts` need an edit.
