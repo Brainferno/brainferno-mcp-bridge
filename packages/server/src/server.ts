@@ -11,7 +11,7 @@ import { OsScriptBridge } from "./drivers/osscript.js";
 import { JobRegistry } from "./jobs.js";
 import { setLogLevel } from "./logging.js";
 import { registerAfterEffectsTools } from "./tools/after-effects.js";
-import { registerAudioTools } from "./tools/audio.js";
+import { registerAudioTools, type AudioToolOptions } from "./tools/audio.js";
 import { registerAuditionTools } from "./tools/audition.js";
 import { registerDiagnosticTools } from "./tools/diagnostics.js";
 import { registerIllustratorTools } from "./tools/illustrator.js";
@@ -22,24 +22,29 @@ import { registerPhotoshopTools } from "./tools/photoshop.js";
 import { registerPipelineTools } from "./tools/pipelines.js";
 import { registerPremiereTools } from "./tools/premiere.js";
 
-export interface BuiltServer {
-  server: McpServer;
+/**
+ * Everything that lives once per process and is shared by every MCP session:
+ * the panel hub, the panel-less drivers, the job registry, the Media Encoder
+ * service. An McpServer (one per transport session) is cheap and is created
+ * on top of this with {@link createMcpServer}.
+ */
+export interface Runtime {
+  config: Config;
   bridge: BridgeServer;
-  illustratorDelegate: IllustratorDelegate;
   /** Illustrator is driven panel-less over COM/AppleScript, not through the hub. */
   illustratorBridge: OsScriptBridge;
+  illustratorDelegate: IllustratorDelegate;
   jobs: JobRegistry;
   /** Media Encoder's headless web service, started on demand. */
   mediaEncoder: AmeWebService;
+  audio: AudioToolOptions;
 }
 
-/**
- * Builds the MCP server and the bridge it talks to the applications through.
- * Tools are registered unconditionally: an application that has no panel
- * connected still advertises its tools, and those tools return an actionable
- * "not connected" error rather than vanishing from the tool list mid-session.
- */
-export function buildServer(config: Config): BuiltServer {
+export interface BuiltServer extends Runtime {
+  server: McpServer;
+}
+
+export function buildRuntime(config: Config): Runtime {
   setLogLevel(config.logLevel);
 
   const bridge = new BridgeServer({
@@ -51,7 +56,23 @@ export function buildServer(config: Config): BuiltServer {
     handshakeFilePath: config.handshakeFilePath,
     allowedOrigins: config.allowedOrigins,
   });
+  const illustratorBridge = new OsScriptBridge({ appId: "illustrator", defaultTimeoutMs: config.evalTimeoutMs });
+  const illustratorDelegate = new IllustratorDelegate({ url: config.illustratorMcpUrl, token: config.illustratorMcpKey });
+  // Job work folders sit beside the handshake file (~/.adobe-cc-mcp/work/<jobId>/).
+  const jobs = new JobRegistry({ workRoot: join(dirname(config.handshakeFilePath) || join(homedir(), ".adobe-cc-mcp"), "work") });
+  const mediaEncoder = new AmeWebService({ exePath: config.ameWebServicePath, port: config.amePort, extraArgs: [], idleMs: config.ameIdleMs });
+  const audio = { ffmpegPath: config.ffmpegPath, ffprobePath: config.ffprobePath };
+  return { config, bridge, illustratorBridge, illustratorDelegate, jobs, mediaEncoder, audio };
+}
 
+/**
+ * A new McpServer with every tool registered against the shared runtime.
+ * Tools are registered unconditionally: an application that has no panel
+ * connected still advertises its tools, and those tools return an actionable
+ * "not connected" error rather than vanishing from the tool list mid-session.
+ */
+export function createMcpServer(rt: Runtime): McpServer {
+  const { config, bridge, jobs } = rt;
   const server = new McpServer(
     { name: "adobe-cc-mcp", version: "0.1.0" },
     {
@@ -63,35 +84,29 @@ export function buildServer(config: Config): BuiltServer {
     },
   );
 
-  const illustratorBridge = new OsScriptBridge({ appId: "illustrator", defaultTimeoutMs: config.evalTimeoutMs });
-  const illustratorDelegate = new IllustratorDelegate({
-    url: config.illustratorMcpUrl,
-    token: config.illustratorMcpKey,
-  });
-
-  // Job work folders sit beside the handshake file (~/.adobe-cc-mcp/work/<jobId>/).
-  const jobs = new JobRegistry({ workRoot: join(dirname(config.handshakeFilePath) || join(homedir(), ".adobe-cc-mcp"), "work") });
-  const audio = { ffmpegPath: config.ffmpegPath, ffprobePath: config.ffprobePath };
-
   registerDiagnosticTools(server, bridge, { allowRawScripts: config.allowRawScripts });
   registerAfterEffectsTools(server, bridge.bridgeFor("after_effects"), { jobs });
   registerPremiereTools(server, bridge.bridgeFor("premiere"), { jobs });
   registerPhotoshopTools(server, bridge.bridgeFor("photoshop"), { allowRawScripts: config.allowRawScripts });
-  registerIllustratorTools(server, illustratorBridge);
-  registerIllustratorDelegateTools(server, illustratorDelegate, config.illustratorMcpKey !== "");
+  registerIllustratorTools(server, rt.illustratorBridge);
+  registerIllustratorDelegateTools(server, rt.illustratorDelegate, config.illustratorMcpKey !== "");
   registerAuditionTools(server, bridge.bridgeFor("audition"));
-  registerAudioTools(server, audio);
+  registerAudioTools(server, rt.audio);
   registerJobTools(server, jobs);
-  const mediaEncoder = new AmeWebService({ exePath: config.ameWebServicePath, port: config.amePort, extraArgs: [], idleMs: config.ameIdleMs });
-  registerMediaEncoderTools(server, mediaEncoder, { jobs });
+  registerMediaEncoderTools(server, rt.mediaEncoder, { jobs });
   registerPipelineTools(server, {
     photoshop: bridge.bridgeFor("photoshop"),
     afterEffects: bridge.bridgeFor("after_effects"),
     premiere: bridge.bridgeFor("premiere"),
-    illustrator: illustratorBridge,
+    illustrator: rt.illustratorBridge,
     jobs,
-    audio,
+    audio: rt.audio,
   });
+  return server;
+}
 
-  return { server, bridge, illustratorDelegate, illustratorBridge, jobs, mediaEncoder };
+/** Runtime plus one McpServer (the stdio session). */
+export function buildServer(config: Config): BuiltServer {
+  const rt = buildRuntime(config);
+  return { ...rt, server: createMcpServer(rt) };
 }

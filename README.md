@@ -72,12 +72,39 @@ npm install
 npm run build
 ```
 
-Register with an MCP client — for Claude Code:
+Then run the installer. It asks one question — **only this computer** or **shared on my
+network** — and sets everything that depends on it (remote listener + token, firewall rule,
+Media Encoder's service address), links the After Effects/Audition panel, prints the
+Photoshop/Premiere UXP steps, and offers to register the server with Claude Code:
 
 ```bash
-claude mcp add adobe-cc --env ADOBE_CC_MCP_BRIDGE_TOKEN=$(openssl rand -hex 24) \
-  -- node /absolute/path/to/adobe-cc-mcp/packages/server/dist/index.js
+npm run install-cc
+# or non-interactive:
+node packages/server/dist/install/cli.js --mode local --yes --register
+node packages/server/dist/install/cli.js --mode shared --yes    # prints the remote line + token
 ```
+
+Re-run it any time to switch modes. By hand, the local registration is:
+
+```bash
+claude mcp add --scope user adobe-cc -- node /absolute/path/to/adobe-cc-mcp/packages/server/dist/index.js
+```
+
+### Using it from another computer
+
+In *shared* mode the server also speaks MCP over Streamable HTTP on port 7898 and refuses
+every request without the bearer token (`~/.adobe-cc-mcp/config.json` → `httpToken`). On the
+other computer:
+
+```bash
+claude mcp add --scope user --transport http \
+  --header "Authorization: Bearer <token>" adobe-cc http://<studio-pc>:7898/mcp
+```
+
+The Adobe apps, panels, files and previews all stay on the studio PC; only commands and
+results travel. The wire is plain HTTP — use a trusted LAN, a VPN, or Tailscale. The panels'
+own hub never leaves loopback. An SSH alternative needs no code at all:
+`claude mcp add adobe-cc -- ssh user@studio-pc node <path>/packages/server/dist/index.js`.
 
 ### Configuration
 
@@ -94,6 +121,10 @@ Copy `.env.example` and adjust. All settings are environment variables:
 | `ADOBE_CC_MCP_ALLOW_RAW_SCRIPTS` | *(off)* | `1` registers the `cc_eval_script` escape hatch |
 | `ADOBE_CC_MCP_ILLUSTRATOR_KEY` | *(empty → delegate off)* | Bearer key for Adobe's Illustrator (Beta) MCP; enables the `ai_beta_*` delegate tools ([docs](docs/illustrator-beta.md)) |
 | `ADOBE_CC_MCP_ILLUSTRATOR_URL` | `http://localhost:18412/v1/mcp` | Adobe's Illustrator (Beta) MCP endpoint |
+| `ADOBE_CC_MCP_FFMPEG` / `_FFPROBE` | `ffmpeg` / `ffprobe` | Executables for the `audio_*` lane |
+| `ADOBE_CC_MCP_AME_WEBSERVICE` | *(auto-detect)* | Path to Media Encoder's `ame_webservice_console` |
+| `ADOBE_CC_MCP_AME_PORT` / `_AME_IDLE_MS` | *(from its ini)* / `600000` | Media Encoder service port; idle time before it is stopped |
+| `ADOBE_CC_MCP_HTTP_PORT` / `_HTTP_HOST` / `_HTTP_TOKEN` | *(off)* / `127.0.0.1` / *(none)* | Remote mode (also read from `config.json`, set by the installer) |
 | `ADOBE_CC_MCP_LOG_LEVEL` | `info` | `error` \| `warn` \| `info` \| `debug` |
 
 The bridge binds to `127.0.0.1` only and evaluates arbitrary script inside your Adobe

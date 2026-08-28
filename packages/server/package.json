@@ -4,13 +4,19 @@
   "private": true,
   "description": "MCP server for production After Effects, Premiere, Photoshop, Illustrator, and Audition",
   "type": "module",
-  "bin": { "adobe-cc-mcp": "./dist/index.js" },
+  "bin": {
+    "adobe-cc-mcp": "./dist/index.js",
+    "adobe-cc-mcp-install": "./dist/install/cli.js"
+  },
   "main": "./dist/index.js",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "dev": "tsx watch src/index.ts",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "install_cc": "node dist/install/cli.js"
   },
   "dependencies": {
     "@adobe-cc-mcp/protocol": "0.1.0",

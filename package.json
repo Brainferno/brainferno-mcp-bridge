@@ -12,7 +12,8 @@
     "start": "npm run start -w adobe-cc-mcp",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "panels:sync": "node scripts/sync-bridge-client.mjs"
+    "panels:sync": "node scripts/sync-bridge-client.mjs",
+    "install-cc": "npm run build && node packages/server/dist/install/cli.js"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

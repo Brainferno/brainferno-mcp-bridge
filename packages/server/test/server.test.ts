@@ -27,6 +27,9 @@ const config: Config = {
   ameWebServicePath: "",
   amePort: 0,
   ameIdleMs: 0,
+  httpPort: 0,
+  httpHost: "127.0.0.1",
+  httpToken: "",
   logLevel: "error",
 };
 

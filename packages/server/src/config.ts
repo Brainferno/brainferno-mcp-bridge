@@ -60,25 +60,53 @@ export interface Config {
   amePort: number;
   /** Stop the AME web service after this idle time; 0 = keep it running. */
   ameIdleMs: number;
+  /**
+   * Remote mode: also serve MCP over Streamable HTTP on this port (0 = off).
+   * Requires {@link httpToken}. Set by the installer's "shared on my network" choice.
+   */
+  httpPort: number;
+  /** Address to bind in remote mode: 127.0.0.1 (this computer) or 0.0.0.0 (network). */
+  httpHost: string;
+  /** Bearer token every remote request must present. */
+  httpToken: string;
   logLevel: LogLevel;
 }
 
+/** Keys the installer may write to `~/.adobe-cc-mcp/config.json` (mode 600). */
+export interface UserConfigFile {
+  illustratorKey?: string;
+  httpPort?: number;
+  httpHost?: string;
+  httpToken?: string;
+}
+
+export function userConfigPath(): string {
+  return join(homedir(), ".adobe-cc-mcp", "config.json");
+}
+
+/** The user config file, or {} when missing/malformed. */
+export function readUserConfig(): UserConfigFile {
+  try {
+    const parsed = JSON.parse(readFileSync(userConfigPath(), "utf8")) as Record<string, unknown>;
+    const out: UserConfigFile = {};
+    if (typeof parsed["illustratorKey"] === "string") out.illustratorKey = parsed["illustratorKey"];
+    if (typeof parsed["httpPort"] === "number") out.httpPort = parsed["httpPort"];
+    if (typeof parsed["httpHost"] === "string") out.httpHost = parsed["httpHost"];
+    if (typeof parsed["httpToken"] === "string") out.httpToken = parsed["httpToken"];
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 /**
- * The Illustrator delegate key: env first, then a mode-600 `config.json` beside
- * the handshake file, so the user can paste it once without editing the client
- * config. Returns "" when unset (delegate disabled).
+ * The Illustrator delegate key: env first, then the user config file, so the
+ * user can paste it once without editing the client config. "" = disabled.
  */
-function illustratorKeyFromEnvOrFile(): string {
+function illustratorKeyFromEnvOrFile(file: UserConfigFile): string {
   const fromEnv = process.env.ADOBE_CC_MCP_ILLUSTRATOR_KEY;
   if (fromEnv !== undefined && fromEnv !== "") return fromEnv;
-  try {
-    const path = join(homedir(), ".adobe-cc-mcp", "config.json");
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as { illustratorKey?: unknown };
-    if (typeof parsed.illustratorKey === "string") return parsed.illustratorKey;
-  } catch {
-    // No config file, or unreadable/malformed — the delegate stays disabled.
-  }
-  return "";
+  return file.illustratorKey ?? "";
 }
 
 function intFromEnv(name: string, fallback: number, { allowZero = false } = {}): number {
@@ -107,6 +135,7 @@ function logLevelFromEnv(): LogLevel {
 }
 
 export function loadConfig(): Config {
+  const file = readUserConfig();
   return {
     // Port 0 is allowed so the OS can assign one (used in tests); the handshake
     // file makes the real port discoverable regardless.
@@ -123,12 +152,15 @@ export function loadConfig(): Config {
       .map((o) => o.trim())
       .filter((o) => o !== ""),
     illustratorMcpUrl: process.env.ADOBE_CC_MCP_ILLUSTRATOR_URL ?? DEFAULT_ILLUSTRATOR_MCP_URL,
-    illustratorMcpKey: illustratorKeyFromEnvOrFile(),
+    illustratorMcpKey: illustratorKeyFromEnvOrFile(file),
     ffmpegPath: process.env.ADOBE_CC_MCP_FFMPEG ?? "ffmpeg",
     ffprobePath: process.env.ADOBE_CC_MCP_FFPROBE ?? "ffprobe",
     ameWebServicePath: process.env.ADOBE_CC_MCP_AME_WEBSERVICE ?? "",
     amePort: intFromEnv("ADOBE_CC_MCP_AME_PORT", 0, { allowZero: true }),
     ameIdleMs: intFromEnv("ADOBE_CC_MCP_AME_IDLE_MS", 10 * 60_000, { allowZero: true }),
+    httpPort: intFromEnv("ADOBE_CC_MCP_HTTP_PORT", file.httpPort ?? 0, { allowZero: true }),
+    httpHost: process.env.ADOBE_CC_MCP_HTTP_HOST ?? file.httpHost ?? "127.0.0.1",
+    httpToken: process.env.ADOBE_CC_MCP_HTTP_TOKEN ?? file.httpToken ?? "",
     logLevel: logLevelFromEnv(),
   };
 }
