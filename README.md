@@ -3,9 +3,11 @@
 **Let an AI assistant run your Adobe video and graphics pipeline.**
 
 Brainferno MCP Bridge is an [MCP](https://modelcontextprotocol.io) server that gives Claude
-(Claude Code today; any MCP client) hands inside **Photoshop, After Effects, Premiere Pro,
-Illustrator, Audition, and Media Encoder** — the apps you already have open, on the projects
-you already have loaded. You describe the work in plain language; the assistant builds the
+(Claude Code today; any MCP client) hands inside **Adobe Photoshop, Adobe After Effects,
+Adobe Premiere Pro, Adobe Illustrator, Adobe Audition, and Adobe Media Encoder software** —
+the apps you already have open, on the projects you already have loaded. It is independent
+software for use with those Adobe products; it is not made or endorsed by Adobe (see
+[Trademarks](#trademarks)). You describe the work in plain language; the assistant builds the
 comp, cuts the sequence, normalizes the audio, renders the file, and shows you previews along
 the way. Every action is one undo step in the app, so you can always step back.
 
@@ -363,4 +365,24 @@ docs/                build plan, protocol, live-run notes (spikes/), Audition AP
 
 ## License
 
-Not yet chosen. Until a license file is added, all rights reserved by Brainferno.
+Copyright 2026 Brainferno. Licensed under the **Apache License, Version 2.0** — see
+[`LICENSE`](LICENSE) and [`NOTICE`](NOTICE). You may use, modify, and redistribute this
+software, including commercially, as long as you keep the license and notices; the license
+also gives you an express patent grant from contributors. Third-party components and the
+Adobe materials this project relies on are listed in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). Contributions are accepted under the
+same license.
+
+## Trademarks
+
+Adobe, After Effects, Audition, Creative Cloud, Illustrator, Media Encoder, Photoshop, and
+Premiere Pro are either registered trademarks or trademarks of Adobe in the United States
+and/or other countries.
+
+Brainferno MCP Bridge is an independent project. **It is not authorized, endorsed, or
+sponsored by Adobe.** Adobe product names are used only to say which products this software
+works with ("for use with Adobe Photoshop software"), as Adobe's
+[trademark guidelines for plug-in and extension developers](https://www.adobe.com/legal/permissions/trademarks.html)
+allow. No Adobe logos or product icons are included. "Brainferno" and the Brainferno MCP
+Bridge name and panel icon belong to Brainferno; the Apache License grants no right to use
+them in the names of derived products.

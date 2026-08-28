@@ -97,3 +97,11 @@ long-blocking call.
   in-memory MCP transport plus a fake panel over a real WebSocket
   (`packages/server/test/server.test.ts`) — new tools get at least a not-connected-path test,
   and a round-trip test where behavior warrants it.
+
+## License of contributions
+
+By contributing you agree that your contribution is licensed under the Apache License 2.0
+(see `LICENSE`). Do not copy code from Adobe sample repositories or SDKs into this project;
+read them for behavior and write our own. Never commit keys, tokens, or Adobe-authored
+documentation text. Use full Adobe product names in user-facing text ("Adobe Photoshop
+software"), never as verbs, nouns, or abbreviations, and never Adobe logos or icons.
