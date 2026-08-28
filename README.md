@@ -103,7 +103,7 @@ Probe, loudness measurement (EBU R128), two-pass loudness normalization, convert
 trim, trim silence, denoise, mix, waveform image.
 
 ### Pipelines and jobs — 8 tools
-`pipeline_ps_to_ae`, `pipeline_render_and_import` (AE → aerender → Premiere),
+`pipeline_ps_to_ae`, `pipeline_render_and_import` (After Effects → aerender → Premiere Pro),
 `pipeline_audio_roundtrip` (Premiere → ffmpeg → Premiere), `pipeline_ai_to_ps`. Long
 renders and exports run as **jobs**: `cc_job_status`, `cc_list_jobs`, `cc_job_wait`,
 `cc_job_cancel`, and every pipeline reports which step failed and which single-app tool
@@ -262,7 +262,7 @@ The wire protocol is documented in [`docs/protocol.md`](docs/protocol.md).
 | `ame_*` (6) | Media Encoder (headless) | Encode media / `.prproj` sequence / FCP XML with an `.epr` preset; status, history, cancel, service start/stop — [live run](docs/spikes/10-media-encoder-live.md) |
 | `audio_*` (9) | ffmpeg | Probe, R128 measure + two-pass normalize, convert/extract, trim, trim silence, denoise, mix, waveform image |
 | `pipeline_*` (4) | cross-app | `ps_to_ae`, `render_and_import`, `audio_roundtrip`, `ai_to_ps` — one call, one job, failure names the step + recovery tool — [live run](docs/spikes/09-pipelines-live.md) |
-| `cc_eval_script` | AE, Illustrator, Audition | Raw ExtendScript escape hatch — **opt-in** (`ADOBE_CC_MCP_ALLOW_RAW_SCRIPTS=1`) |
+| `cc_eval_script` | After Effects, Illustrator, Audition | Raw ExtendScript escape hatch — **opt-in** (`ADOBE_CC_MCP_ALLOW_RAW_SCRIPTS=1`) |
 
 Tools are always advertised for the apps you chose, even when an app is closed — a closed
 app returns an actionable "not connected" error rather than vanishing mid-session.
