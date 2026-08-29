@@ -369,7 +369,7 @@ override it:
 ```bash
 npm run dev        # watch mode
 npm run typecheck  # tsc --noEmit
-npm test           # vitest (171 tests; the audio lane test runs a real ffmpeg if present)
+npm test           # vitest (172 tests; the audio lane test runs a real ffmpeg if present)
 npm run panels:sync  # copy the shared bridge client into each panel folder
 ```
 
