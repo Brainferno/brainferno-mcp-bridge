@@ -83,6 +83,14 @@ export interface Config {
    * it or put it in an error message.
    */
   illustratorMcpKey: string;
+  /**
+   * Which Illustrator the os-script lane drives: an AppleScript name, a bundle id
+   * (`com.adobe.illustrator`, `com.adobe.illustratorBeta`) or an absolute `.app` path on macOS;
+   * a COM ProgID on Windows. "" = the app default. Pin it when the release and the Beta are both
+   * installed: their bundles share the name `Adobe Illustrator.app`, so a bare name resolves to
+   * whichever one LaunchServices picks.
+   */
+  illustratorApp: string;
   /** ffmpeg / ffprobe executables for the audio process lane (name on PATH or absolute path). */
   ffmpegPath: string;
   ffprobePath: string;
@@ -146,6 +154,8 @@ export interface UserConfigFile {
   /** Apps whose tools are registered; missing = all. */
   enabledApps?: InstallableApp[];
   illustratorKey?: string;
+  /** Which Illustrator the os-script lane drives (name, bundle id, or .app path); see Config.illustratorApp. */
+  illustratorApp?: string;
   /** Adobe's Illustrator MCP endpoint; override when the shipping release moves it. */
   illustratorUrl?: string;
   httpPort?: number;
@@ -168,6 +178,7 @@ export function readUserConfig(): UserConfigFile {
     }
     if (typeof parsed["illustratorKey"] === "string") out.illustratorKey = parsed["illustratorKey"];
     if (typeof parsed["illustratorUrl"] === "string") out.illustratorUrl = parsed["illustratorUrl"];
+    if (typeof parsed["illustratorApp"] === "string") out.illustratorApp = parsed["illustratorApp"];
     if (typeof parsed["httpPort"] === "number") out.httpPort = parsed["httpPort"];
     if (typeof parsed["httpHost"] === "string") out.httpHost = parsed["httpHost"];
     if (typeof parsed["httpToken"] === "string") out.httpToken = parsed["httpToken"];
@@ -231,6 +242,7 @@ export function loadConfig(): Config {
       .filter((o) => o !== ""),
     illustratorMcpUrl: envValue("BRAINFERNO_MCP_ILLUSTRATOR_URL") ?? file.illustratorUrl ?? DEFAULT_ILLUSTRATOR_MCP_URL,
     illustratorMcpKey: illustratorKeyFromEnvOrFile(file),
+    illustratorApp: envValue("BRAINFERNO_MCP_ILLUSTRATOR_APP") ?? file.illustratorApp ?? "",
     ffmpegPath: envValue("BRAINFERNO_MCP_FFMPEG") ?? "ffmpeg",
     ffprobePath: envValue("BRAINFERNO_MCP_FFPROBE") ?? "ffprobe",
     ameWebServicePath: envValue("BRAINFERNO_MCP_AME_WEBSERVICE") ?? "",

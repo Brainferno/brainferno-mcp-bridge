@@ -5,7 +5,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import type { AppId } from "@brainferno/mcp-bridge-protocol";
 import { APPS } from "@brainferno/mcp-bridge-protocol";
 import { log } from "../logging.js";
-import { removeHandshake, writeHandshake } from "./handshake.js";
+import { pidAlive, readHandshake, removeHandshake, writeHandshake } from "./handshake.js";
 import {
   PROTOCOL_VERSION,
   parsePanelFrame,
@@ -195,6 +195,14 @@ export class BridgeServer {
     }
     if (this.options.handshakeFilePath !== undefined) {
       try {
+        // Panels follow whatever the file says, so taking it over from a live server steals them on their next reload.
+        const previous = readHandshake(this.options.handshakeFilePath);
+        if (previous !== null && pidAlive(previous.pid)) {
+          log.warn(
+            `another bridge (pid ${previous.pid}, port ${previous.port}) already owns ${this.options.handshakeFilePath}; ` +
+              "panels will connect here after they are reloaded, and that server keeps the ones it has",
+          );
+        }
         writeHandshake(this.options.handshakeFilePath, {
           protocolVersion: PROTOCOL_VERSION,
           port: this.port(),

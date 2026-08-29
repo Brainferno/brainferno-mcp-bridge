@@ -7,7 +7,7 @@ import { WebSocket } from "ws";
 
 import { BridgeServer, type BridgeServerOptions } from "../src/bridge/socket.js";
 import { PROTOCOL_VERSION } from "@brainferno/mcp-bridge-protocol";
-import { writeHandshake } from "../src/bridge/handshake.js";
+import { pidAlive, readHandshake, removeHandshake, writeHandshake } from "../src/bridge/handshake.js";
 import { jsStringLiteral } from "../src/bridge/script-escape.js";
 import { AppDisconnectedError } from "../src/bridge/types.js";
 import type { AppId } from "@brainferno/mcp-bridge-protocol";
@@ -272,5 +272,49 @@ describe("BridgeServer heartbeat", () => {
     // client observes the close; let it deregister before asserting.
     await new Promise((r) => setTimeout(r, 50));
     expect(b.connectedApps()).not.toContain("after_effects");
+  });
+});
+
+describe("handshake file ownership", () => {
+  const handshake = (pid: number) => ({ protocolVersion: PROTOCOL_VERSION, port: 7897, token: "t", pid });
+
+  it("round-trips, and reads back null for junk or a missing file", () => {
+    const dir = mkdtempSync(join(tmpdir(), "handshake-"));
+    const path = join(dir, "bridge.json");
+    expect(readHandshake(path)).toBeNull();
+    writeHandshake(path, handshake(process.pid));
+    expect(readHandshake(path)).toEqual(handshake(process.pid));
+    writeFileSync(path, "{not json");
+    expect(readHandshake(path)).toBeNull();
+    writeFileSync(path, JSON.stringify({ port: 1 }));
+    expect(readHandshake(path)).toBeNull();
+  });
+
+  it("only deletes the file when it is still ours", () => {
+    // A second server instance overwrites the file; when it exits, the entry the
+    // still-running first server owns must survive, or panels reload into nothing.
+    const dir = mkdtempSync(join(tmpdir(), "handshake-"));
+    const path = join(dir, "bridge.json");
+    writeHandshake(path, handshake(4242));
+    removeHandshake(path, 99999);
+    expect(readHandshake(path)).toEqual(handshake(4242));
+    removeHandshake(path, 4242);
+    expect(readHandshake(path)).toBeNull();
+    removeHandshake(path, 4242); // already gone: no throw
+  });
+
+  it("treats a running pid as alive, a dead one as gone, and EPERM as alive", () => {
+    expect(pidAlive(process.ppid)).toBe(true);
+    expect(pidAlive(process.pid)).toBe(false); // ourselves: never "another instance"
+    expect(pidAlive(0)).toBe(false);
+    expect(pidAlive(-1)).toBe(false);
+    const esrch = () => {
+      throw Object.assign(new Error("no such process"), { code: "ESRCH" });
+    };
+    const eperm = () => {
+      throw Object.assign(new Error("not permitted"), { code: "EPERM" });
+    };
+    expect(pidAlive(4242, esrch)).toBe(false);
+    expect(pidAlive(4242, eperm)).toBe(true);
   });
 });

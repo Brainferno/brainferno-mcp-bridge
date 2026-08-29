@@ -1,9 +1,12 @@
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
 import { createServer } from "node:http";
 
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { INSTALLABLE_APPS, parseApps } from "../src/config.js";
-import { appsNeed, checkIllustratorKey, extractIllustratorKey, extractIllustratorUrl, firewallCommands, mcpAddCommands, mergeUserConfig, pickApps, platformPaths, rewriteAmeIni } from "../src/install/lib.js";
+import { appsNeed, checkIllustratorKey, extractIllustratorKey, extractIllustratorUrl, finderCopyScript, findIllustratorApps, firewallCommands, mcpAddCommands, mergeUserConfig, pickApps, platformPaths, rewriteAmeIni, AME_INI_SEED } from "../src/install/lib.js";
 
 describe("installer: Illustrator key", () => {
   it("accepts a bare key or the whole claude mcp add line", () => {
@@ -98,5 +101,55 @@ describe("installer pieces", () => {
     expect(w.cepExtensionsDir).toContain("CEP");
     expect(w.csxsDebugCommands).toHaveLength(4);
     expect(platformPaths("darwin", "/Users/x").cepExtensionsDir.replace(/\\/g, "/")).toContain("Library/Application Support/Adobe/CEP/extensions");
+    // Windows: the ini sits beside the exe in Program Files. macOS: inside the app bundle's Resources (the console reads it there).
+    expect(w.ameIniCandidates[1]!.replace(/\\/g, "/")).toMatch(/Adobe\/Adobe Media Encoder 2026\/ame_webservice_config\.ini$/);
+    expect(platformPaths("darwin", "/Users/x").ameIniCandidates[1]).toBe("/Applications/Adobe Media Encoder 2026/Adobe Media Encoder 2026.app/Contents/Resources/ame_webservice_config.ini");
+    expect(platformPaths("darwin", "/Users/x").csxsDebugCommands[0]).toEqual(["defaults", "write", "com.adobe.CSXS.11", "PlayerDebugMode", "1"]);
+  });
+
+  it("seeds a missing macOS ini and has Finder copy it into the bundle", () => {
+    expect(rewriteAmeIni(AME_INI_SEED, "local")).toBe("ip = 127.0.0.1\nport = 8080\n");
+    expect(rewriteAmeIni(AME_INI_SEED, "shared")).toBe("port = 8080\n");
+    const script = finderCopyScript("/tmp/x y/ame_webservice_config.ini", '/Applications/Adobe Media Encoder 2026/Adobe Media Encoder 2026.app/Contents/Resources');
+    expect(script).toBe('tell application "Finder" to duplicate file (POSIX file "/tmp/x y/ame_webservice_config.ini" as alias) to folder (POSIX file "/Applications/Adobe Media Encoder 2026/Adobe Media Encoder 2026.app/Contents/Resources" as alias) with replacing');
+    expect(finderCopyScript('/a/"q"', "/b\\c")).toContain('\\"q\\"');
+  });
+});
+
+describe("installer: which Illustrator the os-script lane drives", () => {
+  // A stand-in /Applications with both bundles Adobe ships as "Adobe Illustrator.app".
+  let apps: string;
+  const ids: Record<string, string> = { "Adobe Illustrator 2026": "com.adobe.illustrator", "Adobe Illustrator (Beta)": "com.adobe.illustratorBeta" };
+  const readId = (bundlePath: string) => ids[basename(dirname(bundlePath))] ?? null;
+
+  beforeAll(() => {
+    apps = mkdtempSync(join(tmpdir(), "ai-apps-"));
+    for (const label of Object.keys(ids)) mkdirSync(join(apps, label, "Adobe Illustrator.app"), { recursive: true });
+    mkdirSync(join(apps, "Adobe Photoshop 2026"), { recursive: true });
+  });
+  afterAll(() => rmSync(apps, { recursive: true, force: true }));
+
+  it("is empty on Windows (COM ProgID picks the version there)", () => {
+    expect(findIllustratorApps("win32", apps, readId)).toEqual([]);
+  });
+
+  it("lists both macOS bundles by id, release before Beta", () => {
+    const found = findIllustratorApps("darwin", apps, readId);
+    expect(found.map((i) => i.bundleId)).toEqual(["com.adobe.illustrator", "com.adobe.illustratorBeta"]);
+    expect(found.map((i) => i.beta)).toEqual([false, true]);
+    expect(found[0]!.label).toBe("Adobe Illustrator 2026");
+    expect(found[0]!.path).toBe(join(apps, "Adobe Illustrator 2026", "Adobe Illustrator.app"));
+  });
+
+  it("skips folders with no readable bundle id, and a missing /Applications", () => {
+    expect(findIllustratorApps("darwin", apps, () => null)).toEqual([]);
+    expect(findIllustratorApps("darwin", join(apps, "nope"), readId)).toEqual([]);
+  });
+
+  it("stores and clears the pinned app through the merge", () => {
+    const pinned = mergeUserConfig({}, "local", { illustratorApp: "com.adobe.illustratorBeta" });
+    expect(pinned.illustratorApp).toBe("com.adobe.illustratorBeta");
+    expect(mergeUserConfig(pinned, "local", { illustratorApp: null }).illustratorApp).toBeUndefined();
+    expect(mergeUserConfig(pinned, "local", {}).illustratorApp).toBe("com.adobe.illustratorBeta");
   });
 });

@@ -12,8 +12,11 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
 - Everything is verified live on **Windows 11** with the Adobe 2026 apps: Photoshop 18,
   After Effects 24, Premiere Pro 28, Illustrator 7 (+ Adobe's 46 via `ai_beta_call`),
   Audition 12, Media Encoder 6, audio/ffmpeg 9, pipelines 4, jobs 4.
-- **macOS has never been run.** The code has macOS paths (CEP folder, aerender, AME
-  console, Illustrator via osascript, installer `defaults write` commands) — all unverified.
+- **macOS run on 2026-08-28** (macOS 26, Adobe 2026 apps, Node 26): panels, Illustrator via
+  osascript, previews, ffmpeg all fine as written. Two real bugs fixed — the aerender path
+  (`Folder.appPackage` is the `.app` itself on macOS) and Media Encoder (nested console bundle,
+  the ini must exist in the outer bundle's `Contents/Resources`, the renderer must be tracked
+  and SIGKILLed on stop). Details and the reasoning: `docs/spikes/13-macos-live.md`.
 
 ## Working routine that saved the most time
 
@@ -27,21 +30,23 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
 - ExtendScript stays ES3 (`var`, no arrow functions, no `JSON`). Each app has quirks listed in
   its spike doc — read the spike before touching that app's tools.
 
-## First tasks on a Mac
+## macOS specifics to keep in mind
 
-1. `npm install && npm run build && npm test` (the ffmpeg test runs if `brew install ffmpeg`).
-2. `npm run install-cc` — check what it prints for the CEP folder
-   (`~/Library/Application Support/Adobe/CEP/extensions`) and the `defaults write
-   com.adobe.CSXS.N PlayerDebugMode 1` step; fix `src/install/lib.ts` if a path is off.
-3. Load the UXP panels in the UXP Developer Tool; open the CEP panel in After Effects;
-   `cc_connected_apps` should list them.
-4. Illustrator lane: `src/drivers/osscript.ts` uses `osascript` on macOS — run
-   `ai_create_document` and `ai_get_preview`.
-5. aerender path: `Folder.appPackage` differs on macOS — run `ae_render_comp` on a tiny comp.
-6. Media Encoder: `ame_webservice_console` lives inside the app bundle on macOS —
-   `ame_server start:true` tells you if `detectConsoleExe` found it.
-7. Write `docs/spikes/13-macos-live.md` with what differed, and mark macOS verified in
-   README "Status".
+- Media Encoder's console only listens when
+  `/Applications/Adobe Media Encoder <year>/Adobe Media Encoder <year>.app/Contents/Resources/ame_webservice_config.ini`
+  exists. Adobe ships none. The installer creates it; a terminal cannot write into the bundle
+  (App Management protection, even with sudo) so the installer hands the copy to Finder via
+  `osascript`. `ame_server start:true` fails fast with that path when the file is missing.
+- Stopping the service: the hidden renderer is not in the console's process group; the driver
+  SIGKILLs the renderer it started (SIGTERM makes Adobe's crash reporter pop up instead).
+- Never `pkill -f` with a pattern that appears in your own command line (a shell running the
+  command matches itself). Use `pkill -x <name>`.
+- Trace which file a black-box Adobe binary opens with `fs_usage -w -f filesys` as admin
+  (`osascript -e 'do shell script "…" with administrator privileges'` when there is no TTY for sudo).
+- Illustrator release and Beta share the bundle name `Adobe Illustrator.app`, so an AppleScript
+  *name* follows whichever is running. Pin the lane with `illustratorApp` in
+  `~/.brainferno-mcp-bridge/config.json` (a bundle id: `com.adobe.illustrator` /
+  `com.adobe.illustratorBeta`) or `BRAINFERNO_MCP_ILLUSTRATOR_APP`; the installer asks.
 
 ## Secrets and keys
 

@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, posix, win32 } from "node:path";
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -442,10 +442,14 @@ export const AERENDER_INFO = wrap(`
 
 // ---- aerender (process lane) -------------------------------------------------
 
-function aerenderExecutable(appFolder: string, isWindows: boolean): string {
+export function aerenderExecutable(appFolder: string, isWindows: boolean): string {
   // Windows: <...>\Support Files\aerender.exe (appPackage IS "Support Files").
-  // macOS: appPackage is the .app bundle's parent folder; aerender sits next to the app.
-  return isWindows ? join(appFolder, "aerender.exe") : join(appFolder, "aerender");
+  // macOS: appPackage is the .app bundle itself ("/Applications/Adobe After Effects 2026/Adobe After Effects 2026.app");
+  // aerender sits next to the bundle, in its parent folder.
+  // Explicit flavours so the result is right for the host's platform even when computed elsewhere (tests on CI).
+  if (isWindows) return win32.join(appFolder, "aerender.exe");
+  const folder = /\.app\/?$/i.test(appFolder) ? posix.dirname(appFolder) : appFolder;
+  return posix.join(folder, "aerender");
 }
 
 /** saveFrameToPng returns before the file is fully written: wait for it to appear and stop growing. */

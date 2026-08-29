@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { JSX_PRELUDE, OsScriptBridge, wrapScript, type ScriptRunner } from "../src/drivers/osscript.js";
+import { JSX_PRELUDE, OsScriptBridge, appleScriptTarget, platformRunner, wrapScript, type ScriptRunner } from "../src/drivers/osscript.js";
 import { AppNotConnectedError, EvalTimeoutError, ScriptError } from "../src/bridge/types.js";
 
 /** Pull the result-file path out of a generated .jsx (it is the __acmWrite target). */
@@ -128,5 +128,25 @@ describe("OsScriptBridge", () => {
 
   it("is always reachable (the lane can launch the app)", () => {
     expect(makeBridge(fakeRunner(() => undefined)).isConnected()).toBe(true);
+  });
+});
+
+describe("AppleScript target (macOS)", () => {
+  it("addresses a bundle id by id, a path by path, and anything else by name", () => {
+    // Both the release and the Beta ship a bundle named "Adobe Illustrator.app": a bare name
+    // resolves to whichever LaunchServices picks, so the id/path forms are the unambiguous ones.
+    expect(appleScriptTarget("com.adobe.illustrator")).toBe('application id "com.adobe.illustrator"');
+    expect(appleScriptTarget("com.adobe.illustratorBeta")).toBe('application id "com.adobe.illustratorBeta"');
+    expect(appleScriptTarget("/Applications/Adobe Illustrator (Beta)/Adobe Illustrator.app")).toBe('application "/Applications/Adobe Illustrator (Beta)/Adobe Illustrator.app"');
+    expect(appleScriptTarget("/Applications/Adobe Illustrator 2026/Adobe Illustrator.app/")).toBe('application "/Applications/Adobe Illustrator 2026/Adobe Illustrator.app"');
+    expect(appleScriptTarget("Adobe Illustrator")).toBe('application "Adobe Illustrator"');
+    expect(appleScriptTarget("  Adobe Illustrator  ")).toBe('application "Adobe Illustrator"');
+  });
+
+  it("builds a runner on this platform, with and without an explicit target", () => {
+    // Windows takes a COM ProgID, macOS an AppleScript target; both accept the override.
+    expect(typeof platformRunner("illustrator")).toBe("function");
+    expect(typeof platformRunner("illustrator", "com.adobe.illustratorBeta")).toBe("function");
+    expect(typeof platformRunner("illustrator", "")).toBe("function");
   });
 });

@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, hostname, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 
 import { DEFAULT_ILLUSTRATOR_MCP_URL, migrateLegacyUserDir, readUserConfig, userConfigPath } from "../config.js";
-import { APP_CHOICES, DEFAULT_HTTP_PORT, appsNeed, checkIllustratorKey, detectInstalledApps, extractIllustratorKey, extractIllustratorUrl, firewallCommands, lanAddresses, mcpAddCommands, mergeUserConfig, pickApps, platformPaths, rewriteAmeIni, type InstallMode } from "./lib.js";
+import { AME_INI_SEED, APP_CHOICES, DEFAULT_HTTP_PORT, appsNeed, checkIllustratorKey, detectInstalledApps, extractIllustratorKey, extractIllustratorUrl, finderCopyScript, findIllustratorApps, firewallCommands, lanAddresses, mcpAddCommands, mergeUserConfig, pickApps, platformPaths, rewriteAmeIni, type InstallMode } from "./lib.js";
 
 /**
  * Interactive installer:
@@ -46,6 +46,13 @@ const str = (k: string) => (typeof args.get(k) === "string" ? (args.get(k) as st
 const say = (s = "") => console.log(s);
 const ok = (s: string) => say(`  ✓ ${s}`);
 const warn = (s: string) => say(`  ! ${s}`);
+
+/** CFBundleIdentifier of an .app bundle, or null when it cannot be read. */
+function readBundleId(bundlePath: string): string | null {
+  const r = spawnSync("/usr/libexec/PlistBuddy", ["-c", "Print :CFBundleIdentifier", join(bundlePath, "Contents", "Info.plist")], { encoding: "utf8" });
+  const id = (r.stdout ?? "").trim();
+  return r.status === 0 && id !== "" ? id : null;
+}
 
 function run(cmd: string[], opts: { elevate?: boolean } = {}): { code: number; out: string } {
   if (opts.elevate && process.platform === "win32") {
@@ -119,6 +126,7 @@ async function main(): Promise<void> {
   // ---- 2. Illustrator MCP key (Adobe's own server inside Illustrator) ------
   let illustratorKey: string | null | undefined = undefined;
   let illustratorUrl: string | null | undefined = str("illustrator-url") ?? undefined;
+  let illustratorApp: string | null | undefined = str("illustrator-app") ?? undefined;
   if (!flag("no-illustrator") && appsNeed(apps, "illustrator-key")) {
     let pasted = str("illustrator-key");
     if (pasted === undefined && !flag("yes")) {
@@ -146,6 +154,28 @@ async function main(): Promise<void> {
       else if (check.reason === "refused") warn(`Illustrator refused the key (${check.detail}) — saved anyway; re-run with the current key from Illustrator`);
       else warn(`could not verify the Illustrator key (${check.detail}) — saved anyway`);
     } else ok("Illustrator MCP delegate skipped (no key); the panel-less ai_* tools work without it");
+
+    // macOS: pin which Illustrator the os-script lane drives. The release and the Beta share the
+    // bundle name "Adobe Illustrator.app", so an unpinned AppleScript name follows whichever one
+    // happens to be running.
+    const installs = findIllustratorApps(process.platform, "/Applications", readBundleId);
+    if (installs.length > 1) {
+      const listed = installs.map((i, n) => `${n + 1}) ${i.label} (${i.bundleId})`).join("  ");
+      let choice = installs[0]!;
+      if (!flag("yes")) {
+        say("");
+        say(`Two Illustrator versions are installed and both bundles are named "Adobe Illustrator.app":  ${listed}`);
+        const answer = (await rl.question(`Which one should the ai_* tools drive? [1-${installs.length}, Enter = 1] `)).trim();
+        const n = Number(answer);
+        if (Number.isInteger(n) && n >= 1 && n <= installs.length) choice = installs[n - 1]!;
+      }
+      illustratorApp = choice.bundleId;
+      ok(`ai_* tools pinned to ${choice.label} (${choice.bundleId})`);
+    } else if (installs.length === 1 && existing.illustratorApp) {
+      // Only one left: drop a stale pin so the lane follows the app that is actually installed.
+      illustratorApp = null;
+      ok(`ai_* tools follow the only installed Illustrator (${installs[0]!.label})`);
+    }
   }
 
   // ---- 3. user config (remote listener + token) ---------------------------
@@ -157,6 +187,7 @@ async function main(): Promise<void> {
     ...(str("host") !== undefined ? { host: str("host")! } : {}),
     ...(illustratorKey !== undefined ? { illustratorKey } : {}),
     ...(illustratorUrl !== undefined ? { illustratorUrl } : {}),
+    ...(illustratorApp !== undefined ? { illustratorApp } : {}),
     apps,
   });
   mkdirSync(dirname(userConfigPath()), { recursive: true });
@@ -209,12 +240,18 @@ async function main(): Promise<void> {
 
   // ---- 4. Media Encoder web-service address --------------------------------
   if (!flag("no-ame") && appsNeed(apps, "ame-ini")) {
-    const ini = paths.ameIniCandidates.find((p) => existsSync(p));
-    if (!ini) warn("Media Encoder not found; skipped its web-service address.");
+    let ini = paths.ameIniCandidates.find((p) => existsSync(p));
+    let current = ini ? readFileSync(ini, "utf8") : null;
+    if (!ini && process.platform === "darwin") {
+      // Adobe ships no ini on macOS and the console never listens without one: create it in the newest bundle.
+      ini = paths.ameIniCandidates.find((p) => existsSync(dirname(p)));
+      if (ini) current = AME_INI_SEED;
+    }
+    if (!ini || current === null) warn("Media Encoder not found; skipped its web-service address.");
     else {
-      const current = readFileSync(ini, "utf8");
       const wanted = rewriteAmeIni(current, mode);
-      if (wanted === current) ok(`Media Encoder web service already ${mode === "local" ? "pinned to 127.0.0.1" : "on the network address"} (${basename(dirname(ini))})`);
+      const where = process.platform === "darwin" ? basename(dirname(dirname(dirname(ini)))) : basename(dirname(ini));
+      if (wanted === current && existsSync(ini)) ok(`Media Encoder web service already ${mode === "local" ? "pinned to 127.0.0.1" : "on the network address"} (${where})`);
       else {
         try {
           writeFileSync(ini, wanted);
@@ -226,6 +263,13 @@ async function main(): Promise<void> {
             const r = run(["Copy-Item", "-Force", tmp, ini], { elevate: true });
             if (r.code === 0) ok(`Media Encoder web service ${mode === "local" ? "pinned to 127.0.0.1" : "set to the network address"} (admin)`);
             else warn(`could not write ${ini} — edit it as admin: ${mode === "local" ? "ip = 127.0.0.1" : "#ip = 127.0.0.1"}`);
+          } else if (process.platform === "darwin") {
+            // App bundles are under "App Management" protection: even sudo gets EPERM from a terminal; Finder may copy the file in.
+            const tmp = join(mkdtempSync(join(tmpdir(), "brainferno-ame-")), "ame_webservice_config.ini");
+            writeFileSync(tmp, wanted);
+            const r = run(["osascript", "-e", finderCopyScript(tmp, dirname(ini))]);
+            if (r.code === 0 && existsSync(ini)) ok(`Media Encoder web service ${mode === "local" ? "pinned to 127.0.0.1" : "set to the network address"} (${where}, copied in by Finder)`);
+            else warn(`could not write ${ini} — allow "App Management" for your terminal app in System Settings > Privacy & Security and re-run, or create the file yourself with the lines: ${wanted.trim().split(/\r?\n/).join(" | ")}`);
           } else warn(`could not write ${ini} — edit it with sudo: ${mode === "local" ? "ip = 127.0.0.1" : "#ip = 127.0.0.1"}`);
         }
       }

@@ -9,7 +9,7 @@
  * secret, so it must never be world-readable and is removed on clean shutdown.
  */
 
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -44,7 +44,36 @@ export function writeHandshake(path: string, handshake: Handshake): void {
   writeFileSync(path, JSON.stringify(handshake, null, 2), { mode: 0o600, flag: "wx" });
 }
 
-/** Removes the handshake file, ignoring the case where it is already gone. */
-export function removeHandshake(path: string): void {
+/** The handshake currently on disk, or null when it is missing or unreadable. */
+export function readHandshake(path: string): Handshake | null {
+  try {
+    const p = JSON.parse(readFileSync(path, "utf8")) as Partial<Handshake>;
+    if (typeof p.port !== "number" || typeof p.pid !== "number" || typeof p.token !== "string" || typeof p.protocolVersion !== "number") return null;
+    return { protocolVersion: p.protocolVersion, port: p.port, token: p.token, pid: p.pid };
+  } catch {
+    return null;
+  }
+}
+
+/** Whether a process id is running. `signal 0` only checks; EPERM means it exists but is not ours. */
+export function pidAlive(pid: number, kill: (pid: number, signal: number) => void = process.kill): boolean {
+  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
+  try {
+    kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * Removes the handshake file — but only when it is still ours. A second server
+ * instance (another editor session, a stray `npm start`) overwrites the file with
+ * its own port and token; when that one exits it must not delete the entry the
+ * still-running first server put there, or every panel reload would find nothing.
+ */
+export function removeHandshake(path: string, ownPid: number = process.pid): void {
+  const current = readHandshake(path);
+  if (current !== null && current.pid !== ownPid) return;
   rmSync(path, { force: true });
 }

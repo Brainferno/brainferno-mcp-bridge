@@ -25,8 +25,8 @@ the way. Every action is one undo step in the app, so you can always step back.
 - **Runs on your machine.** Nothing leaves your computer unless you turn on *shared* mode
   for other computers on your network (token-protected).
 
-> Status: v0.1 — every tool verified live on Windows (Adobe 2026 apps). macOS paths are
-> written but not yet run. See [Status](#status).
+> Status: v0.1 — every tool verified live on Windows and macOS (Adobe 2026 apps). See
+> [Status](#status).
 
 The companion panel inside each app — here in Adobe After Effects and Adobe Photoshop —
 shows the connection, a live log, and a kill switch:
@@ -129,7 +129,10 @@ The full tool table is in [Tool reference](#tool-reference).
 
 ### Requirements
 
-- Windows 10/11 (macOS support is written but not yet verified).
+- Windows 10/11 or macOS 14+. Two macOS specifics the installer handles: Media Encoder needs a
+  one-time config file inside its app bundle, and — when both Illustrator and Illustrator (Beta)
+  are installed — which one the `ai_*` tools drive has to be pinned, since the two bundles share
+  a name. See `docs/spikes/13-macos-live.md`.
 - The Adobe apps you want to control (2024 or newer; Premiere Pro 25.6+ for its panel).
 - [Node.js](https://nodejs.org) 20 or newer.
 - [Claude Code](https://claude.com/claude-code) (or another MCP client).
@@ -172,7 +175,8 @@ Then it: writes `~/.brainferno-mcp-bridge/config.json`, asks for your Illustrato
 chose Illustrator (paste the line Illustrator shows; it is checked on the spot), links the
 After Effects/Audition panel, sets Media Encoder's service address, opens or closes the
 firewall port, prints the Photoshop/Premiere panel steps, and offers to register the server
-with Claude Code.
+with Claude Code. On macOS it asks one more question when both Illustrator and Illustrator
+(Beta) are installed — see below.
 
 Non-interactive examples (from a source checkout, replace `brainferno-mcp-bridge-install`
 with `node packages/server/dist/install/cli.js`):
@@ -184,7 +188,26 @@ brainferno-mcp-bridge-install --apps ppro,ame --mode shared --yes      # Premier
 ```
 
 App names: `ps ae ppro ai au ame` or `all`. Re-run the installer any time to change apps
-or mode.
+or mode. Other flags: `--token`, `--port`, `--host`, `--illustrator-key`, `--illustrator-url`,
+`--illustrator-app`, `--no-panels`, `--no-ame`, `--no-firewall`, `--no-illustrator`, `--register`.
+
+#### On macOS
+
+Two things differ from Windows, and the installer handles both:
+
+- **Media Encoder** needs `ame_webservice_config.ini` inside
+  `/Applications/Adobe Media Encoder <year>/Adobe Media Encoder <year>.app/Contents/Resources/`.
+  Adobe ships none, and without it the headless service starts but never listens. The installer
+  creates it — and because macOS "App Management" blocks writes into app bundles even under
+  `sudo`, it asks Finder to copy the file in. If that is refused, allow *App Management* for your
+  terminal in **System Settings → Privacy & Security** and re-run, or create the file by hand with
+  the two lines `ip = 127.0.0.1` and `port = 8080`. `ame_server` tells you the exact path if it is
+  missing.
+- **Illustrator and Illustrator (Beta)** both ship a bundle named `Adobe Illustrator.app`, so an
+  AppleScript name resolves to whichever one happens to be running — the `ai_*` tools would follow
+  it mid-session. The installer asks which one to drive and pins its bundle id
+  (`illustratorApp` in `config.json`; `BRAINFERNO_MCP_ILLUSTRATOR_APP` overrides,
+  `--illustrator-app com.adobe.illustratorBeta` sets it non-interactively).
 
 ### 3. Open the panels
 
@@ -197,8 +220,10 @@ Open it once per app; it connects on its own and shows a log and a kill switch.
   printed (`packages/panel-uxp` or `packages/panel-uxp-ppro`) → *Load*. Then Window →
   Extensions (UXP) → Brainferno MCP Bridge. Premiere needs *Settings → Plugins → Enable
   developer mode* first (restart Premiere). A double-click `.ccx` install is on the roadmap.
-- **Illustrator** needs no panel. For Adobe's own Illustrator tools, turn on MCP in
-  Illustrator's preferences and give the installer the key it shows.
+- **Illustrator** needs no panel: the `ai_*` tools drive it from outside (AppleScript on macOS,
+  COM on Windows). For Adobe's own Illustrator tools, turn on MCP in Illustrator's preferences and
+  give the installer the key it shows. On macOS with both the release and the Beta installed, the
+  installer asks which one the tools should drive.
 - **Media Encoder** needs no panel; the server starts its service when a job comes.
 
 ### 4. Talk to it
@@ -282,7 +307,7 @@ The wire protocol is documented in [`docs/protocol.md`](docs/protocol.md).
 | `ai_*` (7) | Illustrator | Documents, shapes, text, save, export artboard, preview (panel-less) |
 | `ai_beta_status` · `ai_beta_list_tools` · `ai_beta_call` | Illustrator (Adobe's MCP) | Pass-through to Adobe's 46 Illustrator tools — needs a key ([docs](docs/illustrator-beta.md), [sweep](docs/spikes/12-illustrator-beta-sweep.md)) |
 | `au_*` (12) | Audition | App/document state, 600+ menu commands, Favorites, markers, transport, open/save/export, API dump — [live run](docs/spikes/08-audition-tools-live.md) |
-| `ame_*` (6) | Media Encoder (headless) | Encode media / `.prproj` sequence / FCP XML with an `.epr` preset; status, history, cancel, service start/stop — [live run](docs/spikes/10-media-encoder-live.md) |
+| `ame_*` (6) | Media Encoder (headless) | Encode media / `.prproj` sequence / FCP XML with an `.epr` preset; status, history, cancel, service start/stop — [live run](docs/spikes/10-media-encoder-live.md), [macOS](docs/spikes/13-macos-live.md) |
 | `audio_*` (9) | ffmpeg | Probe, R128 measure + two-pass normalize, convert/extract, trim, trim silence, denoise, mix, waveform image |
 | `pipeline_*` (4) | cross-app | `ps_to_ae`, `render_and_import`, `audio_roundtrip`, `ai_to_ps` — one call, one job, failure names the step + recovery tool — [live run](docs/spikes/09-pipelines-live.md) |
 | `cc_eval_script` | After Effects, Illustrator, Audition | Raw ExtendScript escape hatch — **opt-in** (`BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS=1`) |
@@ -295,7 +320,8 @@ app returns an actionable "not connected" error rather than vanishing mid-sessio
 ## Configuration
 
 The installer writes `~/.brainferno-mcp-bridge/config.json` (`enabledApps`, `illustratorKey`,
-`illustratorUrl`, `httpPort`, `httpHost`, `httpToken`). Environment variables override it:
+`illustratorUrl`, `illustratorApp`, `httpPort`, `httpHost`, `httpToken`). Environment variables
+override it:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -308,6 +334,7 @@ The installer writes `~/.brainferno-mcp-bridge/config.json` (`enabledApps`, `ill
 | `BRAINFERNO_MCP_HEARTBEAT_MS` | `15000` | Ping cadence for detecting a dead panel |
 | `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS` | *(off)* | `1` registers the `cc_eval_script` escape hatch |
 | `BRAINFERNO_MCP_ILLUSTRATOR_KEY` / `_URL` | *(config.json)* / `http://localhost:18412/v1/mcp` | Adobe's Illustrator MCP key and endpoint |
+| `BRAINFERNO_MCP_ILLUSTRATOR_APP` | *(config.json, else the app's name)* | Which Illustrator the `ai_*` tools drive — AppleScript name, bundle id (`com.adobe.illustrator`, `com.adobe.illustratorBeta`) or `.app` path on macOS; COM ProgID on Windows |
 | `BRAINFERNO_MCP_FFMPEG` / `_FFPROBE` | `ffmpeg` / `ffprobe` | Executables for the `audio_*` lane |
 | `BRAINFERNO_MCP_AME_WEBSERVICE` | *(auto-detect)* | Path to Media Encoder's `ame_webservice_console` |
 | `BRAINFERNO_MCP_AME_PORT` / `_AME_IDLE_MS` | *(from its ini)* / `600000` | Media Encoder service port; idle time before it is stopped |
@@ -325,8 +352,10 @@ The installer writes `~/.brainferno-mcp-bridge/config.json` (`enabledApps`, `ill
   there is no anonymous path. The wire is plain HTTP — keep it to a trusted network, VPN or
   tunnel.
 - Media Encoder's built-in service has no password of its own and listens on a LAN address
-  unless pinned to loopback; the installer's *local* choice pins it (one admin prompt), and
-  the server only runs it while a job is active plus a short idle window.
+  unless pinned to loopback; the installer's *local* choice pins it (one admin prompt on
+  Windows; on macOS it writes the config file the service needs, via Finder), and the server
+  only runs it while a job is active plus a short idle window. On macOS the server also ends
+  the hidden renderer it started — never one that was already running.
 - Keys and tokens are stored in `~/.brainferno-mcp-bridge/config.json`, never logged, never put in
   error messages.
 - `cc_eval_script` (raw script) is opt-in and off by default.
@@ -338,7 +367,7 @@ The installer writes `~/.brainferno-mcp-bridge/config.json` (`enabledApps`, `ill
 ```bash
 npm run dev        # watch mode
 npm run typecheck  # tsc --noEmit
-npm test           # vitest (141 tests; the audio lane test runs a real ffmpeg if present)
+npm test           # vitest (171 tests; the audio lane test runs a real ffmpeg if present)
 npm run panels:sync  # copy the shared bridge client into each panel folder
 ```
 
@@ -378,10 +407,11 @@ docs/                build plan, protocol, live-run notes (spikes/), Audition AP
 
 ## Status
 
-- **Working, verified live on Windows (Adobe 2026 apps)**: all six application lanes and
-  their v1 tool sets, the ffmpeg lane, the job registry, the four pipelines, remote mode, and
-  the installer. Write-ups with the quirks found: `docs/spikes/05`–`12`.
-- **Not yet**: a macOS run; double-click panel installs (`.ccx`/`.zxp`) so the UXP Developer
+- **Working, verified live on Windows and macOS (Adobe 2026 apps)**: all six application
+  lanes and their v1 tool sets, the ffmpeg lane, the job registry, the four pipelines, remote
+  mode, and the installer. Write-ups with the quirks found: `docs/spikes/05`–`13` (`13` is the
+  macOS run: aerender path, Media Encoder's config file and renderer).
+- **Not yet**: double-click panel installs (`.ccx`/`.zxp`) so the UXP Developer
   Tool is not needed; a single signed installer; TLS for shared mode; Audition multitrack
   writes; Media Encoder queue control.
 - Roadmap: `docs/BUILD_PLAN.md` (Phase 6).

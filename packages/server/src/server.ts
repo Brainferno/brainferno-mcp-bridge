@@ -56,7 +56,7 @@ export function buildRuntime(config: Config): Runtime {
     handshakeFilePath: config.handshakeFilePath,
     allowedOrigins: config.allowedOrigins,
   });
-  const illustratorBridge = new OsScriptBridge({ appId: "illustrator", defaultTimeoutMs: config.evalTimeoutMs });
+  const illustratorBridge = new OsScriptBridge({ appId: "illustrator", defaultTimeoutMs: config.evalTimeoutMs, target: config.illustratorApp });
   const illustratorDelegate = new IllustratorDelegate({ url: config.illustratorMcpUrl, token: config.illustratorMcpKey });
   // Job work folders sit beside the handshake file (~/.brainferno-mcp-bridge/work/<jobId>/).
   const jobs = new JobRegistry({ workRoot: join(dirname(config.handshakeFilePath) || join(homedir(), ".brainferno-mcp-bridge"), "work") });

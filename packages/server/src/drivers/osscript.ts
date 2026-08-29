@@ -44,6 +44,11 @@ export interface OsScriptBridgeOptions {
   defaultTimeoutMs: number;
   /** Override the platform runner (tests, or a custom bootstrap). */
   runner?: ScriptRunner;
+  /**
+   * Which application the platform runner drives: an AppleScript name, a bundle id, or an
+   * absolute `.app` path on macOS; a COM ProgID on Windows. "" / undefined = the app's default.
+   */
+  target?: string;
   /** Where temp .jsx/.json files go. Defaults to the OS temp dir. */
   workDir?: string;
 }
@@ -160,11 +165,26 @@ export function windowsRunner(progId: string): ScriptRunner {
   };
 }
 
+/**
+ * How an app is addressed in AppleScript. A bare name is what Adobe documents, but on a Mac
+ * with both the release and the Beta installed BOTH bundles are named `Adobe Illustrator.app`,
+ * so a name resolves to whichever LaunchServices picks — in practice the one already running,
+ * which flips mid-session. A bundle id or an absolute `.app` path is unambiguous, so the target
+ * may be given as any of the three (config `illustratorApp` / `BRAINFERNO_MCP_ILLUSTRATOR_APP`).
+ */
+export function appleScriptTarget(target: string): string {
+  const t = target.trim();
+  if (t.startsWith("/") || /\.app\/?$/i.test(t)) return `application "${t.replace(/\/$/, "")}"`;
+  // A bundle id: dotted, no spaces or slashes (com.adobe.illustrator, com.adobe.illustratorBeta).
+  if (/^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/.test(t)) return `application id "${t}"`;
+  return `application "${t}"`;
+}
+
 /** macOS: AppleScript `do javascript`. First run prompts for Automation permission (TCC). */
 export function macRunner(appleScriptName: string): ScriptRunner {
   return (path, signal) => {
     const js = `$.evalFile(\\"${jsxPath(path)}\\")`;
-    const as = `tell application "${appleScriptName}" to do javascript "${js}"`;
+    const as = `tell ${appleScriptTarget(appleScriptName)} to do javascript "${js}"`;
     return spawnRunner(
       "osascript",
       ["-e", as],
@@ -174,13 +194,15 @@ export function macRunner(appleScriptName: string): ScriptRunner {
   };
 }
 
-export function platformRunner(appId: AppId): ScriptRunner {
+export function platformRunner(appId: AppId, target?: string): ScriptRunner {
   const app = APPS[appId];
   if (process.platform === "win32") {
+    if (target !== undefined && target !== "") return windowsRunner(target);
     if (app.winProgId === undefined) throw new Error(`${app.displayName} has no COM ProgID`);
     return windowsRunner(app.winProgId);
   }
   if (process.platform === "darwin") {
+    if (target !== undefined && target !== "") return macRunner(target);
     if (app.appleScriptName === undefined) throw new Error(`${app.displayName} has no AppleScript name`);
     return macRunner(app.appleScriptName);
   }
@@ -201,7 +223,7 @@ export class OsScriptBridge implements AppBridge {
 
   constructor(private readonly options: OsScriptBridgeOptions) {
     this.appId = options.appId;
-    this.runner = options.runner ?? platformRunner(options.appId);
+    this.runner = options.runner ?? platformRunner(options.appId, options.target);
     this.workDir = options.workDir ?? join(tmpdir(), "brainferno-mcp-bridge", "osscript");
   }
 

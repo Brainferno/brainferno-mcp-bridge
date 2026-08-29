@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { request } from "node:http";
 import { networkInterfaces } from "node:os";
-import { dirname, join } from "node:path";
+import { join, posix, win32 } from "node:path";
 
 import { log } from "../logging.js";
 
@@ -36,6 +36,8 @@ export interface AmeWebServiceOptions {
   idleMs: number;
   /** For tests: fixed base URL of an already-running service; skips spawning. */
   baseUrl?: string;
+  /** For tests: overrides how running renderer pids are listed (macOS). */
+  listRenderers?: () => Promise<Set<number>>;
 }
 
 export interface AmeServerInfo {
@@ -141,10 +143,10 @@ export function buildManifest(r: AmeSubmitRequest): string {
   return lines.join("\n");
 }
 
-/** Newest "Adobe Media Encoder <year>" console beside the other Adobe apps. */
-export async function detectConsoleExe(platform: NodeJS.Platform = process.platform): Promise<string | null> {
-  const roots = platform === "win32" ? [join(process.env["ProgramFiles"] ?? "C:\\Program Files", "Adobe")] : platform === "darwin" ? ["/Applications"] : [];
-  for (const root of roots) {
+/** Newest "Adobe Media Encoder <year>" console beside the other Adobe apps. `roots` overrides the search folders (tests). */
+export async function detectConsoleExe(platform: NodeJS.Platform = process.platform, roots?: string[]): Promise<string | null> {
+  const searchRoots = roots ?? (platform === "win32" ? [join(process.env["ProgramFiles"] ?? "C:\\Program Files", "Adobe")] : platform === "darwin" ? ["/Applications"] : []);
+  for (const root of searchRoots) {
     let entries: string[];
     try {
       entries = await readdir(root);
@@ -153,7 +155,15 @@ export async function detectConsoleExe(platform: NodeJS.Platform = process.platf
     }
     const versions = entries.filter((e) => /^Adobe Media Encoder/i.test(e)).sort().reverse();
     for (const v of versions) {
-      const candidates = platform === "win32" ? [join(root, v, "ame_webservice_console.exe")] : [join(root, v, "ame_webservice_console"), join(root, v, `${v}.app`, "Contents", "MacOS", "ame_webservice_console")];
+      const candidates =
+        platform === "win32"
+          ? [join(root, v, "ame_webservice_console.exe")]
+          : [
+              // AME 2026 on macOS: a nested console bundle inside the app bundle.
+              join(root, v, `${v}.app`, "Contents", "ame_webservice_console.app", "Contents", "MacOS", "ame_webservice_console"),
+              join(root, v, `${v}.app`, "Contents", "MacOS", "ame_webservice_console"),
+              join(root, v, "ame_webservice_console"),
+            ];
       for (const c of candidates) {
         try {
           await stat(c);
@@ -167,16 +177,58 @@ export async function detectConsoleExe(platform: NodeJS.Platform = process.platf
   return null;
 }
 
-/** `port = 8080` from the ini beside the exe; 8080 when unreadable. */
-export async function portFromIni(exePath: string): Promise<number> {
+/** The outermost `*.app` folder on a macOS path, or null. */
+function outerAppBundle(p: string): string | null {
+  const m = /^(.*?\.app)(?=[\\/]|$)/i.exec(p);
+  return m ? (m[1] ?? null) : null;
+}
+
+/**
+ * Where the console reads `ame_webservice_config.ini`. Windows: beside the exe.
+ * macOS: `Contents/Resources` of the outer Media Encoder bundle (traced with fs_usage on
+ * AME 26.3: the console sits in a nested bundle, ignores the cwd and every flag, and
+ * Adobe ships no ini at all — without one it prints "can not open config file" and never
+ * listens). The installer creates it.
+ */
+export function iniPathFor(exePath: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform === "darwin") {
+    const bundle = outerAppBundle(exePath);
+    if (bundle) return posix.join(bundle, "Contents", "Resources", "ame_webservice_config.ini");
+  }
+  const path = platform === "win32" ? win32 : posix;
+  return path.join(path.dirname(exePath), "ame_webservice_config.ini");
+}
+
+/** `port = 8080` from the console's ini; 8080 when unreadable. */
+export async function portFromIni(exePath: string, platform: NodeJS.Platform = process.platform): Promise<number> {
   try {
-    const ini = await readFile(join(dirname(exePath), "ame_webservice_config.ini"), "utf8");
+    const ini = await readFile(iniPathFor(exePath, platform), "utf8");
     const m = /^\s*port\s*=\s*(\d+)/m.exec(ini);
     if (m) return Number(m[1]);
   } catch {
     /* fall through */
   }
   return 8080;
+}
+
+/**
+ * macOS: pids of the hidden renderers the console launches (`…/Adobe Media Encoder <year>.app/Contents/MacOS/Adobe Media Encoder <year>`).
+ * The renderer is re-parented to launchd in its own process group, so killing the console's
+ * group does not reach it (verified on 26.3); the driver tracks the ones it caused instead.
+ */
+export function macRendererPids(): Promise<Set<number>> {
+  return new Promise((resolve) => {
+    const out: string[] = [];
+    const p = spawn("pgrep", ["-f", "/Adobe Media Encoder [0-9]+\\.app/Contents/MacOS/Adobe Media Encoder"], { stdio: ["ignore", "pipe", "ignore"] });
+    p.stdout.on("data", (d: Buffer) => out.push(d.toString()));
+    p.on("error", () => resolve(new Set()));
+    p.on("close", () => resolve(new Set(out.join("").split(/\s+/).filter(Boolean).map(Number).filter((n) => Number.isInteger(n) && n > 0))));
+  });
+}
+
+/** Pids in `after` that were not in `before`: the processes a spawn caused. */
+export function newPids(before: Set<number>, after: Set<number>): number[] {
+  return [...after].filter((pid) => !before.has(pid));
 }
 
 export function httpRequest(baseUrl: string, method: "GET" | "POST" | "DELETE", path: string, body?: string, timeoutMs = 15_000): Promise<{ status: number; text: string }> {
@@ -216,6 +268,8 @@ export class AmeWebService {
   private idleTimer: NodeJS.Timeout | null = null;
   private starting: Promise<string> | null = null;
   private exe: string | null = null;
+  /** macOS: renderer pids our console spawned (see macRendererPids). */
+  private rendererPids: number[] = [];
 
   constructor(private readonly options: AmeWebServiceOptions) {
     if (options.baseUrl) this.baseUrl = options.baseUrl;
@@ -281,13 +335,32 @@ export class AmeWebService {
         return found;
       }
       if (!exe) throw new Error("Adobe Media Encoder's ame_webservice_console was not found. Install Media Encoder or set BRAINFERNO_MCP_AME_WEBSERVICE to its path.");
+      if (process.platform === "darwin") {
+        // Without the ini the macOS console hangs before listening; fail fast with the fix instead of after 120 s.
+        const ini = iniPathFor(exe, "darwin");
+        try {
+          await stat(ini);
+        } catch {
+          throw new Error(`Media Encoder's web service needs ${ini} on macOS (Adobe ships none). Run the installer (npm run install-cc), or create the file with the lines "ip = 127.0.0.1" and "port = 8080" — Finder can copy it into the bundle when Terminal is not allowed to.`);
+        }
+      }
       this.exe = exe;
+      const listRenderers = this.options.listRenderers ?? (process.platform === "darwin" ? macRendererPids : null);
+      const renderersBefore = listRenderers ? await listRenderers() : new Set<number>();
       log.info(`starting Media Encoder web service: ${exe} ${this.options.extraArgs.join(" ")}`);
       this.child = spawn(exe, this.options.extraArgs, { stdio: "ignore", windowsHide: true, detached: process.platform !== "win32" });
       this.child.on("exit", (code) => {
         log.info(`Media Encoder web service exited (${code})`);
         this.child = null;
         this.baseUrl = null;
+        // macOS: the renderer is not our child; if the console went away on its own, take the renderer with it.
+        for (const pid of this.rendererPids.splice(0)) {
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch {
+            /* already gone */
+          }
+        }
       });
       const deadline = Date.now() + 120_000;
       while (Date.now() < deadline) {
@@ -296,8 +369,9 @@ export class AmeWebService {
         const url = await this.discover(port);
         if (url) {
           this.baseUrl = url;
+          if (listRenderers) this.rendererPids = newPids(renderersBefore, await listRenderers());
           this.touch();
-          log.info(`Media Encoder web service up at ${url}`);
+          log.info(`Media Encoder web service up at ${url}${this.rendererPids.length ? ` (renderer pid ${this.rendererPids.join(", ")})` : ""}`);
           return url;
         }
       }
@@ -397,19 +471,33 @@ export class AmeWebService {
     const child = this.child;
     this.child = null;
     this.baseUrl = this.options.baseUrl ?? null;
-    if (!child || child.pid === undefined) return;
+    const renderers = this.rendererPids;
+    this.rendererPids = [];
+    if ((!child || child.pid === undefined) && renderers.length === 0) return;
     log.info("stopping Media Encoder web service");
     if (process.platform === "win32") {
+      if (!child || child.pid === undefined) return;
       await new Promise<void>((resolve) => {
         const k = spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
         k.on("close", () => resolve());
         k.on("error", () => resolve());
       });
     } else {
-      try {
-        process.kill(-child.pid, "SIGTERM");
-      } catch {
-        child.kill("SIGTERM");
+      if (child && child.pid !== undefined) {
+        try {
+          process.kill(-child.pid, "SIGTERM");
+        } catch {
+          child.kill("SIGTERM");
+        }
+      }
+      // The renderer outlives the console (own process group, parent launchd): end the ones we caused.
+      // SIGKILL on purpose — SIGTERM is caught by Adobe's crash handler, which pops a crash report and keeps the process.
+      for (const pid of renderers) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          /* already gone */
+        }
       }
     }
   }

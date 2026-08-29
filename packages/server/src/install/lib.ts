@@ -124,7 +124,7 @@ export async function checkIllustratorKey(url: string, key: string, timeoutMs = 
 }
 
 /** Apply the chosen mode to the user config file (other keys untouched). */
-export function mergeUserConfig(existing: UserConfigFile, mode: InstallMode, o: { port?: number; token?: string; host?: string; illustratorKey?: string | null; illustratorUrl?: string | null; apps?: readonly InstallableApp[] } = {}): UserConfigFile {
+export function mergeUserConfig(existing: UserConfigFile, mode: InstallMode, o: { port?: number; token?: string; host?: string; illustratorKey?: string | null; illustratorUrl?: string | null; illustratorApp?: string | null; apps?: readonly InstallableApp[] } = {}): UserConfigFile {
   const next: UserConfigFile = { ...existing };
   if (o.apps !== undefined) {
     const all = INSTALLABLE_APPS.every((a) => o.apps!.includes(a));
@@ -138,6 +138,10 @@ export function mergeUserConfig(existing: UserConfigFile, mode: InstallMode, o: 
   if (o.illustratorUrl !== undefined) {
     if (o.illustratorUrl === null) delete next.illustratorUrl;
     else next.illustratorUrl = o.illustratorUrl;
+  }
+  if (o.illustratorApp !== undefined) {
+    if (o.illustratorApp === null) delete next.illustratorApp;
+    else next.illustratorApp = o.illustratorApp;
   }
   if (mode === "local") {
     delete next.httpPort;
@@ -169,6 +173,53 @@ export function rewriteAmeIni(ini: string, mode: InstallMode): string {
   return out.join(eol);
 }
 
+export interface IllustratorInstall {
+  /** Bundle path, e.g. /Applications/Adobe Illustrator 2026/Adobe Illustrator.app */
+  path: string;
+  /** Bundle id: com.adobe.illustrator (release) or com.adobe.illustratorBeta. */
+  bundleId: string;
+  /** The folder Adobe installed it in, e.g. "Adobe Illustrator 2026" or "Adobe Illustrator (Beta)". */
+  label: string;
+  beta: boolean;
+}
+
+/**
+ * Illustrator bundles under /Applications, newest-looking first, release before Beta.
+ * Both bundles are named `Adobe Illustrator.app`, so an AppleScript *name* resolves to whichever
+ * one LaunchServices picks; the os-script lane is pinned to a bundle id instead (config
+ * `illustratorApp`). `readBundleId` is injectable for tests.
+ */
+export function findIllustratorApps(platform: NodeJS.Platform, appsRoot: string, readBundleId: (bundlePath: string) => string | null): IllustratorInstall[] {
+  if (platform !== "darwin") return [];
+  let names: string[];
+  try {
+    names = readdirSync(appsRoot);
+  } catch {
+    return [];
+  }
+  const found: IllustratorInstall[] = [];
+  for (const label of names.filter((n) => /^Adobe Illustrator/i.test(n)).sort().reverse()) {
+    const path = join(appsRoot, label, "Adobe Illustrator.app");
+    if (!existsSync(path)) continue;
+    const bundleId = readBundleId(path);
+    if (!bundleId) continue;
+    found.push({ path, bundleId, label, beta: /beta/i.test(label) || /beta$/i.test(bundleId) });
+  }
+  return found.sort((a, b) => Number(a.beta) - Number(b.beta));
+}
+
+/** Seed for a Media Encoder ini that does not exist yet (macOS): the console's default port, no address pin. */
+export const AME_INI_SEED = "port = 8080\n";
+
+/**
+ * AppleScript that has Finder copy `src` into `destDir` (replacing). macOS "App Management"
+ * blocks writes into app bundles from a terminal, even with sudo; Finder is allowed.
+ */
+export function finderCopyScript(src: string, destDir: string): string {
+  const q = (p: string) => p.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return `tell application "Finder" to duplicate file (POSIX file "${q(src)}" as alias) to folder (POSIX file "${q(destDir)}" as alias) with replacing`;
+}
+
 export interface PlatformPaths {
   cepExtensionsDir: string;
   csxsDebugCommands: string[][];
@@ -189,7 +240,8 @@ export function platformPaths(platform: NodeJS.Platform, home: string, appData?:
     return {
       cepExtensionsDir: join(home, "Library", "Application Support", "Adobe", "CEP", "extensions"),
       csxsDebugCommands: [11, 12, 13, 14].map((v) => ["defaults", "write", `com.adobe.CSXS.${v}`, "PlayerDebugMode", "1"]),
-      ameIniCandidates: [2027, 2026, 2025, 2024].map((y) => join("/Applications", `Adobe Media Encoder ${y}`, "ame_webservice_config.ini")),
+      // The console reads the ini from the app bundle's Resources folder (see drivers/ame-webservice.ts); Adobe ships none.
+      ameIniCandidates: [2027, 2026, 2025, 2024].map((y) => join("/Applications", `Adobe Media Encoder ${y}`, `Adobe Media Encoder ${y}.app`, "Contents", "Resources", "ame_webservice_config.ini")),
     };
   }
   return { cepExtensionsDir: join(home, ".brainferno-mcp-bridge", "cep-extensions-unsupported"), csxsDebugCommands: [], ameIniCandidates: [] };

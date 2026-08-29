@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   AERENDER_INFO,
+  aerenderExecutable,
   LIST_COMPOSITIONS,
   LIST_FOOTAGE,
   PROJECT_INFO,
@@ -108,5 +109,15 @@ describe("After Effects tool scripts", () => {
     expect(SAMPLES["frame"]).toContain('addComp("__acm_preview"');
     expect(SAMPLES["frame"]).toContain("saveFrameToPng(1.5");
     expect(SAMPLES["frame"]).toContain("tmp.remove();");
+  });
+});
+
+describe("aerender executable", () => {
+  it("sits beside aerender.exe in Support Files on Windows", () => {
+    expect(aerenderExecutable("C:\\Program Files\\Adobe\\Adobe After Effects 2026\\Support Files", true)).toMatch(/Support Files[\\/]aerender\.exe$/);
+  });
+  it("is next to the .app bundle on macOS (Folder.appPackage is the bundle itself)", () => {
+    expect(aerenderExecutable("/Applications/Adobe After Effects 2026/Adobe After Effects 2026.app", false)).toBe("/Applications/Adobe After Effects 2026/aerender");
+    expect(aerenderExecutable("/Applications/Adobe After Effects 2026", false)).toBe("/Applications/Adobe After Effects 2026/aerender");
   });
 });
