@@ -41,12 +41,27 @@ Apache-2.0 licensed and are not distributed with the product.
 
 ## Optional external programs (not distributed here)
 
-- **ffmpeg / ffprobe** (https://ffmpeg.org; LGPL-2.1+ or GPL depending on the build) power
-  the `audio_*` tools. The user installs ffmpeg separately; this software only runs it.
+- **ffmpeg / ffprobe** (https://ffmpeg.org) power the `audio_*` tools. No FFmpeg binary or
+  source is included here or in the published npm packages, and there is no FFmpeg npm
+  dependency: the server executes the user's own `ffmpeg`/`ffprobe` (from `PATH`, or
+  `BRAINFERNO_MCP_FFMPEG` / `_FFPROBE`) as a separate process, passing command-line arguments
+  and file paths. Nothing from FFmpeg is linked into this software.
+
+  FFmpeg is LGPL-2.1-or-later by default; a build configured `--enable-gpl` (most packaged
+  builds, which include x264/x265) is GPL-2.0-or-later, `--enable-version3` moves either to v3,
+  and an `--enable-nonfree` build may not be redistributed at all. `ffmpeg -hide_banner -L`
+  prints the license of the installed build and `ffmpeg -version` its configure flags. Anyone
+  redistributing FFmpeg alongside this software (in an installer, application or container
+  image) takes on that build's obligations — license text and corresponding source, or a
+  written offer, and relinking under the LGPL. Codec patents (H.264, HEVC, AAC) are a separate
+  matter from copyright and are not granted by any software license; see
+  https://ffmpeg.org/legal.html.
 - **Node.js** (MIT-style license, https://github.com/nodejs/node/blob/main/LICENSE).
 
 ## Trademarks
 
 Adobe, After Effects, Audition, Creative Cloud, Illustrator, Media Encoder, Photoshop, and
 Premiere Pro are either registered trademarks or trademarks of Adobe in the United States
-and/or other countries. Other names may be trademarks of their respective owners.
+and/or other countries. FFmpeg is a trademark of Fabrice Bellard, originator of the FFmpeg
+project; this project is not affiliated with or endorsed by the FFmpeg project. Other names
+may be trademarks of their respective owners.

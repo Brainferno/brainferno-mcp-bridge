@@ -112,7 +112,8 @@ idle; status, history, cancel.
 
 ### Audio (ffmpeg) — 9 tools, no Adobe app needed
 Probe, loudness measurement (EBU R128), two-pass loudness normalization, convert/extract,
-trim, trim silence, denoise, mix, waveform image.
+trim, trim silence, denoise, mix, waveform image. These run your own installed ffmpeg as a
+separate process — nothing is bundled ([licensing](#ffmpeg)).
 
 ### Pipelines and jobs — 8 tools
 `pipeline_ps_to_ae`, `pipeline_render_and_import` (After Effects → aerender → Premiere Pro),
@@ -137,7 +138,8 @@ The full tool table is in [Tool reference](#tool-reference).
 - [Node.js](https://nodejs.org) 20 or newer.
 - [Claude Code](https://claude.com/claude-code) (or another MCP client).
 - Optional: [ffmpeg](https://ffmpeg.org) on your PATH for the audio tools
-  (`winget install ffmpeg` / `brew install ffmpeg`).
+  (`winget install ffmpeg` / `brew install ffmpeg`). It is never bundled — the server runs the
+  copy you install; see [FFmpeg licensing](#ffmpeg).
 
 ### 1. Install the package
 
@@ -426,11 +428,47 @@ Adobe materials this project relies on are listed in
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). Contributions are accepted under the
 same license.
 
+### FFmpeg
+
+The `audio_*` tools shell out to **FFmpeg**. No FFmpeg binary or source is included in this
+repository or in the published npm packages, and there is no FFmpeg npm dependency: the server
+runs the `ffmpeg` and `ffprobe` already installed on your machine (found on `PATH`, or at
+`BRAINFERNO_MCP_FFMPEG` / `_FFPROBE`) as separate processes, passing command-line arguments and
+file paths. Nothing from FFmpeg is linked into this software, so this project stays Apache-2.0 —
+and if you simply install FFmpeg alongside it, so does yours.
+
+**Each FFmpeg build carries its own license, and builds differ.** FFmpeg is LGPL-2.1-or-later by
+default; a build configured with `--enable-gpl` — most packaged builds, since they include x264
+and x265 — is GPL-2.0-or-later, and `--enable-version3` moves either to v3. A build configured
+`--enable-nonfree` (e.g. with libfdk_aac) may not be redistributed at all. Check the one you
+have rather than assuming:
+
+```bash
+ffmpeg -hide_banner -L   # the license this build is under
+ffmpeg -version          # the configure flags it was built with
+```
+
+Homebrew's ffmpeg 9.0.1, used to verify the audio tools on macOS, reports GPL-3.0-or-later
+(`--enable-gpl --enable-version3`).
+
+If you **redistribute** FFmpeg — bundling it into your own installer, application or container
+image alongside this bridge — that build's obligations become yours: shipping its license text
+and corresponding source (or a written offer for it), and, under the LGPL, keeping relinking
+possible. Pointing users at `brew install ffmpeg` or `winget install ffmpeg`, as this project
+does, carries no such obligation.
+
+Codec **patents** are separate from copyright: encoding or decoding H.264, HEVC or AAC can
+require a patent license from the relevant pool for some commercial uses in some countries, and
+no software license grants those rights. See FFmpeg's own [legal page](https://ffmpeg.org/legal.html).
+
+None of the above is legal advice.
+
 ## Trademarks
 
 Adobe, After Effects, Audition, Creative Cloud, Illustrator, Media Encoder, Photoshop, and
 Premiere Pro are either registered trademarks or trademarks of Adobe in the United States
-and/or other countries.
+and/or other countries. FFmpeg is a trademark of Fabrice Bellard, originator of the FFmpeg
+project; this project is not affiliated with or endorsed by the FFmpeg project.
 
 Brainferno MCP Bridge is an independent project. **It is not authorized, endorsed, or
 sponsored by Adobe.** Adobe product names are used only to say which products this software

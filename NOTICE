@@ -24,4 +24,10 @@ Media Encoder web service). Section 6 of the Apache License grants no trademark 
 neither the Adobe marks nor the Brainferno name and logo may be used to name or promote
 derived products without permission.
 
+This product does not bundle FFmpeg. The audio tools execute the ffmpeg and ffprobe programs
+already installed on the user's machine as separate processes; those builds carry their own
+licenses (LGPL-2.1-or-later, or GPL when built with --enable-gpl). FFmpeg is a trademark of
+Fabrice Bellard, originator of the FFmpeg project; this project is not affiliated with or
+endorsed by it.
+
 Third-party software and materials are listed in THIRD_PARTY_NOTICES.md.
