@@ -96,15 +96,24 @@ describe("installer pieces", () => {
     expect(mcpAddCommands({ mode: "local", distIndex: "i", port: 1, token: "", addresses: ["a"] }).remote).toEqual([]);
   });
 
-  it("knows the platform paths", () => {
+  // Each platform's paths must come out identical whichever OS runs the test: the separators
+  // below are the target platform's, not the host's.
+  it("knows the Windows paths", () => {
     const w = platformPaths("win32", "C:\\Users\\x", "C:\\Users\\x\\AppData\\Roaming");
-    expect(w.cepExtensionsDir).toContain("CEP");
+    expect(w.cepExtensionsDir).toBe("C:\\Users\\x\\AppData\\Roaming\\Adobe\\CEP\\extensions");
     expect(w.csxsDebugCommands).toHaveLength(4);
-    expect(platformPaths("darwin", "/Users/x").cepExtensionsDir.replace(/\\/g, "/")).toContain("Library/Application Support/Adobe/CEP/extensions");
-    // Windows: the ini sits beside the exe in Program Files. macOS: inside the app bundle's Resources (the console reads it there).
-    expect(w.ameIniCandidates[1]!.replace(/\\/g, "/")).toMatch(/Adobe\/Adobe Media Encoder 2026\/ame_webservice_config\.ini$/);
-    expect(platformPaths("darwin", "/Users/x").ameIniCandidates[1]).toBe("/Applications/Adobe Media Encoder 2026/Adobe Media Encoder 2026.app/Contents/Resources/ame_webservice_config.ini");
-    expect(platformPaths("darwin", "/Users/x").csxsDebugCommands[0]).toEqual(["defaults", "write", "com.adobe.CSXS.11", "PlayerDebugMode", "1"]);
+    expect(w.csxsDebugCommands[0]).toEqual(["reg", "add", "HKCU\\Software\\Adobe\\CSXS.11", "/v", "PlayerDebugMode", "/t", "REG_SZ", "/d", "1", "/f"]);
+    // The ini sits beside the exe in Program Files.
+    expect(w.ameIniCandidates[1]).toContain("\\Adobe\\Adobe Media Encoder 2026\\ame_webservice_config.ini");
+    expect(w.ameIniCandidates[1]).not.toContain("/");
+  });
+
+  it("knows the macOS paths", () => {
+    const m = platformPaths("darwin", "/Users/x");
+    expect(m.cepExtensionsDir).toBe("/Users/x/Library/Application Support/Adobe/CEP/extensions");
+    expect(m.csxsDebugCommands[0]).toEqual(["defaults", "write", "com.adobe.CSXS.11", "PlayerDebugMode", "1"]);
+    // Inside the app bundle's Resources, which is the only place the console reads it.
+    expect(m.ameIniCandidates[1]).toBe("/Applications/Adobe Media Encoder 2026/Adobe Media Encoder 2026.app/Contents/Resources/ame_webservice_config.ini");
   });
 
   it("seeds a missing macOS ini and has Finder copy it into the bundle", () => {

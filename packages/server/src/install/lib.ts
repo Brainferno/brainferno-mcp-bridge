@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { networkInterfaces } from "node:os";
-import { join } from "node:path";
+import { join, posix, win32 } from "node:path";
 
 import { existsSync, readdirSync } from "node:fs";
 
@@ -226,25 +226,26 @@ export interface PlatformPaths {
   ameIniCandidates: string[];
 }
 
+/** Explicit path flavours: a platform's paths must come out the same whichever OS computes them. */
 export function platformPaths(platform: NodeJS.Platform, home: string, appData?: string): PlatformPaths {
   if (platform === "win32") {
-    const roaming = appData ?? join(home, "AppData", "Roaming");
+    const roaming = appData ?? win32.join(home, "AppData", "Roaming");
     const pf = process.env["ProgramFiles"] ?? "C:\\Program Files";
     return {
-      cepExtensionsDir: join(roaming, "Adobe", "CEP", "extensions"),
+      cepExtensionsDir: win32.join(roaming, "Adobe", "CEP", "extensions"),
       csxsDebugCommands: [11, 12, 13, 14].map((v) => ["reg", "add", `HKCU\\Software\\Adobe\\CSXS.${v}`, "/v", "PlayerDebugMode", "/t", "REG_SZ", "/d", "1", "/f"]),
-      ameIniCandidates: [2027, 2026, 2025, 2024].map((y) => join(pf, "Adobe", `Adobe Media Encoder ${y}`, "ame_webservice_config.ini")),
+      ameIniCandidates: [2027, 2026, 2025, 2024].map((y) => win32.join(pf, "Adobe", `Adobe Media Encoder ${y}`, "ame_webservice_config.ini")),
     };
   }
   if (platform === "darwin") {
     return {
-      cepExtensionsDir: join(home, "Library", "Application Support", "Adobe", "CEP", "extensions"),
+      cepExtensionsDir: posix.join(home, "Library", "Application Support", "Adobe", "CEP", "extensions"),
       csxsDebugCommands: [11, 12, 13, 14].map((v) => ["defaults", "write", `com.adobe.CSXS.${v}`, "PlayerDebugMode", "1"]),
       // The console reads the ini from the app bundle's Resources folder (see drivers/ame-webservice.ts); Adobe ships none.
-      ameIniCandidates: [2027, 2026, 2025, 2024].map((y) => join("/Applications", `Adobe Media Encoder ${y}`, `Adobe Media Encoder ${y}.app`, "Contents", "Resources", "ame_webservice_config.ini")),
+      ameIniCandidates: [2027, 2026, 2025, 2024].map((y) => posix.join("/Applications", `Adobe Media Encoder ${y}`, `Adobe Media Encoder ${y}.app`, "Contents", "Resources", "ame_webservice_config.ini")),
     };
   }
-  return { cepExtensionsDir: join(home, ".brainferno-mcp-bridge", "cep-extensions-unsupported"), csxsDebugCommands: [], ameIniCandidates: [] };
+  return { cepExtensionsDir: posix.join(home, ".brainferno-mcp-bridge", "cep-extensions-unsupported"), csxsDebugCommands: [], ameIniCandidates: [] };
 }
 
 /** Windows Defender Firewall rule for the remote port, private networks only. */
