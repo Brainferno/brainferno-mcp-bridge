@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.2.0 — 2026-08-29
 
 macOS brought up and verified live (Adobe 2026 apps). Windows behaviour is unchanged; CI now
 runs the suite on macOS as well as Ubuntu and Windows. Details: `docs/spikes/13-macos-live.md`.
