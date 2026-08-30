@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.2.1 — 2026-08-30
+
+Housekeeping on top of 0.2.0: no new tools, nothing changed for an existing Windows or macOS
+install.
+
+- The installer now checks the platform before it does anything and exits saying that the
+  Adobe applications this bridge drives run on Windows and macOS only. Previously it worked
+  partway through and invented a `cep-extensions-unsupported` folder under the user's home;
+  `pp_list_export_presets` likewise stopped offering a `~/Documents/Adobe` root on platforms
+  where Adobe cannot be installed.
+- `npm publish` no longer warns that the `bin` entries were "invalid and removed" — the paths
+  lost their `./` prefix, which is the rewrite npm was doing silently. Both commands worked
+  before and still do; the warning was noise on every release.
+- Documentation names Windows and macOS as the supported platforms throughout, and the README
+  status line and hand-off notes catch up with the 0.2 release.
+
 ## v0.2.0 — 2026-08-30
 
 macOS brought up and verified live (Adobe 2026 apps), so both platforms Adobe ships Creative
