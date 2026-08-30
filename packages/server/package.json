@@ -4,8 +4,8 @@
   "description": "MCP server that lets an AI assistant drive Adobe Photoshop, After Effects, Premiere Pro, Illustrator, Audition and Media Encoder software. Independent project, not affiliated with Adobe.",
   "type": "module",
   "bin": {
-    "brainferno-mcp-bridge": "./dist/index.js",
-    "brainferno-mcp-bridge-install": "./dist/install/cli.js"
+    "brainferno-mcp-bridge": "dist/index.js",
+    "brainferno-mcp-bridge-install": "dist/install/cli.js"
   },
   "main": "./dist/index.js",
   "files": [
