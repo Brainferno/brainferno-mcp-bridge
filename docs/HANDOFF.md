@@ -2,11 +2,14 @@
 
 Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `docs/spikes/`.
 
-## Where the project stands (2026-08-28)
+## Where the project stands (2026-08-30)
 
 - Public repo `Brainferno/brainferno-mcp-bridge` (renamed from `adobe-cc-mcp` for Adobe's
-  trademark rules), Apache-2.0, `main` is the release branch. CI on every push (Ubuntu +
-  Windows, Node 20/22). `v0.1.0` released; npm packages `brainferno-mcp-bridge` and
+  trademark rules), Apache-2.0, `main` is the release branch. CI on every push covers
+  **Windows and macOS** on Node 20/22 — the two platforms Adobe ships Creative Cloud for, and
+  so the only ones this software supports. (The extra build runner in `ci.yml` is just a fast
+  machine for the platform-independent tests; the comment there explains it.)
+  `v0.2.0` released; npm packages `brainferno-mcp-bridge` and
   `@brainferno/mcp-bridge-protocol` published with trusted publishing — a `vX.Y.Z` tag
   publishes and creates the GitHub release by itself.
 - Everything is verified live on **Windows 11** with the Adobe 2026 apps: Photoshop 18,

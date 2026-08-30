@@ -2,8 +2,9 @@
 
 ## v0.2.0 — 2026-08-30
 
-macOS brought up and verified live (Adobe 2026 apps). Windows behaviour is unchanged; CI now
-runs the suite on macOS as well as Ubuntu and Windows. Details: `docs/spikes/13-macos-live.md`.
+macOS brought up and verified live (Adobe 2026 apps), so both platforms Adobe ships Creative
+Cloud for are now covered. Windows behaviour is unchanged, and CI runs the suite on Windows and
+macOS. Details: `docs/spikes/13-macos-live.md`.
 
 - **After Effects**: fixed the `aerender` path on macOS — `Folder.appPackage` is the `.app`
   bundle itself there, and `aerender` sits beside it. `ae_render_comp` and the render pipelines

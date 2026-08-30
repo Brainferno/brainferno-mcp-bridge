@@ -80,7 +80,7 @@ bundle id to `~/.brainferno-mcp-bridge/config.json`; it clears a stale pin when 
 from the bundle ini, renderer pid attribution), `test/after-effects-tools.test.ts` (aerender path on both
 platforms), `test/osscript.test.ts` (AppleScript name vs bundle id vs path), `test/install-lib.test.ts`
 (macOS ini candidates, seed + Finder script, Illustrator bundle detection and the pin).
-CI now runs the suite on `macos-latest` as well as Ubuntu and Windows, with ffmpeg from Homebrew.
+CI now runs the suite on `macos-latest` as well as Windows, with ffmpeg from Homebrew.
 
 ## The handshake file (not macOS-specific, found here)
 
