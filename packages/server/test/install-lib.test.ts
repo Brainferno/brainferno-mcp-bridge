@@ -108,6 +108,10 @@ describe("installer pieces", () => {
     expect(w.ameIniCandidates[1]).not.toContain("/");
   });
 
+  it("refuses a platform Adobe does not ship Creative Cloud for", () => {
+    expect(() => platformPaths("unsupported" as NodeJS.Platform, "/home/x")).toThrow(/Windows and macOS only/);
+  });
+
   it("knows the macOS paths", () => {
     const m = platformPaths("darwin", "/Users/x");
     expect(m.cepExtensionsDir).toBe("/Users/x/Library/Application Support/Adobe/CEP/extensions");

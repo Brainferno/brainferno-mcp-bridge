@@ -146,7 +146,8 @@ describe("export preset discovery", () => {
   it("knows the Adobe preset roots per platform", () => {
     expect(presetRoots("win32", "C:\\Users\\x").some((r) => /Adobe$/.test(r))).toBe(true);
     expect(presetRoots("darwin", "/Users/x")[0]).toBe("/Applications");
-    expect(presetRoots("linux", "/home/x")).toEqual([join("/home/x", "Documents", "Adobe", "Adobe Media Encoder")]);
+    // Adobe ships Creative Cloud for Windows and macOS only: nowhere else has presets to find.
+    expect(presetRoots("unsupported" as NodeJS.Platform, "/home/x")).toEqual([]);
   });
 
   it("walks a folder for .epr files and filters by substring", async () => {

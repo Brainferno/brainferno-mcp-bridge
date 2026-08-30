@@ -74,6 +74,11 @@ async function main(): Promise<void> {
   say("");
   say("Brainferno MCP Bridge — installer");
   say("=================================");
+  if (process.platform !== "win32" && process.platform !== "darwin") {
+    // Adobe ships Creative Cloud for Windows and macOS only; there is nothing here to drive.
+    warn(`${process.platform} is not supported. The Adobe applications this bridge drives run on Windows and macOS only.`);
+    process.exit(1);
+  }
   if (!existsSync(distIndex)) {
     warn(`server build not found at ${distIndex}; run "npm run build" first.`);
     process.exit(1);

@@ -55,10 +55,11 @@ describe("Media Encoder console: detection and port", () => {
     expect(await portFromIni(exe!, "darwin")).toBe(8090);
   });
 
-  it("returns null when nothing is installed", async () => {
+  it("returns null when nothing is installed, and off Windows/macOS entirely", async () => {
     expect(await detectConsoleExe("darwin", [root])).toBeNull();
     expect(await detectConsoleExe("win32", [root])).toBeNull();
-    expect(await detectConsoleExe("linux", [])).toBeNull();
+    // Media Encoder only exists on the two platforms Adobe ships it for.
+    expect(await detectConsoleExe("unsupported" as NodeJS.Platform, [])).toBeNull();
   });
 });
 

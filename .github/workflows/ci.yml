@@ -13,6 +13,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Windows and macOS are the platforms this software supports — the Adobe applications
+        # it drives run nowhere else. Ubuntu is here as a fast build/test machine for the
+        # platform-independent logic (no Adobe app is involved in any test), not as a target.
         os: [ubuntu-latest, windows-latest, macos-latest]
         node: [20, 22]
     steps:

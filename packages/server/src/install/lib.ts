@@ -245,7 +245,8 @@ export function platformPaths(platform: NodeJS.Platform, home: string, appData?:
       ameIniCandidates: [2027, 2026, 2025, 2024].map((y) => posix.join("/Applications", `Adobe Media Encoder ${y}`, `Adobe Media Encoder ${y}.app`, "Contents", "Resources", "ame_webservice_config.ini")),
     };
   }
-  return { cepExtensionsDir: posix.join(home, ".brainferno-mcp-bridge", "cep-extensions-unsupported"), csxsDebugCommands: [], ameIniCandidates: [] };
+  // Adobe ships Creative Cloud for Windows and macOS only, so there is nothing to set up elsewhere.
+  throw new Error(`${platform} is not supported: the Adobe applications this bridge drives run on Windows and macOS only.`);
 }
 
 /** Windows Defender Firewall rule for the remote port, private networks only. */

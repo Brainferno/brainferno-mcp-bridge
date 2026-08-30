@@ -37,15 +37,16 @@ const seconds = (what: string) => z.number().min(0).describe(`${what}, in second
 
 /** Folders Adobe installs encoder presets (.epr) into, plus the user's own. */
 export function presetRoots(platform: NodeJS.Platform = process.platform, home: string = homedir()): string[] {
-  const roots: string[] = [];
+  // Windows and macOS are the platforms Adobe ships Creative Cloud for; anywhere else there
+  // are no presets to find, and no Premiere to feed them to.
   if (platform === "win32") {
     const pf = process.env["ProgramFiles"] ?? "C:\\Program Files";
-    roots.push(join(pf, "Adobe"));
-  } else if (platform === "darwin") {
-    roots.push("/Applications");
+    return [join(pf, "Adobe"), join(home, "Documents", "Adobe", "Adobe Media Encoder")];
   }
-  roots.push(join(home, "Documents", "Adobe", "Adobe Media Encoder"));
-  return roots;
+  if (platform === "darwin") {
+    return ["/Applications", join(home, "Documents", "Adobe", "Adobe Media Encoder")];
+  }
+  return [];
 }
 
 /** Walks a folder for .epr files (bounded depth), returning name/path/category. */

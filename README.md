@@ -130,7 +130,8 @@ The full tool table is in [Tool reference](#tool-reference).
 
 ### Requirements
 
-- Windows 10/11 or macOS 14+. Two macOS specifics the installer handles: Media Encoder needs a
+- Windows 10/11 or macOS 14+ — the only platforms Adobe ships Creative Cloud for, so the
+  only ones this software runs on. Two macOS specifics the installer handles: Media Encoder needs a
   one-time config file inside its app bundle, and — when both Illustrator and Illustrator (Beta)
   are installed — which one the `ai_*` tools drive has to be pinned, since the two bundles share
   a name. See `docs/spikes/13-macos-live.md`.
