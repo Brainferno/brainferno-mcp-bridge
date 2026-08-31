@@ -265,3 +265,113 @@ export function mcpAddCommands(o: { mode: InstallMode; distIndex: string; port: 
   const remote = o.mode === "shared" ? o.addresses.map((a) => `claude mcp add --scope user --transport http --header "Authorization: Bearer ${o.token}" brainferno http://${a}:${o.port}/mcp`) : [];
   return { local, remote };
 }
+
+export type McpClient = "claude" | "codex" | "gemini";
+export const MCP_CLIENTS: readonly McpClient[] = ["claude", "codex", "gemini"];
+
+export function parseClients(raw: string): McpClient[] {
+  const out: McpClient[] = [];
+  for (const part of raw.split(/[,\s]+/).filter(Boolean)) {
+    const id = part.trim().toLowerCase();
+    if (!(MCP_CLIENTS as readonly string[]).includes(id)) throw new Error(`Unknown MCP client "${part}". Use: ${MCP_CLIENTS.join(", ")}`);
+    if (!out.includes(id as McpClient)) out.push(id as McpClient);
+  }
+  return out;
+}
+
+/**
+ * Env overrides each client's registration carries. Claude Code gets none
+ * (blocking waits, inline previews — today's behavior). Codex CLI kills tool
+ * calls at 60 seconds by default and cannot show the model MCP image blocks,
+ * so long tools return a jobId at once, cc_job_wait polls in 50-second slices,
+ * and previews come back as file paths (Codex's view_image reads them).
+ * Gemini CLI renders images and has a long tool timeout; only waits change.
+ */
+export const CLIENT_ENV: Record<McpClient, Record<string, string>> = {
+  claude: {},
+  codex: { BRAINFERNO_MCP_DEFAULT_WAIT: "false", BRAINFERNO_MCP_PREVIEW: "path", BRAINFERNO_MCP_JOB_WAIT_SECONDS: "50" },
+  gemini: { BRAINFERNO_MCP_DEFAULT_WAIT: "false" },
+};
+
+export interface ClientPlan {
+  client: McpClient;
+  label: string;
+  /** Probe argv: exit 0 means the CLI is installed. */
+  probe: string[];
+  /** Run before `add`; failures are ignored (stale or renamed entries). */
+  removals: string[][];
+  /** Registration argv. */
+  add: string[];
+  /** The same registration as one printable line. */
+  addLine: string;
+  /** Shared mode: how another computer connects to this server (print-only). */
+  remoteLines: string[];
+}
+
+/** One registration plan per MCP client CLI (Claude Code, Codex CLI, Gemini CLI). */
+export function registrationPlans(o: { mode: InstallMode; distIndex: string; port: number; token: string; addresses: string[]; clients?: readonly McpClient[] }): ClientPlan[] {
+  const chosen = o.clients ?? MCP_CLIENTS;
+  const plans: ClientPlan[] = [];
+  const urls = o.addresses.map((a) => `http://${a}:${o.port}/mcp`);
+
+  if (chosen.includes("claude")) {
+    const cmds = mcpAddCommands(o);
+    plans.push({
+      client: "claude",
+      label: "Claude Code",
+      probe: ["claude", "--version"],
+      removals: ["user", "local"].flatMap((scope) => [
+        ["claude", "mcp", "remove", "--scope", scope, "brainferno"],
+        ["claude", "mcp", "remove", "--scope", scope, "adobe-cc"],
+      ]),
+      add: ["claude", "mcp", "add", "--scope", "user", "brainferno", "--", "node", o.distIndex],
+      addLine: cmds.local,
+      remoteLines: cmds.remote,
+    });
+  }
+
+  if (chosen.includes("codex")) {
+    const envArgs = Object.entries(CLIENT_ENV.codex).flatMap(([k, v]) => ["--env", `${k}=${v}`]);
+    plans.push({
+      client: "codex",
+      label: "Codex CLI",
+      probe: ["codex", "--version"],
+      removals: [["codex", "mcp", "remove", "brainferno"]],
+      add: ["codex", "mcp", "add", "brainferno", ...envArgs, "--", "node", o.distIndex],
+      addLine: `codex mcp add brainferno ${envArgs.join(" ")} -- node "${o.distIndex}"`,
+      // Codex reads the bearer token from an env var, not a header: point it at a TOML block.
+      remoteLines:
+        o.mode === "shared"
+          ? [
+              "in ~/.codex/config.toml:",
+              "  [mcp_servers.brainferno]",
+              `  url = "${urls[0] ?? ""}"`,
+              ...urls.slice(1).map((u) => `  # or: url = "${u}"`),
+              '  bearer_token_env_var = "BRAINFERNO_MCP_TOKEN"',
+              `then run Codex with BRAINFERNO_MCP_TOKEN=${o.token}`,
+            ]
+          : [],
+    });
+  }
+
+  if (chosen.includes("gemini")) {
+    const envArgs = Object.entries(CLIENT_ENV.gemini).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
+    plans.push({
+      client: "gemini",
+      label: "Gemini CLI",
+      probe: ["gemini", "--version"],
+      removals: [["gemini", "mcp", "remove", "-s", "user", "brainferno"]],
+      add: ["gemini", "mcp", "add", "-s", "user", ...envArgs, "brainferno", "node", o.distIndex],
+      addLine: `gemini mcp add -s user ${envArgs.join(" ")} brainferno node "${o.distIndex}"`,
+      remoteLines:
+        o.mode === "shared"
+          ? [
+              'in ~/.gemini/settings.json, under "mcpServers":',
+              ...urls.map((u) => `  "brainferno": { "httpUrl": "${u}", "headers": { "Authorization": "Bearer ${o.token}" } }`),
+            ]
+          : [],
+    });
+  }
+
+  return plans;
+}
