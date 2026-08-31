@@ -126,8 +126,12 @@ describe("Premiere tools send named commands", () => {
     const c = new Client({ name: "test2", version: "0" });
     await Promise.all([c.connect(ct), server.connect(st)]);
     const call = c.callTool({ name: "pp_export_frame", arguments: { seconds: 3 } });
-    // Give the tool a moment to send the command, then satisfy it by writing the file.
-    await new Promise((r) => setTimeout(r, 50));
+    // Wait until the tool has sent the command (a fixed 50 ms lost the race on CI), then
+    // satisfy it by writing the file.
+    const deadline = Date.now() + 5000;
+    while (rec.calls.length === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
     const sent = rec.calls.at(-1);
     expect(sent?.name).toBe("pp.export_frame");
     const p = sent?.params as { dir: string; baseName: string; seconds: number };
