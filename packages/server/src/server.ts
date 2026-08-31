@@ -6,6 +6,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { BridgeServer } from "./bridge/socket.js";
 import type { Config } from "./config.js";
 import { AmeWebService } from "./drivers/ame-webservice.js";
+import { SERVER_VERSION } from "./version.js";
 import { IllustratorDelegate } from "./drivers/illustrator-delegate.js";
 import { OsScriptBridge } from "./drivers/osscript.js";
 import { JobRegistry } from "./jobs.js";
@@ -74,7 +75,7 @@ export function buildRuntime(config: Config): Runtime {
 export function createMcpServer(rt: Runtime): McpServer {
   const { config, bridge, jobs } = rt;
   const server = new McpServer(
-    { name: "brainferno-mcp-bridge", version: "0.1.0" },
+    { name: "brainferno-mcp-bridge", version: SERVER_VERSION },
     {
       capabilities: { tools: {} },
       instructions:

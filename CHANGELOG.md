@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.2.2 — 2026-08-30
+
+- The server reported itself as **0.1.0** to every MCP client and every panel, whatever
+  version was actually installed — the string was typed out in four files and never bumped,
+  so a 0.2.1 install still announced `serverInfo: 0.1.0` and the panels logged
+  `welcome: server 0.1.0`. It now comes from `package.json` at runtime, in one place, and a
+  test fails the build if a literal version reappears in the source. Found by installing
+  0.2.1 from npm and speaking MCP to it.
+- The Photoshop and After Effects/Audition panel manifests claimed 0.1.0 while the panels
+  themselves reported 0.2.0; each manifest now matches the panel it describes.
+
 ## v0.2.1 — 2026-08-30
 
 Housekeeping on top of 0.2.0: no new tools, nothing changed for an existing Windows or macOS

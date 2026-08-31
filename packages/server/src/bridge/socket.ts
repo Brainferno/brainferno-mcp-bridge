@@ -5,6 +5,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import type { AppId } from "@brainferno/mcp-bridge-protocol";
 import { APPS } from "@brainferno/mcp-bridge-protocol";
 import { log } from "../logging.js";
+import { SERVER_VERSION } from "../version.js";
 import { pidAlive, readHandshake, removeHandshake, writeHandshake } from "./handshake.js";
 import {
   PROTOCOL_VERSION,
@@ -22,7 +23,7 @@ import {
   type JsonValue,
 } from "./types.js";
 
-const SERVER_VERSION = "0.1.0";
+
 const DEFAULT_AUTH_DEADLINE_MS = 3_000;
 const FAST_TIMEOUT_MS = 10_000;
 const MAX_MISSED_PINGS = 2;

@@ -21,6 +21,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { log } from "../logging.js";
+import { SERVER_VERSION } from "../version.js";
 
 export interface DelegateToolInfo {
   name: string;
@@ -138,7 +139,7 @@ export class IllustratorDelegate {
 }
 
 async function defaultClientFactory(url: string, token: string): Promise<DelegateClient> {
-  const client = new Client({ name: "brainferno-mcp-bridge-illustrator-delegate", version: "0.1.0" });
+  const client = new Client({ name: "brainferno-mcp-bridge-illustrator-delegate", version: SERVER_VERSION });
   // Static per-install key: goes in requestInit.headers, NOT an authProvider.
   const transport = new StreamableHTTPClientTransport(new URL(url), {
     requestInit: { headers: { Authorization: `Bearer ${token}` } },

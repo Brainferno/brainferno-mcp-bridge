@@ -1,6 +1,6 @@
 {
   "name": "brainferno-mcp-bridge",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "MCP server that lets an AI assistant drive Adobe Photoshop, After Effects, Premiere Pro, Illustrator, Audition and Media Encoder software. Independent project, not affiliated with Adobe.",
   "type": "module",
   "bin": {
@@ -28,7 +28,7 @@
     "prepack": "node ../../scripts/prepack-server.mjs"
   },
   "dependencies": {
-    "@brainferno/mcp-bridge-protocol": "0.2.1",
+    "@brainferno/mcp-bridge-protocol": "0.2.2",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "ws": "^8.21.3",
     "zod": "^3.25.76"

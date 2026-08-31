@@ -5,6 +5,7 @@ import { join, posix, win32 } from "node:path";
 import { existsSync, readdirSync } from "node:fs";
 
 import { INSTALLABLE_APPS, parseApps, type InstallableApp, type UserConfigFile } from "../config.js";
+import { SERVER_VERSION } from "../version.js";
 
 export interface AppChoice {
   id: InstallableApp;
@@ -108,7 +109,7 @@ export async function checkIllustratorKey(url: string, key: string, timeoutMs = 
       method: "POST",
       signal: controller.signal,
       headers: { authorization: `Bearer ${key}`, "content-type": "application/json", accept: "application/json, text/event-stream" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "brainferno-mcp-bridge-installer", version: "0.1.0" } } }),
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "brainferno-mcp-bridge-installer", version: SERVER_VERSION } } }),
     });
     if (res.status === 401 || res.status === 403) return { ok: false, reason: "refused", detail: `HTTP ${res.status}` };
     if (!res.ok) return { ok: false, reason: "unexpected", detail: `HTTP ${res.status}` };
