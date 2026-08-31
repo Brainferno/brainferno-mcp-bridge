@@ -6,7 +6,7 @@ import { createServer } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { INSTALLABLE_APPS, parseApps } from "../src/config.js";
-import { appsNeed, checkIllustratorKey, extractIllustratorKey, extractIllustratorUrl, finderCopyScript, findIllustratorApps, firewallCommands, mcpAddCommands, mergeUserConfig, pickApps, platformPaths, rewriteAmeIni, AME_INI_SEED } from "../src/install/lib.js";
+import { appsNeed, checkIllustratorKey, extractIllustratorKey, extractIllustratorUrl, finderCopyScript, findIllustratorApps, firewallCommands, mcpAddCommands, mergeUserConfig, parseClients, pickApps, platformPaths, registrationPlans, rewriteAmeIni, AME_INI_SEED } from "../src/install/lib.js";
 
 describe("installer: Illustrator key", () => {
   it("accepts a bare key or the whole claude mcp add line", () => {
@@ -94,6 +94,47 @@ describe("installer pieces", () => {
     expect(c.local).toContain('node "C:/x/index.js"');
     expect(c.remote[0]).toBe('claude mcp add --scope user --transport http --header "Authorization: Bearer tok" brainferno http://192.168.1.51:7898/mcp');
     expect(mcpAddCommands({ mode: "local", distIndex: "i", port: 1, token: "", addresses: ["a"] }).remote).toEqual([]);
+  });
+
+  it("plans a registration per MCP client CLI", () => {
+    const o = { mode: "local" as const, distIndex: "C:/x/index.js", port: 7898, token: "", addresses: [] };
+    const plans = registrationPlans(o);
+    expect(plans.map((p) => p.client)).toEqual(["claude", "codex", "gemini"]);
+
+    const claude = plans[0]!;
+    expect(claude.add).toEqual(["claude", "mcp", "add", "--scope", "user", "brainferno", "--", "node", "C:/x/index.js"]);
+    expect(claude.removals).toContainEqual(["claude", "mcp", "remove", "--scope", "local", "adobe-cc"]);
+    // Claude Code keeps blocking waits and inline previews: no env overrides.
+    expect(claude.add.join(" ")).not.toContain("BRAINFERNO_MCP");
+
+    const codex = plans[1]!;
+    expect(codex.add).toEqual([
+      "codex", "mcp", "add", "brainferno",
+      "--env", "BRAINFERNO_MCP_DEFAULT_WAIT=false",
+      "--env", "BRAINFERNO_MCP_PREVIEW=path",
+      "--env", "BRAINFERNO_MCP_JOB_WAIT_SECONDS=50",
+      "--", "node", "C:/x/index.js",
+    ]);
+    expect(codex.probe).toEqual(["codex", "--version"]);
+
+    const gemini = plans[2]!;
+    expect(gemini.add).toEqual(["gemini", "mcp", "add", "-s", "user", "-e", "BRAINFERNO_MCP_DEFAULT_WAIT=false", "brainferno", "node", "C:/x/index.js"]);
+    for (const p of plans) expect(p.remoteLines).toEqual([]);
+  });
+
+  it("plans shared-mode connection lines per client, and filters by --clients", () => {
+    const plans = registrationPlans({ mode: "shared", distIndex: "i", port: 7898, token: "tok", addresses: ["192.168.1.51", "10.0.0.9"] });
+    const codex = plans.find((p) => p.client === "codex")!;
+    expect(codex.remoteLines.join("\n")).toContain('url = "http://192.168.1.51:7898/mcp"');
+    expect(codex.remoteLines.join("\n")).toContain('bearer_token_env_var = "BRAINFERNO_MCP_TOKEN"');
+    expect(codex.remoteLines.join("\n")).toContain("http://10.0.0.9:7898/mcp");
+    const gemini = plans.find((p) => p.client === "gemini")!;
+    expect(gemini.remoteLines.join("\n")).toContain('"httpUrl": "http://192.168.1.51:7898/mcp"');
+    expect(gemini.remoteLines.join("\n")).toContain("Bearer tok");
+
+    expect(registrationPlans({ mode: "local", distIndex: "i", port: 1, token: "", addresses: [], clients: ["codex"] }).map((p) => p.client)).toEqual(["codex"]);
+    expect(parseClients("codex, gemini")).toEqual(["codex", "gemini"]);
+    expect(() => parseClients("cursor")).toThrow(/Unknown MCP client/);
   });
 
   // Each platform's paths must come out identical whichever OS runs the test: the separators
