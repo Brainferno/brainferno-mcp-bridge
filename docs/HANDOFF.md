@@ -9,9 +9,9 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
   **Windows and macOS** on Node 20/22 — the two platforms Adobe ships Creative Cloud for, and
   so the only ones this software supports. (The extra build runner in `ci.yml` is just a fast
   machine for the platform-independent tests; the comment there explains it.)
-  `v0.2.0` released; npm packages `brainferno-mcp-bridge` and
+  `v0.2.2` is the current release; npm packages `brainferno-mcp-bridge` and
   `@brainferno/mcp-bridge-protocol` published with trusted publishing — a `vX.Y.Z` tag
-  publishes and creates the GitHub release by itself.
+  publishes and creates the GitHub release by itself. See **Releasing** below.
 - Everything is verified live on **Windows 11** with the Adobe 2026 apps: Photoshop 18,
   After Effects 24, Premiere Pro 28, Illustrator 7 (+ Adobe's 46 via `ai_beta_call`),
   Audition 12, Media Encoder 6, audio/ffmpeg 9, pipelines 4, jobs 4.
@@ -50,6 +50,54 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
   *name* follows whichever is running. Pin the lane with `illustratorApp` in
   `~/.brainferno-mcp-bridge/config.json` (a bundle id: `com.adobe.illustrator` /
   `com.adobe.illustratorBeta`) or `BRAINFERNO_MCP_ILLUSTRATOR_APP`; the installer asks.
+
+## Releasing
+
+A `vX.Y.Z` tag is the whole release: `publish.yml` runs the tests, checks the tag against
+both package versions, publishes both packages to npm over OIDC, and creates the GitHub
+release from the matching `CHANGELOG.md` section. Pushing that tag is the irreversible step —
+npm permanently burns a version number even if you unpublish it (and unpublish is only
+possible for 72 hours). Everything before the tag is a normal commit you can amend.
+
+- **Four version spots, not three**: `package.json` (root, private), `packages/protocol`,
+  `packages/server`, **and** the `@brainferno/mcp-bridge-protocol` dependency inside
+  `packages/server/package.json`, which is pinned to an exact version. Then `npm install` to
+  refresh `package-lock.json`. The workflow refuses to publish unless the tag equals both
+  package versions.
+- **Rename `## Unreleased`** to `## vX.Y.Z — <date>` before tagging; that heading is what the
+  release-notes step greps for. Dry-run it:
+  `awk -v tag=vX.Y.Z '$0 ~ "^## " tag "([ —-]|$)" {on=1;next} on && /^## / {exit} on {print}' CHANGELOG.md`
+- **npm is slow to catch up.** The version endpoint went live 45 s–2 min after publish and the
+  `latest` dist-tag took up to ~3.5 min more. In that window `npm install -g <pkg>` still gets
+  the old version, and a client with a cached packument reports `ETARGET: No matching version`
+  for a version that demonstrably exists — `--prefer-online` gets past it. The publish log's
+  `+ <pkg>@<version>` line is the ground truth, not `npm view`.
+- **npm's "Your package is being processed" notice is normal** for the server package (~190 kB):
+  the small protocol package appears instantly, the big one lags. Not a half-publish.
+
+### Verify a release the way the last one was verified
+
+Install it somewhere isolated and make it talk, rather than trusting the workflow's green tick:
+
+    npm install -g brainferno-mcp-bridge --prefix /tmp/t --prefer-online
+
+then spawn `/tmp/t/bin/brainferno-mcp-bridge` with `HOME` pointed at a scratch directory (a
+fresh-machine simulation — no user config, no remote-mode port to collide with the running
+server) and speak JSON-RPC over stdio: `initialize`, `notifications/initialized`, `tools/list`.
+Expect 113 tools and the right `serverInfo` version. Two false alarms this catches: without an
+isolated `HOME`, the test instance reads the real `config.json`, tries to bind the shared-mode
+port 7898 that the live server already holds, and dies with `EADDRINUSE`; and it will clobber
+`~/.brainferno-mcp-bridge/bridge.json`, pointing the panels at a dead port on their next reload.
+
+**This is how the version-drift bug was found, and the lesson worth keeping:** the server had
+been telling every MCP client and every panel that it was `0.1.0` since the first release. The
+version was typed out in four files — `serverInfo`, the panels' welcome frame, and two
+client-identity strings — and none of them moved when `package.json` did. Nothing in CI could
+notice, because every test agreed with the same wrong constant. It now comes from
+`package.json` at runtime via `src/version.ts`, and `test/version.test.ts` both pins the value
+and fails if a literal `version: "x.y.z"` reappears anywhere in the server source. Generalise
+it: a fact that lives in more than one file will drift, and only an end-to-end check on the
+built artifact will tell you.
 
 ## Secrets and keys
 
