@@ -134,9 +134,11 @@ last Windows run, so step 6 is not optional.
    Photoshop / Premiere Pro: load `packages/panel-uxp` and `packages/panel-uxp-ppro` in the UXP
    Developer Tool (Premiere needs Settings → Plugins → Enable developer mode, then a restart).
    Then `/mcp` → brainferno → reconnect, and `cc_connected_apps` should list them.
-6. **Re-verify the lanes the macOS work touched.** The Windows branches were kept identical and
-   are unit-tested, and CI runs the suite on Windows every push — but none of this has been run
-   against real Adobe apps on Windows since:
+6. **Re-verify the lanes the macOS work touched.** Done on the primary Windows 11 machine
+   2026-08-30 — all five checks below green against the live Adobe 2026 apps. Still required on
+   any *other* Windows machine picking this up. The Windows branches were kept identical and
+   are unit-tested, and CI runs the suite on Windows every push — but that does not replace a
+   run against the real apps:
    - `ame_server start:true` then `ame_encode` — `detectConsoleExe` and the ini path were
      reworked (`iniPathFor`), and the service is stopped differently now.
    - `ae_render_comp` on a small comp — `aerenderExecutable` was rewritten.
