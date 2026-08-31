@@ -7,12 +7,12 @@ import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 
 import { DEFAULT_ILLUSTRATOR_MCP_URL, migrateLegacyUserDir, readUserConfig, userConfigPath } from "../config.js";
-import { AME_INI_SEED, APP_CHOICES, DEFAULT_HTTP_PORT, appsNeed, checkIllustratorKey, detectInstalledApps, extractIllustratorKey, extractIllustratorUrl, finderCopyScript, findIllustratorApps, firewallCommands, lanAddresses, mcpAddCommands, mergeUserConfig, pickApps, platformPaths, rewriteAmeIni, type InstallMode } from "./lib.js";
+import { AME_INI_SEED, APP_CHOICES, DEFAULT_HTTP_PORT, appsNeed, checkIllustratorKey, detectInstalledApps, extractIllustratorKey, extractIllustratorUrl, finderCopyScript, findIllustratorApps, firewallCommands, lanAddresses, mergeUserConfig, parseClients, pickApps, platformPaths, registrationPlans, rewriteAmeIni, type ClientPlan, type InstallMode } from "./lib.js";
 
 /**
  * Interactive installer:
  *   node dist/install/cli.js [--apps ps,ae,ppro,ai,au,ame|all] [--mode local|shared] [--token T] [--port N] [--yes] [--no-panels] [--no-ame] [--no-firewall] [--register]
- *                            [--illustrator-key K|"claude mcp add … line"] [--illustrator-url U] [--no-illustrator]
+ *                            [--clients claude,codex,gemini] [--illustrator-key K|"claude mcp add … line"] [--illustrator-url U] [--no-illustrator]
  *
  * Asks one question — "only this computer" or "shared on my network" — and
  * sets every switch that depends on it: the remote MCP listener + token, the
@@ -37,7 +37,7 @@ for (let i = 2; i < process.argv.length; i++) {
   if (!a.startsWith("--")) continue;
   const [k, v] = a.slice(2).split("=", 2);
   if (v !== undefined) args.set(k!, v);
-  else if (process.argv[i + 1] && !process.argv[i + 1]!.startsWith("--") && ["mode", "token", "port", "host", "illustrator-key", "illustrator-url", "apps"].includes(k!)) args.set(k!, process.argv[++i]!);
+  else if (process.argv[i + 1] && !process.argv[i + 1]!.startsWith("--") && ["mode", "token", "port", "host", "illustrator-key", "illustrator-url", "apps", "clients"].includes(k!)) args.set(k!, process.argv[++i]!);
   else args.set(k!, true);
 }
 const flag = (k: string) => args.get(k) === true;
@@ -62,8 +62,8 @@ function run(cmd: string[], opts: { elevate?: boolean } = {}): { code: number; o
     const r = spawnSync("powershell", ["-NoProfile", "-Command", `$p = Start-Process -FilePath powershell -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File "${ps}"' -Verb RunAs -Wait -PassThru; exit $p.ExitCode`], { encoding: "utf8" });
     return { code: r.status ?? 1, out: (r.stdout ?? "") + (r.stderr ?? "") };
   }
-  // `claude` is a shell shim on Windows; run it through the shell as one string. Everything else is a real exe.
-  const viaShell = process.platform === "win32" && cmd[0] === "claude";
+  // The MCP client CLIs are shell shims on Windows; run them through the shell as one string. Everything else is a real exe.
+  const viaShell = process.platform === "win32" && ["claude", "codex", "gemini"].includes(cmd[0]!);
   const r = viaShell
     ? spawnSync(cmd.map((c) => (/\s/.test(c) ? `"${c}"` : c)).join(" "), { encoding: "utf8", shell: true })
     : spawnSync(cmd[0]!, cmd.slice(1), { encoding: "utf8" });
@@ -304,30 +304,46 @@ async function main(): Promise<void> {
     if (apps.includes("after_effects") || apps.includes("audition")) say(`  ${[apps.includes("after_effects") ? "After Effects" : "", apps.includes("audition") ? "Audition" : ""].filter(Boolean).join(" / ")}: Window → Extensions → Brainferno MCP Bridge.`);
   }
 
-  // ---- 7. register with Claude Code ---------------------------------------
-  const cmds = mcpAddCommands({ mode, distIndex, port: next.httpPort ?? port, token: next.httpToken ?? "", addresses: lanAddresses() });
+  // ---- 7. register with MCP clients (Claude Code, Codex CLI, Gemini CLI) ---
+  const plans = registrationPlans({
+    mode,
+    distIndex,
+    port: next.httpPort ?? port,
+    token: next.httpToken ?? "",
+    addresses: lanAddresses(),
+    ...(str("clients") !== undefined ? { clients: parseClients(str("clients")!) } : {}),
+  });
   say("");
-  say("Claude Code on this computer:");
-  say(`  ${cmds.local}`);
-  const wantRegister = flag("register") || (!flag("yes") && (await ask("Run that now? (y/n)", "y")).toLowerCase().startsWith("y"));
+  say("MCP clients on this computer:");
+  const detectedClients: ClientPlan[] = [];
+  for (const p of plans) {
+    const found = run(p.probe).code === 0;
+    if (found) detectedClients.push(p);
+    say(`  ${p.label}${found ? "" : " (not found — run this yourself if you install it)"}:`);
+    say(`    ${p.addLine}`);
+  }
+  const wantRegister = detectedClients.length > 0 && (flag("register") || (!flag("yes") && (await ask(`Register with ${detectedClients.map((p) => p.label).join(", ")} now? (y/n)`, "y")).toLowerCase().startsWith("y")));
   if (wantRegister) {
-    // Replace our own entry, and retire the pre-rename alias in both scopes.
-    for (const scope of ["user", "local"]) {
-      run(["claude", "mcp", "remove", "--scope", scope, "brainferno"]);
-      run(["claude", "mcp", "remove", "--scope", scope, "adobe-cc"]);
+    for (const p of detectedClients) {
+      // Replace our own entry, and retire stale or pre-rename names; removal failures are fine.
+      for (const r of p.removals) run(r);
+      const res = run(p.add);
+      if (res.code === 0) ok(`${p.label}: registered as 'brainferno'`);
+      else warn(`${p.label}: registration failed (${res.out.trim().split("\n")[0] ?? ""}) — run the line above yourself`);
     }
-    const r2 = run(["claude", "mcp", "add", "--scope", "user", "brainferno", "--", "node", distIndex]);
-    if (r2.code === 0) ok("registered as 'brainferno' (user scope)");
-    else warn(`claude mcp add failed: ${r2.out.trim().split("\n")[0] ?? ""} — run the line above yourself`);
   }
   if (mode === "shared") {
     say("");
     say(`Other computers (this machine is "${hostname()}"; the token is in ${userConfigPath()}):`);
-    for (const c of cmds.remote) say(`  ${c}`);
+    for (const p of plans) {
+      if (p.remoteLines.length === 0) continue;
+      say(`  ${p.label}:`);
+      for (const line of p.remoteLines) say(`    ${line}`);
+    }
     say("  The wire is plain HTTP: use it on a trusted LAN, a VPN, or Tailscale.");
   }
   say("");
-  say("Done. Start or restart the server (in Claude Code: /mcp → brainferno → reconnect) to apply.");
+  say("Done. Restart the server to apply (Claude Code: /mcp → brainferno → reconnect; Codex/Gemini: start a new session).");
   rl.close();
 }
 
