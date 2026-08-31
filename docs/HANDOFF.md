@@ -63,9 +63,11 @@ possible for 72 hours). Everything before the tag is a normal commit you can ame
 
 - **Four version spots, not three**: `package.json` (root, private), `packages/protocol`,
   `packages/server`, **and** the `@brainferno/mcp-bridge-protocol` dependency inside
-  `packages/server/package.json`, which is pinned to an exact version. Then `npm install` to
-  refresh `package-lock.json`. The workflow refuses to publish unless the tag equals both
-  package versions.
+  `packages/server/package.json`, which is pinned to an exact version. Then
+  `npm run panels:stamp` (writes the version into the three panel manifests and their
+  `PANEL_VERSION` literals — `test/panel-versions.test.ts` fails if you forget) and
+  `npm install` to refresh `package-lock.json`. The workflow refuses to publish unless the
+  tag equals both package versions.
 - **Nothing else carries the version by hand.** The server reads it from `package.json`
   (`src/version.ts`), and the README's npm badge tracks what is published — its prose used to
   name a version and went stale within a day, twice. Keep it that way.

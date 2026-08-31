@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<ExtensionManifest Version="7.0" ExtensionBundleId="com.brainferno.mcp-bridge.cep" ExtensionBundleVersion="0.2.0" ExtensionBundleName="Brainferno MCP Bridge" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<ExtensionManifest Version="7.0" ExtensionBundleId="com.brainferno.mcp-bridge.cep" ExtensionBundleVersion="0.2.2" ExtensionBundleName="Brainferno MCP Bridge" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <ExtensionList>
-    <Extension Id="com.brainferno.mcp-bridge.cep.panel" Version="0.2.0" />
+    <Extension Id="com.brainferno.mcp-bridge.cep.panel" Version="0.2.2" />
   </ExtensionList>
   <ExecutionEnvironment>
     <HostList>
