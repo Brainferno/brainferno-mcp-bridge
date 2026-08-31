@@ -64,6 +64,20 @@ dist/index.js was invalid and removed` — which reads like data loss and is not
 leading `./`. Confirmed against the published tarballs that both commands survived. Dropping
 the `./` in `package.json` silences it (0.2.1).
 
+## The publish workflow's test gate is single-platform
+
+`publish.yml` runs `npm test` once, on its Ubuntu runner. `ci.yml` is what covers Windows and
+macOS. So **a platform-specific test failure does not block a release**: 0.2.2 published green
+while `ci.yml` was red on both Windows legs, because the failing test — a directory walk using
+`new URL(...).pathname`, which yields `/D:/a/...` on Windows and scandirs as `D:\D:\a\...` —
+only breaks there. The shipped artifact was fine (the bug was in the test, and the released
+0.2.2 was separately installed from npm and driven over MCP), but the gate did not catch it and
+would not have caught a real Windows regression either.
+
+Two ways to close it, neither taken yet: run the publish job's tests on the same matrix as CI,
+or make the publish job depend on a green `ci.yml` for that commit. Until then: **watch
+`ci.yml`, not just `publish.yml`, on the commit you are about to tag.**
+
 ## Verifying a release, which is the part that found a real bug
 
 The workflow's green tick means the steps ran, not that the artifact works. Install it and

@@ -17,6 +17,9 @@ describe("advertised version", () => {
   it("is not hardcoded anywhere in the server source", async () => {
     const { readFile, readdir } = await import("node:fs/promises");
     const { join } = await import("node:path");
+    // fileURLToPath, not URL.pathname: on Windows the latter yields "/D:/a/..." which
+    // joins into "D:\\D:\\a\\..." and fails to scandir.
+    const { fileURLToPath } = await import("node:url");
     const walk = async (dir: string): Promise<string[]> => {
       const out: string[] = [];
       for (const e of await readdir(dir, { withFileTypes: true })) {
@@ -27,7 +30,7 @@ describe("advertised version", () => {
       return out;
     };
     const offenders: string[] = [];
-    for (const file of await walk(new URL("../src", import.meta.url).pathname)) {
+    for (const file of await walk(fileURLToPath(new URL("../src", import.meta.url)))) {
       const text = await readFile(file, "utf8");
       // A literal x.y.z next to a "version" key is the shape that drifted.
       if (/version:\s*["']\d+\.\d+\.\d+["']/.test(text)) offenders.push(file);
