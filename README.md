@@ -25,8 +25,9 @@ the way. Every action is one undo step in the app, so you can always step back.
 - **Runs on your machine.** Nothing leaves your computer unless you turn on *shared* mode
   for other computers on your network (token-protected).
 
-> Status: v0.2.2 — every tool verified live on Windows and macOS, the two platforms Adobe
-> ships Creative Cloud for (Adobe 2026 apps). See [Status](#status).
+> Status: every tool verified live on Windows and macOS, the two platforms Adobe ships
+> Creative Cloud for (Adobe 2026 apps). The npm badge above is the current version.
+> See [Status](#status).
 
 The companion panel inside each app — here in Adobe After Effects and Adobe Photoshop —
 shows the connection, a live log, and a kill switch:

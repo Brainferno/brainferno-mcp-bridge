@@ -64,6 +64,9 @@ possible for 72 hours). Everything before the tag is a normal commit you can ame
   `packages/server/package.json`, which is pinned to an exact version. Then `npm install` to
   refresh `package-lock.json`. The workflow refuses to publish unless the tag equals both
   package versions.
+- **Nothing else carries the version by hand.** The server reads it from `package.json`
+  (`src/version.ts`), and the README's npm badge tracks what is published — its prose used to
+  name a version and went stale within a day, twice. Keep it that way.
 - **Rename `## Unreleased`** to `## vX.Y.Z — <date>` before tagging; that heading is what the
   release-notes step greps for. Dry-run it:
   `awk -v tag=vX.Y.Z '$0 ~ "^## " tag "([ —-]|$)" {on=1;next} on && /^## / {exit} on {print}' CHANGELOG.md`
