@@ -33,6 +33,9 @@ const config: Config = {
   httpToken: "",
   enabledApps: ["photoshop", "after_effects", "premiere", "illustrator", "audition", "media_encoder"],
   logLevel: "error",
+  defaultWait: true,
+  preview: "both",
+  jobWaitSeconds: 300,
 };
 
 /** Opens a fake panel, authenticates it, and resolves once the server welcomes it. */
@@ -193,5 +196,32 @@ describe("app choice", () => {
     await c.close();
     await built.server.close();
     await built.bridge.close();
+  });
+});
+
+describe("per-client defaults (BRAINFERNO_MCP_DEFAULT_WAIT, BRAINFERNO_MCP_JOB_WAIT_SECONDS)", () => {
+  const LONG_TOOLS = ["ae_render_comp", "pp_export_sequence", "ame_encode", "pipeline_ps_to_ae", "pipeline_render_and_import", "pipeline_audio_roundtrip", "pipeline_ai_to_ps"];
+
+  it("advertises the configured wait default in every long tool's schema", async () => {
+    for (const defaultWait of [true, false]) {
+      const built = buildServer({ ...config, defaultWait, jobWaitSeconds: 50 });
+      await built.bridge.ready();
+      const [ct, st] = InMemoryTransport.createLinkedPair();
+      const c = new Client({ name: "waits", version: "0" });
+      await Promise.all([c.connect(ct), built.server.connect(st)]);
+      const { tools } = await c.listTools();
+      for (const name of LONG_TOOLS) {
+        const tool = tools.find((t) => t.name === name);
+        expect(tool, name).toBeDefined();
+        const wait = (tool!.inputSchema["properties"] as Record<string, { description?: string }>)["wait"];
+        expect(wait?.description, name).toContain("BRAINFERNO_MCP_DEFAULT_WAIT");
+        expect(wait?.description, name).toContain(defaultWait ? "(default" : "Default false");
+      }
+      const jobWait = tools.find((t) => t.name === "cc_job_wait");
+      expect((jobWait!.inputSchema["properties"] as Record<string, { description?: string }>)["timeoutSeconds"]?.description).toContain("Defaults to 50");
+      await c.close();
+      await built.server.close();
+      await built.bridge.close();
+    }
   });
 });

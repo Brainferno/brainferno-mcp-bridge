@@ -3,7 +3,15 @@ import { readFile } from "node:fs/promises";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { AppNotConnectedError, EvalTimeoutError, ScriptError } from "../bridge/types.js";
+import type { PreviewMode } from "../config.js";
 import { log } from "../logging.js";
+
+let previewMode: PreviewMode = "both";
+
+/** Process-wide preview mode (BRAINFERNO_MCP_PREVIEW), set once at startup like the log level. */
+export function setPreviewMode(mode: PreviewMode): void {
+  previewMode = mode;
+}
 
 /** Wraps any JSON-serializable value as a tool result the client reads as text. */
 export function jsonResult(value: unknown): CallToolResult {
@@ -18,16 +26,16 @@ export function textResult(text: string): CallToolResult {
  * Returns an image the model can see, plus a text block naming the file on
  * disk so pipelines can pass the full-resolution path along. Callers keep the
  * file small (export at a reduced scale) — image bytes count against context.
+ * In "path" mode (clients that cannot show the model images) only the text
+ * block is returned; in "inline" mode only the image block.
  */
 export async function imageResult(filePath: string, mimeType: "image/png" | "image/jpeg", note?: string): Promise<CallToolResult> {
+  const text = { type: "text" as const, text: note === undefined ? filePath : `${note}
+${filePath}` };
+  if (previewMode === "path") return { content: [text] };
   const data = (await readFile(filePath)).toString("base64");
-  return {
-    content: [
-      { type: "image", data, mimeType },
-      { type: "text", text: note === undefined ? filePath : `${note}
-${filePath}` },
-    ],
-  };
+  const image = { type: "image" as const, data, mimeType };
+  return { content: previewMode === "inline" ? [image] : [image, text] };
 }
 
 export function errorResult(message: string): CallToolResult {

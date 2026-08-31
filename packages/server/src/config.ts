@@ -12,6 +12,15 @@ export type LogLevel = "error" | "warn" | "info" | "debug";
 
 const LOG_LEVELS: readonly LogLevel[] = ["error", "warn", "info", "debug"];
 
+/**
+ * How preview tools return images: "both" (image block + file path, the
+ * default), "inline" (image block only), or "path" (file path only — for MCP
+ * clients that cannot show the model image content, e.g. Codex CLI).
+ */
+export type PreviewMode = "inline" | "path" | "both";
+
+const PREVIEW_MODES: readonly PreviewMode[] = ["inline", "path", "both"];
+
 const LEGACY_ENV_PREFIX = "ADOBE_CC_MCP_";
 const warnedLegacy = new Set<string>();
 /** Read BRAINFERNO_MCP_X, falling back to the pre-rename ADOBE_CC_MCP_X with a one-time warning. */
@@ -112,6 +121,17 @@ export interface Config {
   /** Which applications get their tools registered (installer choice; env BRAINFERNO_MCP_APPS overrides). */
   enabledApps: InstallableApp[];
   logLevel: LogLevel;
+  /**
+   * Whether long tools (renders, exports, pipelines) block until done when the
+   * caller does not pass `wait`. False suits clients with short tool timeouts
+   * (Codex CLI kills calls at 60s by default): tools return a jobId at once and
+   * the client polls cc_job_wait. Set per client in its MCP registration env.
+   */
+  defaultWait: boolean;
+  /** How preview tools return images; see {@link PreviewMode}. */
+  preview: PreviewMode;
+  /** Default cc_job_wait timeout, seconds. Keep below the client's tool timeout. */
+  jobWaitSeconds: number;
 }
 
 /** Keys the installer may write to `~/.brainferno-mcp-bridge/config.json` (mode 600). */
@@ -209,9 +229,19 @@ function intFromEnv(name: string, fallback: number, { allowZero = false } = {}):
   return parsed;
 }
 
-function boolFromEnv(name: string): boolean {
+function boolFromEnv(name: string, fallback = false): boolean {
   const raw = envValue(name);
+  if (raw === undefined || raw === "") return fallback;
   return raw === "1" || raw === "true";
+}
+
+function previewFromEnv(): PreviewMode {
+  const raw = envValue("BRAINFERNO_MCP_PREVIEW");
+  if (raw === undefined || raw === "") return "both";
+  if (!PREVIEW_MODES.includes(raw as PreviewMode)) {
+    throw new Error(`BRAINFERNO_MCP_PREVIEW must be one of ${PREVIEW_MODES.join(", ")}, got ${raw}`);
+  }
+  return raw as PreviewMode;
 }
 
 function logLevelFromEnv(): LogLevel {
@@ -253,5 +283,8 @@ export function loadConfig(): Config {
     httpToken: envValue("BRAINFERNO_MCP_HTTP_TOKEN") ?? file.httpToken ?? "",
     enabledApps: parseApps(envValue("BRAINFERNO_MCP_APPS"), file.enabledApps ?? INSTALLABLE_APPS),
     logLevel: logLevelFromEnv(),
+    defaultWait: boolFromEnv("BRAINFERNO_MCP_DEFAULT_WAIT", true),
+    preview: previewFromEnv(),
+    jobWaitSeconds: intFromEnv("BRAINFERNO_MCP_JOB_WAIT_SECONDS", 300),
   };
 }

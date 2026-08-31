@@ -11,7 +11,7 @@ import { jsStringLiteral } from "../bridge/script-escape.js";
 import type { AppBridge, JsonValue } from "../bridge/types.js";
 import type { JobRegistry } from "../jobs.js";
 import { log } from "../logging.js";
-import { runOrQueue, type ProgressExtra } from "./jobs.js";
+import { runOrQueue, waitParam, type ProgressExtra } from "./jobs.js";
 import { guard, imageResult, jsonResult } from "./result.js";
 
 /**
@@ -557,6 +557,8 @@ const seconds = (what: string) => z.number().finite().nonnegative().describe(`${
 export interface AfterEffectsToolOptions {
   /** When given, ae_render_comp runs as a job (progress, cancel, wait:false). */
   jobs?: JobRegistry;
+  /** Whether ae_render_comp blocks when the caller passes no `wait` (BRAINFERNO_MCP_DEFAULT_WAIT). */
+  defaultWait?: boolean;
 }
 
 export function registerAfterEffectsTools(server: McpServer, bridge: AppBridge, options: AfterEffectsToolOptions = {}): void {
@@ -910,7 +912,7 @@ export function registerAfterEffectsTools(server: McpServer, bridge: AppBridge, 
         outputPath: z.string().min(1).describe("Absolute output path, e.g. C:/renders/comp.mp4 or .mov; aerender picks the format from the output module."),
         outputModule: z.string().min(1).optional().describe("Output module template name, e.g. 'H.264 - Match Render Settings' or 'Lossless'."),
         renderSettings: z.string().min(1).optional().describe("Render settings template, e.g. 'Best Settings'."),
-        wait: z.boolean().optional().describe("Block until the render finishes (default). false returns a jobId at once; poll with cc_job_wait."),
+        wait: waitParam(options.defaultWait ?? true, "the render"),
       },
       annotations: { destructiveHint: true },
     },
@@ -923,7 +925,7 @@ export function registerAfterEffectsTools(server: McpServer, bridge: AppBridge, 
           "ae_render_comp",
           [{ name: "Render with aerender", recoveryTool: "ae_render_comp", run: (ctx) => renderCompHeadless(bridge, o, { signal: ctx.signal, log: ctx.log }).then((r) => (ctx.artifact(r.outputPath), r)) }],
           (results) => results[0],
-          { wait: wait ?? true, timeoutMs: 30 * 60_000, extra: extra as ProgressExtra },
+          { wait: wait ?? options.defaultWait ?? true, timeoutMs: 30 * 60_000, extra: extra as ProgressExtra },
         );
       }),
   );

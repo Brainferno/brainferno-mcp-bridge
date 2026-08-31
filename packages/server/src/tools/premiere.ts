@@ -8,7 +8,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import type { AppBridge, EvalOptions, JsonValue } from "../bridge/types.js";
 import type { JobRegistry } from "../jobs.js";
-import { runOrQueue, type ProgressExtra } from "./jobs.js";
+import { runOrQueue, waitParam, type ProgressExtra } from "./jobs.js";
 import { guard, imageResult, jsonResult } from "./result.js";
 
 /**
@@ -130,6 +130,8 @@ export async function waitForAnyFile(paths: string[], timeoutMs: number): Promis
 export interface PremiereToolOptions {
   /** When given, pp_export_sequence runs as a job (progress, cancel, wait:false). */
   jobs?: JobRegistry;
+  /** Whether pp_export_sequence blocks when the caller passes no `wait` (BRAINFERNO_MCP_DEFAULT_WAIT). */
+  defaultWait?: boolean;
 }
 
 export function registerPremiereTools(server: McpServer, bridge: AppBridge, options: PremiereToolOptions = {}): void {
@@ -581,7 +583,7 @@ export function registerPremiereTools(server: McpServer, bridge: AppBridge, opti
         presetPath: z.string().min(1).describe("Absolute .epr path."),
         mode: z.enum(["immediately", "queue_ame", "queue_app"]).optional().describe("Defaults to immediately."),
         full: z.boolean().optional().describe("Export the whole sequence (true, default) or only the in/out range."),
-        wait: z.boolean().optional().describe("Block until the export finishes (default). false returns a jobId at once; poll with cc_job_wait."),
+        wait: waitParam(options.defaultWait ?? true, "the export"),
       },
     },
     async (a, extra) =>
@@ -593,7 +595,7 @@ export function registerPremiereTools(server: McpServer, bridge: AppBridge, opti
           "pp_export_sequence",
           [{ name: "Export from Premiere Pro", recoveryTool: "pp_export_sequence", run: (ctx) => exportSequence(bridge, o).then((r) => (ctx.artifact(o.outputPath), r)) }],
           (results) => results[0],
-          { wait: a.wait ?? true, timeoutMs: 30 * 60_000, extra: extra as ProgressExtra },
+          { wait: a.wait ?? options.defaultWait ?? true, timeoutMs: 30 * 60_000, extra: extra as ProgressExtra },
         );
       }),
   );

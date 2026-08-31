@@ -6,7 +6,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { isSuccessStatus, type AmeJobInfo, type AmeWebService } from "../drivers/ame-webservice.js";
 import type { JobRegistry, JobStepDef } from "../jobs.js";
-import { runOrQueue, type ProgressExtra } from "./jobs.js";
+import { runOrQueue, waitParam, type ProgressExtra } from "./jobs.js";
 import { findPresets, presetRoots } from "./premiere.js";
 import { errorResult, guard, jsonResult } from "./result.js";
 
@@ -18,6 +18,8 @@ import { errorResult, guard, jsonResult } from "./result.js";
 
 export interface MediaEncoderToolOptions {
   jobs?: JobRegistry;
+  /** Whether ame_encode blocks when the caller passes no `wait` (BRAINFERNO_MCP_DEFAULT_WAIT). */
+  defaultWait?: boolean;
 }
 
 /**
@@ -102,7 +104,7 @@ export function registerMediaEncoderTools(server: McpServer, ame: AmeWebService,
         presetName: z.string().min(1).optional(),
         sequenceId: z.string().min(1).optional().describe("For a .prproj source: the sequence GUID to render (default: the first sequence)."),
         overwrite: z.boolean().optional().describe("Replace an existing output file. Defaults to true."),
-        wait: z.boolean().optional().describe("Block until the encode finishes (default). false returns a jobId at once; poll with cc_job_wait."),
+        wait: waitParam(options.defaultWait ?? true, "the encode"),
       },
     },
     async (a, extra) =>
@@ -160,7 +162,7 @@ export function registerMediaEncoderTools(server: McpServer, ame: AmeWebService,
             const final = r[2] as AmeJobInfo & { output?: string; note?: string };
             return { output: final.output ?? a.output, requestedOutput: a.output, presetPath, ameJobId, final };
           },
-          { wait: a.wait ?? true, timeoutMs: 6 * 60 * 60_000, extra: extra as ProgressExtra },
+          { wait: a.wait ?? options.defaultWait ?? true, timeoutMs: 6 * 60 * 60_000, extra: extra as ProgressExtra },
         );
       }),
   );
