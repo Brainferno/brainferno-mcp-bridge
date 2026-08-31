@@ -1,7 +1,7 @@
 name: Publish to npm
 
-# Publishes both packages when a version tag (v1.2.3) is pushed, after the same
-# checks CI runs, then creates the GitHub release for that tag. Authentication
+# Publishes both packages when a version tag (v1.2.3) is pushed, once CI is green for that
+# commit on every platform, then creates the GitHub release for that tag. Authentication
 # to npm is "trusted publishing" (OpenID Connect): npmjs.com → each package →
 # Settings → Trusted Publisher → GitHub Actions, repository
 # Brainferno/brainferno-mcp-bridge, workflow publish.yml. No token is stored
@@ -13,9 +13,52 @@ on:
 permissions:
   contents: write # create the GitHub release
   id-token: write # trusted publishing + provenance
+  actions: read # read ci.yml's result for this commit
 
 jobs:
+  # This job's own tests run on Ubuntu only, so a Windows- or macOS-specific failure could
+  # not block a release on its own — v0.2.2 published while CI was red on both Windows legs.
+  # ci.yml runs on tag pushes too, so there is always a run for this exact commit to wait on.
+  ci-green:
+    name: CI green for this commit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for ci.yml to pass on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          query='[.workflow_runs[]] | sort_by(.run_started_at) | last | if . == null then "none none -" else "\(.status) \(.conclusion // "pending") \(.html_url)" end'
+          deadline=$(( $(date +%s) + 1800 ))   # 30 minutes
+          while true; do
+            result=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$SHA&per_page=50" --jq "$query")
+            status=$(echo "$result" | cut -d" " -f1)
+            conclusion=$(echo "$result" | cut -d" " -f2)
+            url=$(echo "$result" | cut -d" " -f3)
+            if [ "$status" = "completed" ]; then
+              echo "CI concluded $conclusion — $url"
+              if [ "$conclusion" = "success" ]; then
+                exit 0
+              fi
+              echo "::error::CI is $conclusion for $SHA. Nothing was published. Fix it and re-run this workflow."
+              exit 1
+            fi
+            if [ "$status" = "none" ]; then
+              echo "No ci.yml run for $SHA yet; waiting."
+            else
+              echo "CI is $status; waiting."
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::ci.yml did not finish within 30 minutes for $SHA. Nothing was published."
+              exit 1
+            fi
+            sleep 20
+          done
+
   publish:
+    needs: ci-green
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

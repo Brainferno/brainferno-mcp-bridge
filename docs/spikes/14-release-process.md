@@ -74,9 +74,13 @@ only breaks there. The shipped artifact was fine (the bug was in the test, and t
 0.2.2 was separately installed from npm and driven over MCP), but the gate did not catch it and
 would not have caught a real Windows regression either.
 
-Two ways to close it, neither taken yet: run the publish job's tests on the same matrix as CI,
-or make the publish job depend on a green `ci.yml` for that commit. Until then: **watch
-`ci.yml`, not just `publish.yml`, on the commit you are about to tag.**
+**Closed after 0.2.2**: `publish.yml` now has a `ci-green` job that every other job needs. It
+polls the GitHub API for the newest `ci.yml` run on the tagged commit — `ci.yml` runs on tag
+pushes too, so there is always one — waits while it is queued or running, and fails the whole
+workflow unless it concluded `success`, with a 30-minute ceiling. Nothing is published before
+Windows and macOS have gone green. Newest run wins, so re-running CI after a fix unblocks it.
+The gate's script was run against a known-green and a known-red commit before shipping: exit 0
+and exit 1 respectively.
 
 ## Verifying a release, which is the part that found a real bug
 
