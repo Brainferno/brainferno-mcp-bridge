@@ -250,6 +250,49 @@ export function platformPaths(platform: NodeJS.Platform, home: string, appData?:
   throw new Error(`${platform} is not supported: the Adobe applications this bridge drives run on Windows and macOS only.`);
 }
 
+/**
+ * Adobe's Unified Plugin Installer Agent (ships with the Creative Cloud
+ * desktop app): installs .ccx and .zxp plug-ins for real — no UXP Developer
+ * Tool, no PlayerDebugMode. Explicit path flavours, like platformPaths.
+ */
+export function upiaCandidates(platform: NodeJS.Platform): string[] {
+  if (platform === "win32") {
+    const pf = process.env["ProgramFiles"] ?? "C:\\Program Files";
+    return [win32.join(pf, "Common Files", "Adobe", "Adobe Desktop Common", "RemoteComponents", "UPI", "UnifiedPluginInstallerAgent", "UnifiedPluginInstallerAgent.exe")];
+  }
+  if (platform === "darwin") {
+    return [posix.join("/Library", "Application Support", "Adobe", "Adobe Desktop Common", "RemoteComponents", "UPI", "UnifiedPluginInstallerAgent", "UnifiedPluginInstallerAgent.app", "Contents", "MacOS", "UnifiedPluginInstallerAgent")];
+  }
+  return [];
+}
+
+export function upiaCommands(upia: string): { install: (file: string) => string[]; remove: (pluginId: string) => string[]; list: string[] } {
+  return {
+    install: (file) => [upia, "--install", file],
+    remove: (pluginId) => [upia, "--remove", pluginId],
+    list: [upia, "--list", "all"],
+  };
+}
+
+export interface PanelArtifact {
+  /** Choosing any of these apps needs this panel. */
+  apps: InstallableApp[];
+  file: string;
+  pluginId: string;
+  label: string;
+  kind: "ccx" | "zxp";
+}
+
+/** The installables (from scripts/package-panels.mjs) the chosen apps need. */
+export function panelArtifacts(distDir: string, apps: readonly InstallableApp[]): PanelArtifact[] {
+  const all: PanelArtifact[] = [
+    { apps: ["photoshop"], file: join(distDir, "photoshop.ccx"), pluginId: "com.brainferno.mcp-bridge.photoshop", label: "Photoshop panel", kind: "ccx" },
+    { apps: ["premiere"], file: join(distDir, "premiere.ccx"), pluginId: "com.brainferno.mcp-bridge.premiere", label: "Premiere Pro panel", kind: "ccx" },
+    { apps: ["after_effects", "audition"], file: join(distDir, "cep.zxp"), pluginId: "com.brainferno.mcp-bridge.cep", label: "After Effects / Audition panel", kind: "zxp" },
+  ];
+  return all.filter((a) => a.apps.some((x) => apps.includes(x)));
+}
+
 /** Windows Defender Firewall rule for the remote port, private networks only. */
 export function firewallCommands(platform: NodeJS.Platform, mode: InstallMode, port: number): string[][] {
   if (platform !== "win32") return [];

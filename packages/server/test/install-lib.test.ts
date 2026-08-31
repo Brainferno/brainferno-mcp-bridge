@@ -6,7 +6,7 @@ import { createServer } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { INSTALLABLE_APPS, parseApps } from "../src/config.js";
-import { appsNeed, checkIllustratorKey, extractIllustratorKey, extractIllustratorUrl, finderCopyScript, findIllustratorApps, firewallCommands, mcpAddCommands, mergeUserConfig, parseClients, pickApps, platformPaths, registrationPlans, rewriteAmeIni, AME_INI_SEED } from "../src/install/lib.js";
+import { appsNeed, checkIllustratorKey, extractIllustratorKey, extractIllustratorUrl, finderCopyScript, findIllustratorApps, firewallCommands, mcpAddCommands, mergeUserConfig, panelArtifacts, parseClients, pickApps, platformPaths, registrationPlans, rewriteAmeIni, upiaCandidates, upiaCommands, AME_INI_SEED } from "../src/install/lib.js";
 
 describe("installer: Illustrator key", () => {
   it("accepts a bare key or the whole claude mcp add line", () => {
@@ -135,6 +135,27 @@ describe("installer pieces", () => {
     expect(registrationPlans({ mode: "local", distIndex: "i", port: 1, token: "", addresses: [], clients: ["codex"] }).map((p) => p.client)).toEqual(["codex"]);
     expect(parseClients("codex, gemini")).toEqual(["codex", "gemini"]);
     expect(() => parseClients("cursor")).toThrow(/Unknown MCP client/);
+  });
+
+  it("knows where Adobe's plugin installer lives, per platform", () => {
+    expect(upiaCandidates("win32")[0]).toBe("C:\\Program Files\\Common Files\\Adobe\\Adobe Desktop Common\\RemoteComponents\\UPI\\UnifiedPluginInstallerAgent\\UnifiedPluginInstallerAgent.exe");
+    expect(upiaCandidates("darwin")[0]).toBe("/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent");
+    expect(upiaCandidates("linux")).toEqual([]);
+    const c = upiaCommands("/upi/agent");
+    expect(c.install("/x/photoshop.ccx")).toEqual(["/upi/agent", "--install", "/x/photoshop.ccx"]);
+    expect(c.remove("com.brainferno.mcp-bridge.cep")).toEqual(["/upi/agent", "--remove", "com.brainferno.mcp-bridge.cep"]);
+    expect(c.list).toEqual(["/upi/agent", "--list", "all"]);
+  });
+
+  it("maps chosen apps to the panel installables they need", () => {
+    const files = (apps: Parameters<typeof panelArtifacts>[1]) => panelArtifacts("/d", apps).map((a) => basename(a.file));
+    expect(files(["photoshop"])).toEqual(["photoshop.ccx"]);
+    expect(files(["after_effects"])).toEqual(["cep.zxp"]);
+    expect(files(["audition"])).toEqual(["cep.zxp"]);
+    expect(files(["after_effects", "audition"])).toEqual(["cep.zxp"]);
+    expect(files(["photoshop", "premiere", "after_effects"])).toEqual(["photoshop.ccx", "premiere.ccx", "cep.zxp"]);
+    expect(files(["illustrator", "media_encoder"])).toEqual([]);
+    expect(panelArtifacts("/d", ["premiere"])[0]!.pluginId).toBe("com.brainferno.mcp-bridge.premiere");
   });
 
   // Each platform's paths must come out identical whichever OS runs the test: the separators

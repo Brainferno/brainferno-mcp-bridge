@@ -7,18 +7,21 @@ import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 
 import { DEFAULT_ILLUSTRATOR_MCP_URL, migrateLegacyUserDir, readUserConfig, userConfigPath } from "../config.js";
-import { AME_INI_SEED, APP_CHOICES, DEFAULT_HTTP_PORT, appsNeed, checkIllustratorKey, detectInstalledApps, extractIllustratorKey, extractIllustratorUrl, finderCopyScript, findIllustratorApps, firewallCommands, lanAddresses, mergeUserConfig, parseClients, pickApps, platformPaths, registrationPlans, rewriteAmeIni, type ClientPlan, type InstallMode } from "./lib.js";
+import { AME_INI_SEED, APP_CHOICES, DEFAULT_HTTP_PORT, appsNeed, checkIllustratorKey, detectInstalledApps, extractIllustratorKey, extractIllustratorUrl, finderCopyScript, findIllustratorApps, firewallCommands, lanAddresses, mergeUserConfig, panelArtifacts, parseClients, pickApps, platformPaths, registrationPlans, rewriteAmeIni, upiaCandidates, upiaCommands, type ClientPlan, type InstallMode } from "./lib.js";
 
 /**
  * Interactive installer:
- *   node dist/install/cli.js [--apps ps,ae,ppro,ai,au,ame|all] [--mode local|shared] [--token T] [--port N] [--yes] [--no-panels] [--no-ame] [--no-firewall] [--register]
+ *   node dist/install/cli.js [--apps ps,ae,ppro,ai,au,ame|all] [--mode local|shared] [--token T] [--port N] [--yes] [--no-panels] [--dev-panels] [--no-ame] [--no-firewall] [--register]
  *                            [--clients claude,codex,gemini] [--illustrator-key K|"claude mcp add … line"] [--illustrator-url U] [--no-illustrator]
  *
  * Asks one question — "only this computer" or "shared on my network" — and
  * sets every switch that depends on it: the remote MCP listener + token, the
- * Windows firewall rule, and Media Encoder's web-service address. Also wires
- * the CEP panel (junction + PlayerDebugMode) and prints the UXP steps and the
- * `claude mcp add` lines. Safe to re-run to switch modes.
+ * Windows firewall rule, and Media Encoder's web-service address. Installs the
+ * panels for real through Creative Cloud's Unified Plugin Installer Agent
+ * (.ccx/.zxp from panels/dist or dist-panels/); without it, or with
+ * --dev-panels, falls back to the developer setup (CEP junction +
+ * PlayerDebugMode, UXP Developer Tool). Registers the server with the MCP
+ * client CLIs it finds. Safe to re-run to switch modes.
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -30,6 +33,9 @@ const panelsDir = existsSync(join(pkgRoot, "panels")) ? join(pkgRoot, "panels") 
 const panelCep = join(panelsDir, "panel-cep");
 const panelUxp = join(panelsDir, "panel-uxp", "manifest.json");
 const panelUxpPpro = join(panelsDir, "panel-uxp-ppro", "manifest.json");
+// Installables (.ccx/.zxp): inside the npm package (panels/dist), or a source
+// checkout's dist-panels/ (built by scripts/package-panels.mjs).
+const panelsDistDir = existsSync(join(panelsDir, "dist")) ? join(panelsDir, "dist") : resolve(pkgRoot, "..", "..", "dist-panels");
 
 const args = new Map<string, string | boolean>();
 for (let i = 2; i < process.argv.length; i++) {
@@ -204,9 +210,37 @@ async function main(): Promise<void> {
   }
   ok(`wrote ${userConfigPath()}${mode === "shared" ? ` (remote port ${next.httpPort}, token set)` : " (remote mode off)"}`);
 
-  // ---- 4. CEP panel (After Effects, Audition) -----------------------------
+  // ---- 4. panels: real installs through Creative Cloud's plugin installer --
   const paths = platformPaths(process.platform, homedir(), process.env["APPDATA"]);
-  if (!flag("no-panels") && appsNeed(apps, "cep")) {
+  const installedPanels = new Set<string>();
+  if (!flag("no-panels") && !flag("dev-panels")) {
+    const artifacts = panelArtifacts(panelsDistDir, apps);
+    const upia = upiaCandidates(process.platform).find((p) => existsSync(p));
+    if (artifacts.length > 0 && !upia) warn("Creative Cloud's Unified Plugin Installer Agent not found — using the developer panel setup");
+    for (const art of upia ? artifacts : []) {
+      if (!existsSync(art.file)) {
+        warn(`${art.label}: ${basename(art.file)} not found (build it: node scripts/package-panels.mjs) — using the developer setup`);
+        continue;
+      }
+      const r = run(upiaCommands(upia!).install(art.file));
+      if (r.code === 0) {
+        installedPanels.add(art.pluginId);
+        ok(`${art.label}: installed (${basename(art.file)})`);
+      } else warn(`${art.label}: install failed (${r.out.trim().split("\n")[0] ?? ""}) — using the developer setup`);
+    }
+  }
+
+  // ---- 4b. CEP panel dev fallback (After Effects, Audition) ----------------
+  if (installedPanels.has("com.brainferno.mcp-bridge.cep")) {
+    // The signed .zxp is the real install now: drop the dev junction so the panel does not appear twice.
+    try {
+      const stale = join(paths.cepExtensionsDir, "com.brainferno.mcp-bridge.cep");
+      const st = lstatSync(stale);
+      if (st.isSymbolicLink() || (process.platform === "win32" && st.isDirectory())) rmSync(stale, { recursive: false, force: true });
+    } catch {
+      /* no junction to retire */
+    }
+  } else if (!flag("no-panels") && appsNeed(apps, "cep")) {
     try {
       mkdirSync(paths.cepExtensionsDir, { recursive: true });
       const linkName = "com.brainferno.mcp-bridge.cep";
@@ -293,15 +327,21 @@ async function main(): Promise<void> {
     }
   }
 
-  // ---- 6. UXP panels (Photoshop, Premiere) --------------------------------
+  // ---- 6. panel instructions ----------------------------------------------
   if (appsNeed(apps, "uxp") || appsNeed(apps, "cep")) {
+    const psManual = apps.includes("photoshop") && !installedPanels.has("com.brainferno.mcp-bridge.photoshop");
+    const pproManual = apps.includes("premiere") && !installedPanels.has("com.brainferno.mcp-bridge.premiere");
+    const cepManual = appsNeed(apps, "cep") && !installedPanels.has("com.brainferno.mcp-bridge.cep");
     say("");
     say("Panels:");
-    if (apps.includes("photoshop") || apps.includes("premiere")) say("  UXP panels load through Adobe's UXP Developer Tool (Add Plugin → manifest → Load):");
-    if (apps.includes("photoshop")) say(`    Photoshop : ${panelUxp}`);
-    if (apps.includes("premiere")) say(`    Premiere  : ${panelUxpPpro}   (first enable Settings → Plugins → developer mode, restart Premiere)`);
+    if (psManual || pproManual) say("  UXP panels: double-click the .ccx (Creative Cloud installs it), or load the dev manifest in Adobe's UXP Developer Tool (Add Plugin → manifest → Load):");
+    if (psManual) say(`    Photoshop : ${join(panelsDistDir, "photoshop.ccx")}   (dev manifest: ${panelUxp})`);
+    if (pproManual) say(`    Premiere  : ${join(panelsDistDir, "premiere.ccx")}   (dev manifest: ${panelUxpPpro}; dev mode needs Settings → Plugins → developer mode, restart)`);
     if (apps.includes("photoshop") || apps.includes("premiere")) say("    Then Window → Extensions (UXP) → Brainferno MCP Bridge in each app.");
-    if (apps.includes("after_effects") || apps.includes("audition")) say(`  ${[apps.includes("after_effects") ? "After Effects" : "", apps.includes("audition") ? "Audition" : ""].filter(Boolean).join(" / ")}: Window → Extensions → Brainferno MCP Bridge.`);
+    if (appsNeed(apps, "cep")) {
+      const hosts = [apps.includes("after_effects") ? "After Effects" : "", apps.includes("audition") ? "Audition" : ""].filter(Boolean).join(" / ");
+      say(`  ${hosts}: Window → Extensions → Brainferno MCP Bridge${cepManual ? " (dev panel via the linked folder)" : ""}.`);
+    }
   }
 
   // ---- 7. register with MCP clients (Claude Code, Codex CLI, Gemini CLI) ---
