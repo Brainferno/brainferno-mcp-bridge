@@ -97,6 +97,13 @@ long-blocking call.
   in-memory MCP transport plus a fake panel over a real WebSocket
   (`packages/server/test/server.test.ts`) — new tools get at least a not-connected-path test,
   and a round-trip test where behavior warrants it.
+- Panels carry no version of their own: `npm run panels:stamp` writes the server package's
+  version into the manifests and `PANEL_VERSION` literals, and the suite fails if they drift.
+- You do not need the release signing certificate. `node scripts/package-panels.mjs` builds
+  the `.ccx` installables anywhere; with Adobe's `ZXPSignCmd` on `PATH` (or `ZXPSIGNCMD` set)
+  it also signs `cep.zxp` with a throwaway self-signed certificate, which installs exactly
+  like the release one — CEP checks package integrity, not chain trust. The release `.p12`
+  exists only as a CI secret.
 
 ## License of contributions
 

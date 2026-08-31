@@ -45,3 +45,11 @@ jobs:
         run: |
           npm run panels:sync
           git diff --exit-code -- packages/panel-uxp/bridge-client.js packages/panel-uxp-ppro/bridge-client.js packages/panel-cep/bridge-client.js
+
+      - name: Check the panel versions are stamped, and that they package
+        if: runner.os == 'Linux'
+        run: |
+          npm run panels:stamp
+          git diff --exit-code -- packages/panel-uxp packages/panel-uxp-ppro packages/panel-cep
+          # Packaging smoke test on every push; cep.zxp is skipped without ZXPSignCmd.
+          node scripts/package-panels.mjs

@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+- **Codex CLI and Gemini CLI are first-class clients.** The installer registers the
+  server with every MCP client CLI it finds (Claude Code, Codex CLI, Gemini CLI; filter
+  with `--clients`), each with the env defaults that suit it. Three new env vars carry
+  the differences: `BRAINFERNO_MCP_DEFAULT_WAIT` (false = long tools return a jobId at
+  once, for Codex's 60-second tool timeout — the advertised `wait` parameter now states
+  the live default), `BRAINFERNO_MCP_PREVIEW` (`path` returns previews as file paths for
+  clients that cannot show the model images; `inline`, `both`), and
+  `BRAINFERNO_MCP_JOB_WAIT_SECONDS` (the default `cc_job_wait` timeout, set to 50 for
+  Codex so each poll returns inside its limit). Claude Code keeps exactly the old
+  behavior. In shared mode the installer prints per-client connection snippets — Codex
+  reads the bearer token from an env var, Gemini from a headers block.
+- **The panels install as real plug-ins.** `scripts/package-panels.mjs` builds
+  `photoshop.ccx`, `premiere.ccx` and a signed `cep.zxp` (release cert in CI, or an
+  equivalent self-signed one); the installer installs them through Creative Cloud's
+  Unified Plugin Installer Agent — no UXP Developer Tool, no `PlayerDebugMode`, and the
+  old CEP dev junction is retired on upgrade. Missing UPIA or artifacts fall back to the
+  previous developer setup; `--dev-panels` forces it. The installables ship inside the
+  npm package (`panels/dist/`) and on each GitHub release.
+- **Panel versions can no longer drift.** `npm run panels:stamp` writes the package
+  version into the three panel manifests and each panel's `PANEL_VERSION`; a test and a
+  CI step fail when a bump forgets it (the Premiere manifest had sat at 0.1.0 for two
+  releases).
+
 ## v0.2.2 — 2026-08-30
 
 - The server reported itself as **0.1.0** to every MCP client and every panel, whatever
