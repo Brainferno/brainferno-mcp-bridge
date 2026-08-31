@@ -2,7 +2,7 @@
   "manifestVersion": 5,
   "id": "com.brainferno.mcp-bridge.premiere",
   "name": "Brainferno MCP Bridge",
-  "version": "0.1.0",
+  "version": "0.2.2",
   "main": "index.html",
   "host": [
     {

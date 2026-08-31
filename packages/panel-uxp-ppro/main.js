@@ -8,7 +8,7 @@
  * named function; the server never sends script strings here.
  */
 
-const PANEL_VERSION = "0.1.0";
+const PANEL_VERSION = "0.2.2";
 
 const el = (id) => document.getElementById(id);
 const logEl = el("log");

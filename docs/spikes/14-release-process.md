@@ -26,6 +26,10 @@ commit, push, wait for CI. Phase 2: `git tag -a vX.Y.Z && git push origin vX.Y.Z
 server ships depending on the previous protocol. Then `npm install` to refresh
 `package-lock.json`. The workflow's own gate (tag == server version == protocol version)
 catches the first three but not the pin, because the pin is not one of the things it compares.
+The panels used to be a seventh, silent spot (three manifests plus each panel's
+`PANEL_VERSION` literal, and the Premiere one sat at 0.1.0 for two releases):
+`npm run panels:stamp` now writes them all from `packages/server/package.json`, and
+`test/panel-versions.test.ts` fails the suite when a bump forgets it.
 
 **Simulate the gates before tagging.** All of them run locally in under a minute, and a
 failure after the tag is a burned version number:

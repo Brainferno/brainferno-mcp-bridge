@@ -9,7 +9,7 @@
  * the manifest needs network.domains "all"; the hub accepts Origin file://.
  */
 
-const PANEL_VERSION = "0.2.0";
+const PANEL_VERSION = "0.2.2";
 
 const el = (id) => document.getElementById(id);
 const logEl = el("log");
