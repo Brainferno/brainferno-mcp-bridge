@@ -8,7 +8,7 @@ import type { JobContext, JobRegistry, JobStepDef } from "../jobs.js";
 import { addLayerScript, importFootageScript, renderCompHeadless } from "./after-effects.js";
 import { denoise, measureLoudness, normalizeLoudness, type AudioToolOptions } from "./audio.js";
 import { exportArtboardScript } from "./illustrator.js";
-import { runOrQueue, type ProgressExtra } from "./jobs.js";
+import { runOrQueue, waitParam, type ProgressExtra } from "./jobs.js";
 import { exportSequence, findPresets, presetRoots } from "./premiere.js";
 import { guard } from "./result.js";
 
@@ -28,16 +28,18 @@ export interface PipelineDeps {
   audio: AudioToolOptions;
   /** Installer choice: a pipeline is registered only when every app it needs is enabled. Missing = all. */
   enabled?: Set<string>;
+  /** Whether pipelines block when the caller passes no `wait` (BRAINFERNO_MCP_DEFAULT_WAIT). */
+  defaultWait?: boolean;
 }
 
-const wait = z.boolean().optional().describe("Block until the pipeline finishes (default). false returns a jobId at once; poll with cc_job_wait.");
 const obj = (v: unknown) => (typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
 const str = (v: unknown) => (typeof v === "string" ? v : undefined);
 const safeName = (s: string) => s.replace(/[^\w.-]+/g, "_").slice(0, 60) || "output";
 
 export function registerPipelineTools(server: McpServer, deps: PipelineDeps): void {
+  const wait = waitParam(deps.defaultWait ?? true, "the pipeline");
   const runPipeline = (kind: string, steps: JobStepDef[], finalize: (results: unknown[]) => unknown, doWait: boolean | undefined, extra: unknown) =>
-    runOrQueue(deps.jobs, kind, steps, (results) => finalize(results), { wait: doWait ?? true, timeoutMs: 30 * 60_000, extra: extra as ProgressExtra });
+    runOrQueue(deps.jobs, kind, steps, (results) => finalize(results), { wait: doWait ?? deps.defaultWait ?? true, timeoutMs: 30 * 60_000, extra: extra as ProgressExtra });
   const on = (...apps: string[]) => !deps.enabled || apps.every((a) => deps.enabled!.has(a));
 
   // ---- Photoshop → After Effects ---------------------------------------------
