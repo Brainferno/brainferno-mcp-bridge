@@ -413,8 +413,9 @@ docs/                build plan, protocol, live-run notes (spikes/), Audition AP
 
 - **Working, verified live on Windows and macOS (Adobe 2026 apps)**: all six application
   lanes and their v1 tool sets, the ffmpeg lane, the job registry, the four pipelines, remote
-  mode, and the installer. Write-ups with the quirks found: `docs/spikes/05`–`13` (`13` is the
-  macOS run: aerender path, Media Encoder's config file and renderer).
+  mode, and the installer. Write-ups with the quirks found: `docs/spikes/05`–`14` (`13` is the
+  macOS run: aerender path, Media Encoder's config file and renderer; `14` is the release
+  process and what npm actually does after a publish).
 - **Not yet**: double-click panel installs (`.ccx`/`.zxp`) so the UXP Developer
   Tool is not needed; a single signed installer; TLS for shared mode; Audition multitrack
   writes; Media Encoder queue control.

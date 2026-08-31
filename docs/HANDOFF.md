@@ -53,6 +53,8 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
 
 ## Releasing
 
+Full write-up with the measurements and the failure modes: `docs/spikes/14-release-process.md`.
+
 A `vX.Y.Z` tag is the whole release: `publish.yml` runs the tests, checks the tag against
 both package versions, publishes both packages to npm over OIDC, and creates the GitHub
 release from the matching `CHANGELOG.md` section. Pushing that tag is the irreversible step —
