@@ -14,6 +14,7 @@
     "test": "vitest run",
     "panels:sync": "node scripts/sync-bridge-client.mjs",
     "package": "node scripts/package-panels.mjs",
+    "panels:stamp": "node scripts/stamp-panel-versions.mjs",
     "install-cc": "npm run build && node packages/server/dist/install/cli.js"
   },
   "devDependencies": {
