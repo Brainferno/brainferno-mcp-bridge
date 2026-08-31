@@ -22,6 +22,7 @@ import { registerMediaEncoderTools } from "./tools/media-encoder.js";
 import { registerPhotoshopTools } from "./tools/photoshop.js";
 import { registerPipelineTools } from "./tools/pipelines.js";
 import { registerPremiereTools } from "./tools/premiere.js";
+import { setPreviewMode } from "./tools/result.js";
 
 /**
  * Everything that lives once per process and is shared by every MCP session:
@@ -47,6 +48,7 @@ export interface BuiltServer extends Runtime {
 
 export function buildRuntime(config: Config): Runtime {
   setLogLevel(config.logLevel);
+  setPreviewMode(config.preview);
 
   const bridge = new BridgeServer({
     port: config.bridgePort,
@@ -90,8 +92,8 @@ export function createMcpServer(rt: Runtime): McpServer {
   const appIds = (["after_effects", "premiere", "photoshop", "illustrator", "audition"] as const).filter((id) => on.has(id));
 
   registerDiagnosticTools(server, bridge, { allowRawScripts: config.allowRawScripts, enabledApps: appIds });
-  if (on.has("after_effects")) registerAfterEffectsTools(server, bridge.bridgeFor("after_effects"), { jobs });
-  if (on.has("premiere")) registerPremiereTools(server, bridge.bridgeFor("premiere"), { jobs });
+  if (on.has("after_effects")) registerAfterEffectsTools(server, bridge.bridgeFor("after_effects"), { jobs, defaultWait: config.defaultWait });
+  if (on.has("premiere")) registerPremiereTools(server, bridge.bridgeFor("premiere"), { jobs, defaultWait: config.defaultWait });
   if (on.has("photoshop")) registerPhotoshopTools(server, bridge.bridgeFor("photoshop"), { allowRawScripts: config.allowRawScripts });
   if (on.has("illustrator")) {
     registerIllustratorTools(server, rt.illustratorBridge);
@@ -99,8 +101,8 @@ export function createMcpServer(rt: Runtime): McpServer {
   }
   if (on.has("audition")) registerAuditionTools(server, bridge.bridgeFor("audition"));
   registerAudioTools(server, rt.audio);
-  registerJobTools(server, jobs);
-  if (on.has("media_encoder")) registerMediaEncoderTools(server, rt.mediaEncoder, { jobs });
+  registerJobTools(server, jobs, { defaultWaitSeconds: config.jobWaitSeconds });
+  if (on.has("media_encoder")) registerMediaEncoderTools(server, rt.mediaEncoder, { jobs, defaultWait: config.defaultWait });
   registerPipelineTools(server, {
     photoshop: bridge.bridgeFor("photoshop"),
     afterEffects: bridge.bridgeFor("after_effects"),
@@ -109,6 +111,7 @@ export function createMcpServer(rt: Runtime): McpServer {
     jobs,
     audio: rt.audio,
     enabled: on,
+    defaultWait: config.defaultWait,
   });
   return server;
 }

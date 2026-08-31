@@ -14,6 +14,21 @@ export interface ProgressExtra {
 export type ProgressFn = (message: string, percent?: number) => void;
 
 /**
+ * The `wait` parameter of a long tool, described to match the configured
+ * default (BRAINFERNO_MCP_DEFAULT_WAIT) so every client sees the truth.
+ */
+export function waitParam(defaultWait: boolean, what: string): z.ZodOptional<z.ZodBoolean> {
+  return z
+    .boolean()
+    .optional()
+    .describe(
+      defaultWait
+        ? `Block until ${what} finishes (default; set by BRAINFERNO_MCP_DEFAULT_WAIT). false returns a jobId at once; poll with cc_job_wait.`
+        : `Block until ${what} finishes. Default false (set by BRAINFERNO_MCP_DEFAULT_WAIT): returns a jobId at once; poll with cc_job_wait.`,
+    );
+}
+
+/**
  * Best-effort MCP progress notifications against the client's progressToken.
  * A client that sent no token gets a no-op. Sending never throws into the tool.
  */
@@ -55,7 +70,13 @@ export function jobResult(job: Job, timeoutMs?: number): CallToolResult {
   return jsonResult({ ...jobView(job), hint: `Still ${job.status} after ${Math.round((timeoutMs ?? 0) / 1000)}s. Call cc_job_wait with jobId ${job.id} to keep waiting, or cc_job_cancel.` });
 }
 
-export function registerJobTools(server: McpServer, jobs: JobRegistry): void {
+export interface JobToolOptions {
+  /** Default cc_job_wait timeout, seconds. Keep below the client's own tool timeout. */
+  defaultWaitSeconds?: number;
+}
+
+export function registerJobTools(server: McpServer, jobs: JobRegistry, options: JobToolOptions = {}): void {
+  const defaultWaitSeconds = options.defaultWaitSeconds ?? 300;
   server.registerTool(
     "cc_job_status",
     {
@@ -88,12 +109,12 @@ export function registerJobTools(server: McpServer, jobs: JobRegistry): void {
     {
       title: "Jobs: wait for a job",
       description: "Block until a job finishes or the timeout passes (progress is streamed meanwhile), then return its result or its failure report.",
-      inputSchema: { jobId: z.string().min(1), timeoutSeconds: z.number().int().min(1).max(1800).optional().describe("Defaults to 300.") },
+      inputSchema: { jobId: z.string().min(1), timeoutSeconds: z.number().int().min(1).max(1800).optional().describe(`Defaults to ${defaultWaitSeconds} (BRAINFERNO_MCP_JOB_WAIT_SECONDS).`) },
       annotations: { readOnlyHint: true },
     },
     async ({ jobId, timeoutSeconds }, extra) =>
       guard(async () => {
-        const timeoutMs = (timeoutSeconds ?? 300) * 1000;
+        const timeoutMs = (timeoutSeconds ?? defaultWaitSeconds) * 1000;
         const progress = progressReporter(extra as ProgressExtra);
         const job = await jobs.wait(jobId, timeoutMs, (j) => progress(`${j.progress.step ?? j.kind}: ${j.progress.message}`, j.progress.percent));
         return jobResult(job, timeoutMs);
