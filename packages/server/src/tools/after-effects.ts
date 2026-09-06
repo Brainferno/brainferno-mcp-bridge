@@ -364,8 +364,15 @@ export function setExpressionScript(compId: number, layerIndex: number, property
   return __undo("Set expression", function () {
     var e = ${opt(expression)};
     if (e === null) { prop.expression = ""; return { property: prop.name, expression: null }; }
+    // Keep the old expression so a failed compile leaves the property untouched
+    // (AE otherwise keeps the broken source assigned, just disabled).
+    var prev = prop.expression;
     prop.expression = e;
-    if (prop.expressionError) { throw new Error("Expression error: " + prop.expressionError); }
+    if (prop.expressionError) {
+      var err = prop.expressionError;
+      prop.expression = prev;
+      throw new Error("Expression error: " + err);
+    }
     return { property: prop.name, expression: prop.expression, enabled: prop.expressionEnabled };
   });`);
 }
@@ -931,7 +938,10 @@ export function registerAfterEffectsTools(server: McpServer, bridge: AppBridge, 
     "ae_set_expression",
     {
       title: "After Effects: set an expression",
-      description: "Set (or clear with null) the expression on a layer property. Fails with the error text if the expression does not compile.",
+      description:
+        "Set (or clear with null) the expression on a layer property. Use `property` for a transform channel, or " +
+        "`propertyPath` (match/display names) to reach an effect parameter, mask, or text source. If the expression " +
+        "does not compile it fails with the error text and the property keeps its previous expression.",
       inputSchema: { compId, layerIndex, property: propertyName, propertyPath, expression: z.string().nullable().describe("Expression source, or null to remove.") },
     },
     async ({ compId: id, layerIndex: li, property, propertyPath: pp, expression }) => run(setExpressionScript(id, li, property, pp, expression)),

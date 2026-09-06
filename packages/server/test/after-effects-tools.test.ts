@@ -130,6 +130,12 @@ describe("After Effects tool scripts", () => {
     expect(SAMPLES["text"]).toContain('if (kind === "text") { __centerAnchor(l); }');
   });
 
+  it("rolls an expression back to the previous one when it fails to compile", () => {
+    expect(SAMPLES["expr"]).toContain("var prev = prop.expression;");
+    expect(SAMPLES["expr"]).toContain("prop.expression = prev;");
+    expect(SAMPLES["expr"]).toContain("if (prop.expressionError)");
+  });
+
   it("renders a frame through a temporary downscaled comp that is removed", () => {
     expect(SAMPLES["frame"]).toContain('addComp("__acm_preview"');
     expect(SAMPLES["frame"]).toContain("saveFrameToPng(1.5");
