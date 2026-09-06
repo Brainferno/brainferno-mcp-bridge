@@ -78,22 +78,25 @@ Ideas people build with it:
 Counts are the tools registered per app. Each family has a live-run write-up in
 `docs/spikes/` with the quirks found on real installs.
 
-### Photoshop — 18 tools
+### Photoshop — 21 tools
 Documents (list, create, open, save, export PNG/JPEG, preview image), layers (create,
-text layers with font/size/color, properties, move, duplicate, delete), place an image as a
+text layers with font/size/color, properties, move, duplicate, delete), layer styles
+(drop shadow, glows, bevel, stroke… — add, adjust, read, remove), place an image as a
 smart object, fill, filters (Gaussian/motion/unsharp…), resize, crop.
 
-### After Effects — 24 tools
+### After Effects — 28 tools
 Project info and file, compositions and footage (list, create, import), layers of every
 kind (footage, solid, text, null, adjustment), keyframes with easing, expressions, effects
-and their parameters, text content/font/color/justification, markers, single-frame preview,
+and their parameters, layer styles (drop shadow, glows, bevel, stroke… — add, adjust, read,
+remove), text content/font/color/justification, markers, single-frame preview,
 render queue, and headless rendering through `aerender` (the UI stays free).
 
-### Premiere Pro — 28 tools
+### Premiere Pro — 29 tools
 Project, sequences and items, a full sequence read (every track and clip with times),
-import, create a sequence from media, insert/overwrite, ripple remove, move, trim, rename,
-transitions, effects and keyframes (Motion, Opacity, any applied effect), markers, frame
-preview, export preset search, and export (in Premiere or handed to Media Encoder).
+import, create a sequence from media, insert/overwrite, Motion Graphics templates (.mogrt)
+dropped over the picture, ripple remove, move, trim, rename, transitions, effects and
+keyframes (Motion, Opacity, any applied effect), markers, frame preview, export preset
+search, and export (in Premiere or handed to Media Encoder).
 
 ### Illustrator — 7 tools + Adobe's own 46
 Create documents, draw shapes (rect, ellipse, line, polygon, star) and text, save `.ai`,

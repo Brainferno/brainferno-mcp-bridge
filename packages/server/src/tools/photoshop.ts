@@ -231,6 +231,92 @@ export function registerPhotoshopTools(server: McpServer, bridge: AppBridge, opt
     async ({ layerId: id }) => run("ps.delete_layer", { layerId: id }, fast),
   );
 
+  // ---- layer styles -------------------------------------------------------
+  const styleName = z
+    .enum(["dropShadow", "innerShadow", "outerGlow", "innerGlow", "bevelEmboss", "satin", "colorOverlay", "stroke"])
+    .describe("Layer style name. (Gradient overlay is not typed; use ps_batch_play for it.)");
+  const blendModeName = z
+    .enum(["normal", "multiply", "screen", "overlay", "softLight", "hardLight", "darken", "lighten", "difference", "colorDodge", "colorBurn"])
+    .optional();
+
+  server.registerTool(
+    "ps_set_layer_style",
+    {
+      title: "Photoshop: add or edit a layer style",
+      description:
+        "Add a layer style (drop shadow, inner shadow, glows, bevel & emboss, satin, color overlay, stroke) to a layer, " +
+        "or change one that is already there — the same style is updated in place, other styles are kept. " +
+        "Only the given settings change; the rest use Photoshop's defaults.",
+      inputSchema: {
+        layerId,
+        style: styleName,
+        enabled: z.boolean().optional().describe("Defaults to true."),
+        blendMode: blendModeName.describe("Blend mode of the style. Defaults per style (shadows multiply, glows screen…)."),
+        color: hexColor.optional().describe("Main color of the style (shadow, glow, satin, overlay, or stroke color)."),
+        opacity: z.number().min(0).max(100).optional().describe("Style opacity 0–100."),
+        angle: z.number().min(-180).max(180).optional().describe("Light angle in degrees (shadows, satin, bevel)."),
+        useGlobalAngle: z.boolean().optional().describe("Follow the document's global light (shadows, bevel)."),
+        distance: z.number().min(0).optional().describe("Offset distance in pixels (shadows, satin)."),
+        size: z.number().min(0).optional().describe("Blur/size in pixels (shadows, glows, satin, bevel, stroke width)."),
+        spread: z.number().min(0).max(100).optional().describe("Spread/choke in percent (shadows, glows)."),
+        noise: z.number().min(0).max(100).optional().describe("Noise in percent (shadows, glows)."),
+        strokePosition: z.enum(["outside", "inside", "center"]).optional().describe("stroke only. Defaults to outside."),
+        bevelStyle: z.enum(["outerBevel", "innerBevel", "emboss", "pillowEmboss", "strokeEmboss"]).optional().describe("bevelEmboss only. Defaults to innerBevel."),
+        bevelDirection: z.enum(["up", "down"]).optional().describe("bevelEmboss only. Defaults to up."),
+        depth: z.number().min(1).max(1000).optional().describe("bevelEmboss depth in percent. Defaults to 100."),
+        soften: z.number().min(0).optional().describe("bevelEmboss soften in pixels. Defaults to 0."),
+        highlightColor: hexColor.optional().describe("bevelEmboss highlight. Defaults to white."),
+        shadowColor: hexColor.optional().describe("bevelEmboss shadow. Defaults to black."),
+        altitude: z.number().min(0).max(90).optional().describe("bevelEmboss light altitude in degrees. Defaults to 30."),
+      },
+    },
+    async (p) =>
+      run("ps.set_layer_style", {
+        layerId: p.layerId,
+        style: p.style,
+        enabled: p.enabled ?? true,
+        blendMode: p.blendMode ?? null,
+        color: p.color ?? null,
+        opacity: p.opacity ?? null,
+        angle: p.angle ?? null,
+        useGlobalAngle: p.useGlobalAngle ?? null,
+        distance: p.distance ?? null,
+        size: p.size ?? null,
+        spread: p.spread ?? null,
+        noise: p.noise ?? null,
+        strokePosition: p.strokePosition ?? null,
+        bevelStyle: p.bevelStyle ?? null,
+        bevelDirection: p.bevelDirection ?? null,
+        depth: p.depth ?? null,
+        soften: p.soften ?? null,
+        highlightColor: p.highlightColor ?? null,
+        shadowColor: p.shadowColor ?? null,
+        altitude: p.altitude ?? null,
+      }),
+  );
+
+  server.registerTool(
+    "ps_get_layer_styles",
+    {
+      title: "Photoshop: read a layer's styles",
+      description: "Read the layer styles on a layer as Photoshop's layerEffects descriptor (null when the layer has none).",
+      inputSchema: { layerId },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ layerId: id }) => run("ps.get_layer_styles", { layerId: id }, fast),
+  );
+
+  server.registerTool(
+    "ps_remove_layer_style",
+    {
+      title: "Photoshop: remove layer styles",
+      description: "Remove one layer style from a layer, or every style when no style is given.",
+      inputSchema: { layerId, style: styleName.optional().describe("Omit to clear all styles.") },
+      annotations: { destructiveHint: true },
+    },
+    async ({ layerId: id, style }) => run("ps.remove_layer_style", { layerId: id, style: style ?? null }),
+  );
+
   // ---- pixels -------------------------------------------------------------
   server.registerTool(
     "ps_place_image",

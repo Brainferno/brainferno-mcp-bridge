@@ -92,6 +92,146 @@
     colorBurn: constants.BlendMode.COLORBURN,
   };
 
+  // ---- layer styles -------------------------------------------------------
+  // layerEffects descriptor keys per style; built from Alt-click batchPlay
+  // recordings of the Layer Style dialog.
+  const styleKeys = {
+    dropShadow: "dropShadow",
+    innerShadow: "innerShadow",
+    outerGlow: "outerGlow",
+    innerGlow: "innerGlow",
+    bevelEmboss: "bevelEmboss",
+    satin: "chromeFX",
+    colorOverlay: "solidFill",
+    stroke: "frameFX",
+  };
+  const unit = (u, v) => ({ _unit: u, _value: v });
+  const enm = (t, v) => ({ _enum: t, _value: v });
+  const pick = (v, fallback) => (v === null || v === undefined ? fallback : v);
+
+  function styleDescriptor(style, o) {
+    const color = o.color ? rgbDescriptor(hex(o.color)) : null;
+    const base = { enabled: pick(o.enabled, true), present: true, showInDialog: true };
+    const mode = (dflt) => enm("blendMode", pick(o.blendMode, dflt));
+    const opacity = (dflt) => unit("percentUnit", pick(o.opacity, dflt));
+    const angle = (dflt) => unit("angleUnit", pick(o.angle, dflt));
+    const sizePx = (dflt) => unit("pixelsUnit", pick(o.size, dflt));
+    const spreadPct = () => unit("percentUnit", pick(o.spread, 0));
+    const noisePct = () => unit("percentUnit", pick(o.noise, 0));
+    if (style === "dropShadow" || style === "innerShadow") {
+      const d = {
+        _obj: style,
+        ...base,
+        mode: mode("multiply"),
+        color: color || rgbDescriptor({ red: 0, green: 0, blue: 0 }),
+        opacity: opacity(35),
+        useGlobalAngle: pick(o.useGlobalAngle, true),
+        localLightingAngle: angle(120),
+        distance: unit("pixelsUnit", pick(o.distance, 5)),
+        chokeMatte: spreadPct(),
+        blur: sizePx(5),
+        noise: noisePct(),
+        antiAlias: false,
+      };
+      if (style === "dropShadow") d.layerConceals = true;
+      return d;
+    }
+    if (style === "outerGlow" || style === "innerGlow") {
+      const d = {
+        _obj: style,
+        ...base,
+        mode: mode("screen"),
+        opacity: opacity(35),
+        color: color || rgbDescriptor({ red: 255, green: 255, blue: 190 }),
+        glowTechnique: enm("matteTechnique", "softMatte"),
+        chokeMatte: spreadPct(),
+        blur: sizePx(5),
+        noise: noisePct(),
+        antiAlias: false,
+        inputRange: unit("percentUnit", 25),
+        shadingNoise: unit("percentUnit", 0),
+      };
+      if (style === "innerGlow") d.innerGlowSource = enm("innerGlowSourceType", "edgeGlow");
+      return d;
+    }
+    if (style === "bevelEmboss") {
+      return {
+        _obj: "bevelEmboss",
+        ...base,
+        highlightMode: enm("blendMode", "screen"),
+        highlightColor: o.highlightColor ? rgbDescriptor(hex(o.highlightColor)) : rgbDescriptor({ red: 255, green: 255, blue: 255 }),
+        highlightOpacity: unit("percentUnit", 50),
+        shadowMode: enm("blendMode", "multiply"),
+        shadowColor: o.shadowColor ? rgbDescriptor(hex(o.shadowColor)) : rgbDescriptor({ red: 0, green: 0, blue: 0 }),
+        shadowOpacity: unit("percentUnit", 50),
+        bevelTechnique: enm("bevelTechnique", "softMatte"),
+        bevelStyle: enm("bevelEmbossStyle", pick(o.bevelStyle, "innerBevel")),
+        useGlobalAngle: pick(o.useGlobalAngle, true),
+        localLightingAngle: angle(120),
+        localLightingAltitude: unit("angleUnit", pick(o.altitude, 30)),
+        strengthRatio: unit("percentUnit", pick(o.depth, 100)),
+        blur: sizePx(5),
+        bevelDirection: enm("bevelEmbossStampStyle", pick(o.bevelDirection, "up") === "down" ? "stampOut" : "stampIn"),
+        softness: unit("pixelsUnit", pick(o.soften, 0)),
+        useShape: false,
+        useTexture: false,
+      };
+    }
+    if (style === "satin") {
+      return {
+        _obj: "chromeFX",
+        ...base,
+        color: color || rgbDescriptor({ red: 0, green: 0, blue: 0 }),
+        antiAlias: true,
+        mode: mode("multiply"),
+        opacity: opacity(50),
+        localLightingAngle: angle(19),
+        distance: unit("pixelsUnit", pick(o.distance, 11)),
+        blur: sizePx(14),
+        invert: true,
+      };
+    }
+    if (style === "colorOverlay") {
+      return {
+        _obj: "solidFill",
+        ...base,
+        mode: mode("normal"),
+        opacity: opacity(100),
+        color: color || rgbDescriptor({ red: 255, green: 0, blue: 0 }),
+      };
+    }
+    // stroke
+    const positions = { outside: "outsetFrame", inside: "insetFrame", center: "centeredFrame" };
+    return {
+      _obj: "frameFX",
+      ...base,
+      style: enm("frameStyle", positions[pick(o.strokePosition, "outside")] || "outsetFrame"),
+      paintType: enm("frameFill", "solidColor"),
+      mode: mode("normal"),
+      opacity: opacity(100),
+      size: sizePx(3),
+      color: color || rgbDescriptor({ red: 0, green: 0, blue: 0 }),
+    };
+  }
+
+  async function getLayerEffects(layerId) {
+    const r = await batch([
+      { _obj: "get", _target: [{ _ref: "property", _property: "layerEffects" }, { _ref: "layer", _id: layerId }] },
+    ]);
+    return r && r[0] && r[0].layerEffects ? r[0].layerEffects : null;
+  }
+
+  async function setLayerEffects(layerId, effects) {
+    await batch([
+      {
+        _obj: "set",
+        _target: [{ _ref: "property", _property: "layerEffects" }, { _ref: "layer", _id: layerId }],
+        to: effects,
+        _options: { dialogOptions: "dontDisplay" },
+      },
+    ]);
+  }
+
   // ---- commands ----------------------------------------------------------
   const commands = {
     "ps.host_info": async () => {
@@ -277,6 +417,49 @@
         const name = layer.name;
         await layer.delete();
         return { deleted: name };
+      }),
+
+    "ps.set_layer_style": async (p) =>
+      modal("Set layer style", async () => {
+        const doc = activeDoc();
+        const layer = findLayer(doc, p.layerId);
+        const key = styleKeys[p.style];
+        if (!key) throw new Error("Unknown layer style " + p.style);
+        const current = (await getLayerEffects(layer.id)) || { _obj: "layerEffects" };
+        current._obj = "layerEffects";
+        if (!current.scale) current.scale = unit("percentUnit", 100);
+        current[key] = styleDescriptor(p.style, p);
+        // Multi-instance styles (e.g. two drop shadows added by hand) live under
+        // "<key>Multi" and would override the single one — drop that list.
+        delete current[key + "Multi"];
+        await setLayerEffects(layer.id, current);
+        return { style: p.style, applied: current[key], layer: layerInfo(layer, 0) };
+      }),
+
+    "ps.get_layer_styles": async (p) => {
+      const doc = activeDoc();
+      const layer = findLayer(doc, p.layerId);
+      return { layerId: layer.id, effects: await getLayerEffects(layer.id) };
+    },
+
+    "ps.remove_layer_style": async (p) =>
+      modal("Remove layer style", async () => {
+        const doc = activeDoc();
+        const layer = findLayer(doc, p.layerId);
+        if (!p.style) {
+          await setLayerEffects(layer.id, { _obj: "layerEffects", scale: unit("percentUnit", 100) });
+          return { removed: "all" };
+        }
+        const key = styleKeys[p.style];
+        if (!key) throw new Error("Unknown layer style " + p.style);
+        const current = await getLayerEffects(layer.id);
+        if (!current || (!current[key] && !current[key + "Multi"])) return { removed: null, note: "The layer does not have that style." };
+        delete current[key];
+        delete current[key + "Multi"];
+        current._obj = "layerEffects";
+        if (!current.scale) current.scale = unit("percentUnit", 100);
+        await setLayerEffects(layer.id, current);
+        return { removed: p.style };
       }),
 
     "ps.place_image": async (p) =>

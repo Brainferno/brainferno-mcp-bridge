@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Layer styles for Photoshop and After Effects. Photoshop: `ps_set_layer_style` (add or edit
+  a drop shadow, inner shadow, glow, bevel & emboss, satin, color overlay, or stroke — other
+  styles on the layer are kept), `ps_get_layer_styles`, `ps_remove_layer_style`. After
+  Effects: `ae_add_layer_style`, `ae_set_layer_style_param`, `ae_get_layer_styles`,
+  `ae_remove_layer_style` — friendly names map to AE's match names (satin → `chromeFX`,
+  colorOverlay → `solidFill`, stroke → `frameFX`).
+- New Premiere Pro tool `pp_insert_mogrt`: drop a Motion Graphics template (.mogrt) on the
+  timeline at a time, like dragging it from the Essential Graphics panel. Without
+  `videoTrackIndex` it lands on the first track above every video clip playing at that time,
+  so the graphic sits over the picture.
+
 ## v0.2.2 — 2026-08-30
 
 - The server reported itself as **0.1.0** to every MCP client and every panel, whatever

@@ -66,6 +66,9 @@ describe("Photoshop tools send named commands", () => {
       "ps_apply_filter",
       "ps_resize_image",
       "ps_crop",
+      "ps_set_layer_style",
+      "ps_get_layer_styles",
+      "ps_remove_layer_style",
     ]) {
       expect(names, n).toContain(n);
     }
@@ -85,6 +88,13 @@ describe("Photoshop tools send named commands", () => {
 
     await client.callTool({ name: "ps_apply_filter", arguments: { layerId: 5, filter: "gaussianBlur", radius: 12 } });
     expect(calls.at(-1)).toEqual({ name: "ps.apply_filter", params: { layerId: 5, filter: "gaussianBlur", radius: 12 } });
+
+    await client.callTool({ name: "ps_set_layer_style", arguments: { layerId: 5, style: "dropShadow", color: "#102030", distance: 8 } });
+    expect(calls.at(-1)?.name).toBe("ps.set_layer_style");
+    expect(calls.at(-1)?.params).toMatchObject({ layerId: 5, style: "dropShadow", enabled: true, color: "#102030", distance: 8, opacity: null, blendMode: null });
+
+    await client.callTool({ name: "ps_remove_layer_style", arguments: { layerId: 5 } });
+    expect(calls.at(-1)).toEqual({ name: "ps.remove_layer_style", params: { layerId: 5, style: null } });
   });
 
   it("rejects a bad color before sending anything", async () => {

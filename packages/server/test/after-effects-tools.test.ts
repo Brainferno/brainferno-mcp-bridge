@@ -7,6 +7,7 @@ import {
   LIST_FOOTAGE,
   PROJECT_INFO,
   addLayerScript,
+  addLayerStyleScript,
   addMarkerScript,
   applyEffectScript,
   createCompScript,
@@ -15,15 +16,18 @@ import {
   getCompScript,
   getKeyframesScript,
   getLayerScript,
+  getLayerStylesScript,
   importFootageScript,
   openProjectScript,
   removeKeyframesScript,
+  removeLayerStyleScript,
   renderFrameScript,
   saveProjectScript,
   setEffectParamScript,
   setExpressionScript,
   setKeyframesScript,
   setLayerPropsScript,
+  setLayerStyleParamScript,
   setTextScript,
 } from "../src/tools/after-effects.js";
 import { es3Violations } from "./osscript.test.js";
@@ -62,6 +66,12 @@ const SAMPLES: Record<string, string> = {
   marker: addMarkerScript(12, 2.5, "beat", undefined, undefined),
   layerMarker: addMarkerScript(12, 2.5, "hit", 3, 0.5),
   frame: renderFrameScript(12, 1.5, "C:/tmp/f.png", 1024),
+  addStyle: addLayerStyleScript(12, 2, "dropShadow"),
+  addStyleMapped: addLayerStyleScript(12, 2, "stroke"),
+  getStyles: getLayerStylesScript(12, 2),
+  styleParam: setLayerStyleParamScript(12, 2, "dropShadow", "Distance", 12),
+  styleParamColor: setLayerStyleParamScript(12, 2, "stroke", "Color", "#ff8800"),
+  removeStyle: removeLayerStyleScript(12, 2, "satin"),
 };
 
 describe("After Effects tool scripts", () => {
@@ -70,7 +80,7 @@ describe("After Effects tool scripts", () => {
   });
 
   it("wrap mutations in an undo group", () => {
-    for (const name of ["createComp", "solid", "props", "dup", "del", "keys", "expr", "effect", "effectParam", "setText", "marker", "import"]) {
+    for (const name of ["createComp", "solid", "props", "dup", "del", "keys", "expr", "effect", "effectParam", "setText", "marker", "import", "addStyle", "styleParam", "removeStyle"]) {
       expect(SAMPLES[name], name).toContain("__undo(");
     }
   });
@@ -98,6 +108,21 @@ describe("After Effects tool scripts", () => {
     expect(SAMPLES["keys"]).toContain("{ t: 0, v: [0, 0], e: false }");
     expect(SAMPLES["keys"]).toContain("{ t: 1, v: [100, 100], e: true }");
     expect(SAMPLES["keys"]).toContain("setTemporalEaseAtKey");
+  });
+
+  it("adds layer styles via the stable Layer Styles menu command and matchName lookup", () => {
+    // addProperty does not work for layer styles — the fixed menu id runs first,
+    // the localized label is only a retry, and groups are found by "<key>/enabled".
+    expect(SAMPLES["addStyle"]).toContain("app.executeCommand(9000)");
+    expect(SAMPLES["addStyle"]).toContain('findMenuCommandId("Drop Shadow")');
+    expect(SAMPLES["addStyle"]).toContain('__styleGroup(g, "dropShadow")');
+    expect(SAMPLES["addStyleMapped"]).toContain("app.executeCommand(9008)");
+    expect(SAMPLES["addStyleMapped"]).toContain('__styleGroup(g, "frameFX")');
+    // satin maps to chromeFX; "remove" turns the style off rather than deleting it.
+    expect(SAMPLES["removeStyle"]).toContain('__styleGroup(g, "chromeFX")');
+    expect(SAMPLES["removeStyle"]).toContain("s.enabled = false");
+    // Hex colors become [r, g, b, 1] arrays for setValue.
+    expect(SAMPLES["styleParamColor"]).toContain("q.setValue([1, 0.5333333333333333, 0, 1])");
   });
 
   it("centers the text anchor on the text bounds", () => {

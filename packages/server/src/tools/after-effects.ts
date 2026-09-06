@@ -86,6 +86,30 @@ const HELPERS = `
   function __compInfo(c) {
     return { id: c.id, name: c.name, width: c.width, height: c.height, duration: c.duration, frameRate: c.frameRate, numLayers: c.numLayers, pixelAspect: c.pixelAspect };
   }
+  function __styles(l) {
+    var g = l.property("ADBE Layer Styles");
+    if (!g) { throw new Error("Layer " + l.index + " has no layer styles group (cameras and lights cannot take styles)."); }
+    return g;
+  }
+  // A style's group is fetched by its match name "<key>/enabled" (the short key
+  // resolves for dropShadow only). canSetEnabled is false until the style is
+  // actually added, so it doubles as "is this style present".
+  function __styleGroup(g, key) {
+    var f = null;
+    try { f = g.property(key + "/enabled"); } catch (e) {}
+    if (f && !f.canSetEnabled) { f = null; }
+    return f;
+  }
+  function __styleParams(s) {
+    var out = [];
+    for (var i = 1; i <= s.numProperties; i++) {
+      var q = s.property(i);
+      var v = null;
+      try { v = q.value; } catch (e) {}
+      out.push({ index: i, name: q.name, matchName: q.matchName, value: v });
+    }
+    return out;
+  }
 `;
 
 const wrap = (body: string): string => `(function () {${HELPERS}${body}
@@ -369,6 +393,128 @@ export function setEffectParamScript(compId: number, layerIndex: number, effect:
   var pp = e.property(${lit(param)});
   if (!pp) { throw new Error("Parameter not found: " + ${lit(param)}); }
   return __undo("Set effect parameter", function () { pp.setValue(${v}); return { effect: e.name, param: pp.name, value: pp.value }; });`);
+}
+
+/**
+ * Layer styles are Photoshop's effects (drop shadow, stroke, …) living under
+ * "ADBE Layer Styles". Each maps to an internal key; the group is addressed by
+ * its match name "<key>/enabled" and its parameters by "<key>/<param>".
+ */
+export const LAYER_STYLE_KEYS = {
+  dropShadow: "dropShadow",
+  innerShadow: "innerShadow",
+  outerGlow: "outerGlow",
+  innerGlow: "innerGlow",
+  bevelEmboss: "bevelEmboss",
+  satin: "chromeFX",
+  colorOverlay: "solidFill",
+  gradientOverlay: "gradientFill",
+  stroke: "frameFX",
+} as const;
+export type LayerStyleName = keyof typeof LAYER_STYLE_KEYS;
+
+/**
+ * Layer styles cannot be added with addProperty (After Effects refuses it). The
+ * working way is the Layer > Layer Styles menu command, which needs the comp
+ * open in the viewer and the target layer selected. The menu ids are the stable
+ * 9000–9008 block (verified live); findMenuCommandId returned a bogus id once
+ * after a reconnect, so the fixed id runs first and the label is only a retry.
+ */
+const LAYER_STYLE_MENU: Record<LayerStyleName, { label: string; id: number }> = {
+  dropShadow: { label: "Drop Shadow", id: 9000 },
+  innerShadow: { label: "Inner Shadow", id: 9001 },
+  outerGlow: { label: "Outer Glow", id: 9002 },
+  innerGlow: { label: "Inner Glow", id: 9003 },
+  bevelEmboss: { label: "Bevel and Emboss", id: 9004 },
+  satin: { label: "Satin", id: 9005 },
+  colorOverlay: { label: "Color Overlay", id: 9006 },
+  gradientOverlay: { label: "Gradient Overlay", id: 9007 },
+  stroke: { label: "Stroke", id: 9008 },
+};
+
+export function addLayerStyleScript(compId: number, layerIndex: number, style: LayerStyleName): string {
+  const key = LAYER_STYLE_KEYS[style];
+  const menu = LAYER_STYLE_MENU[style];
+  return wrap(`
+  var c = __comp(${num(compId)}); var l = __layer(c, ${num(layerIndex)});
+  var g = __styles(l);
+  var s = __styleGroup(g, ${lit(key)});
+  if (s) {
+    return __undo("Enable layer style", function () {
+      try { s.enabled = true; } catch (e) {}
+      return { style: ${lit(style)}, matchName: s.matchName, params: __styleParams(s), alreadyPresent: true };
+    });
+  }
+  // addProperty does not work for layer styles — the Layer Styles menu command
+  // is the only way, and it needs the comp foremost and only this layer selected.
+  return __undo("Add layer style", function () {
+    c.openInViewer();
+    for (var j = 1; j <= c.numLayers; j++) { c.layer(j).selected = false; }
+    l.selected = true;
+    app.executeCommand(${num(menu.id)});
+    var added = __styleGroup(g, ${lit(key)});
+    if (!added) {
+      // Very rare: the fixed id was renumbered. Retry via the localized label.
+      var mid = 0;
+      try { mid = app.findMenuCommandId(${lit(menu.label)}); } catch (e) {}
+      if (mid) { app.executeCommand(mid); added = __styleGroup(g, ${lit(key)}); }
+    }
+    if (!added) { throw new Error("Could not add the ${style} layer style (menu command did not take; is the layer a camera or light?)."); }
+    try { added.enabled = true; } catch (e) {}
+    return { style: ${lit(style)}, matchName: added.matchName, params: __styleParams(added) };
+  });`);
+}
+
+export function getLayerStylesScript(compId: number, layerIndex: number): string {
+  return wrap(`
+  var c = __comp(${num(compId)}); var l = __layer(c, ${num(layerIndex)});
+  var g = __styles(l);
+  var out = { enabled: g.enabled, styles: [] };
+  for (var i = 1; i <= g.numProperties; i++) {
+    var s = g.property(i);
+    if (s.matchName === "ADBE Blend Options Group") { continue; }
+    if (!s.canSetEnabled) { continue; } // hidden template group, not actually on the layer
+    out.styles.push({ name: s.name, matchName: s.matchName, enabled: s.enabled, params: __styleParams(s) });
+  }
+  return out;`);
+}
+
+export function setLayerStyleParamScript(compId: number, layerIndex: number, style: LayerStyleName, param: string, value: number | number[] | string): string {
+  const key = LAYER_STYLE_KEYS[style];
+  // Hex colors become AE's [r, g, b, a] 0–1 arrays; other strings pass through.
+  const hexMatch = typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value);
+  const v = hexMatch ? `${rgb(value as string).slice(0, -1)}, 1]` : typeof value === "string" ? lit(value) : Array.isArray(value) ? `[${value.map(num).join(", ")}]` : num(value);
+  return wrap(`
+  var c = __comp(${num(compId)}); var l = __layer(c, ${num(layerIndex)});
+  var g = __styles(l);
+  var s = __styleGroup(g, ${lit(key)});
+  if (!s) { throw new Error("The ${style} style is not on this layer. Call ae_add_layer_style first."); }
+  var q = null;
+  var want = ${lit(param)};
+  var wl = want.toLowerCase();
+  for (var i = 1; i <= s.numProperties; i++) {
+    var cand = s.property(i);
+    if (cand.matchName === want || String(cand.name).toLowerCase() === wl) { q = cand; break; }
+  }
+  if (!q) {
+    var names = [];
+    for (var j = 1; j <= s.numProperties; j++) { names.push(s.property(j).name); }
+    throw new Error("No parameter " + want + " on " + s.name + ". Parameters: " + names.join(", "));
+  }
+  return __undo("Set layer style parameter", function () { q.setValue(${v}); return { style: ${lit(style)}, param: q.name, matchName: q.matchName, value: q.value }; });`);
+}
+
+export function removeLayerStyleScript(compId: number, layerIndex: number, style: LayerStyleName): string {
+  const key = LAYER_STYLE_KEYS[style];
+  // After Effects keeps a permanent slot per style and rejects .remove() on it,
+  // so "remove" turns the style off (enabled = false) — the visible effect goes
+  // away, matching what the eyeball toggle does in the UI.
+  return wrap(`
+  var c = __comp(${num(compId)}); var l = __layer(c, ${num(layerIndex)});
+  var g = __styles(l);
+  var s = __styleGroup(g, ${lit(key)});
+  if (!s) { throw new Error("The ${style} style is not on this layer."); }
+  return __undo("Turn off layer style", function () { s.enabled = false; return { style: ${lit(style)}, enabled: false }; });`);
 }
 
 export interface SetTextParams {
@@ -818,6 +964,65 @@ export function registerAfterEffectsTools(server: McpServer, bridge: AppBridge, 
       },
     },
     async ({ compId: id, layerIndex: li, effect, param, value }) => run(setEffectParamScript(id, li, effect, param, value)),
+  );
+
+  // ---- layer styles -------------------------------------------------------
+  const styleName = z
+    .enum(["dropShadow", "innerShadow", "outerGlow", "innerGlow", "bevelEmboss", "satin", "colorOverlay", "gradientOverlay", "stroke"])
+    .describe("Layer style name.");
+
+  server.registerTool(
+    "ae_add_layer_style",
+    {
+      title: "After Effects: add a layer style",
+      description:
+        "Add a Photoshop-style layer style (drop shadow, inner shadow, glows, bevel & emboss, satin, color/gradient " +
+        "overlay, stroke) to a layer. Returns the style's parameters (names and current values) for ae_set_layer_style_param.",
+      inputSchema: { compId, layerIndex, style: styleName },
+    },
+    async ({ compId: id, layerIndex: li, style }) => run(addLayerStyleScript(id, li, style)),
+  );
+
+  server.registerTool(
+    "ae_get_layer_styles",
+    {
+      title: "After Effects: read a layer's styles",
+      description: "List the layer styles on a layer with each style's parameters and current values.",
+      inputSchema: { compId, layerIndex },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ compId: id, layerIndex: li }) => run(getLayerStylesScript(id, li), { timeoutClass: "fast" }),
+  );
+
+  server.registerTool(
+    "ae_set_layer_style_param",
+    {
+      title: "After Effects: set a layer style parameter",
+      description:
+        "Set a parameter on a layer style already added with ae_add_layer_style — by display name (e.g. 'Distance', " +
+        "'Opacity', 'Color') or match name (e.g. 'dropShadow/blur'). Colors take a hex string or [r,g,b] 0–1 array.",
+      inputSchema: {
+        compId,
+        layerIndex,
+        style: styleName,
+        param: z.string().min(1).describe("Parameter display name or match name."),
+        value: z.union([z.number(), z.array(z.number()), z.string()]).describe("Number, [r,g,b] 0–1 array, or hex color like #ff8800."),
+      },
+    },
+    async ({ compId: id, layerIndex: li, style, param, value }) => run(setLayerStyleParamScript(id, li, style, param, value)),
+  );
+
+  server.registerTool(
+    "ae_remove_layer_style",
+    {
+      title: "After Effects: turn off a layer style",
+      description:
+        "Turn a layer style off (its visible effect goes away). After Effects keeps a permanent slot per style, " +
+        "so this disables the style rather than deleting the slot; ae_add_layer_style turns it back on.",
+      inputSchema: { compId, layerIndex, style: styleName },
+      annotations: { destructiveHint: true },
+    },
+    async ({ compId: id, layerIndex: li, style }) => run(removeLayerStyleScript(id, li, style)),
   );
 
   server.registerTool(

@@ -67,6 +67,7 @@ describe("Premiere tools send named commands", () => {
       "pp_set_active_sequence",
       "pp_set_player_position",
       "pp_insert_clip",
+      "pp_insert_mogrt",
       "pp_remove_clips",
       "pp_move_clip",
       "pp_trim_clip",
@@ -89,6 +90,12 @@ describe("Premiere tools send named commands", () => {
     expect(calls.at(-1)).toEqual({
       name: "pp.insert_clip",
       params: { sequenceId: null, projectItemId: "abc", seconds: 2, videoTrackIndex: 0, audioTrackIndex: 0, mode: "insert", limitShift: true },
+    });
+
+    await client.callTool({ name: "pp_insert_mogrt", arguments: { path: "C:\\g\\Lower Third.mogrt", seconds: 4.5 } });
+    expect(calls.at(-1)).toEqual({
+      name: "pp.insert_mogrt",
+      params: { sequenceId: null, path: "C:\\g\\Lower Third.mogrt", seconds: 4.5, videoTrackIndex: null, audioTrackIndex: 0 },
     });
 
     await client.callTool({ name: "pp_add_transition", arguments: { clipIndex: 1 } });

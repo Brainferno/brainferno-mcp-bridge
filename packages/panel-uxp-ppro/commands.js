@@ -570,6 +570,51 @@
       return { inserted: true, mode: overwrite ? "overwrite" : "insert", clip, sequence: await seqSummary(s) };
     },
 
+    "pp.insert_mogrt": async (p) => {
+      const proj = await project();
+      const s = await sequence(proj, p.sequenceId);
+      // Windows Premiere wants native separators (same as pp.import_files).
+      const path = /^[A-Za-z]:/.test(p.path) ? p.path.split("/").join("\\") : p.path;
+      const when = Number(p.seconds) || 0;
+      let v = isNum(p.videoTrackIndex) ? p.videoTrackIndex : null;
+      if (v === null) {
+        // Land above the picture: one track above the topmost video clip playing at the insert time.
+        v = 0;
+        const n = await s.getVideoTrackCount();
+        for (let i = 0; i < n; i++) {
+          const items = await trackClips(await trackOf(s, "video", i));
+          for (const it of items) {
+            const st = sec(await it.getStartTime()) || 0;
+            const en = sec(await it.getEndTime()) || 0;
+            if (st <= when + 1e-6 && en > when + 1e-6) {
+              v = i + 1;
+              break;
+            }
+          }
+        }
+      }
+      const a = isNum(p.audioTrackIndex) ? p.audioTrackIndex : 0;
+      const ed = ppro.SequenceEditor.getEditor(s);
+      // Adobe's sample calls insertMogrtFromPath inside lockedAccess, outside a
+      // transaction — it manages its own undo step and returns the new items.
+      let inserted = locked(proj, () => ed.insertMogrtFromPath(path, secs(when), v, a));
+      if (inserted && typeof inserted.then === "function") inserted = await inserted;
+      if (!inserted || !inserted.length) throw new Error("Premiere did not insert the .mogrt. Check the path: " + path);
+      // Report the graphic clip that now starts at that time on the target track.
+      let clip = null;
+      try {
+        const items = await trackClips(await trackOf(s, "video", v));
+        for (let i = 0; i < items.length; i++) {
+          const info = await clipInfo(items[i], i);
+          if (Math.abs((info.startSeconds || 0) - when) < 0.021) {
+            clip = Object.assign({ trackType: "video", trackIndex: v, clipIndex: i }, info);
+            break;
+          }
+        }
+      } catch (e) {}
+      return { inserted: inserted.length, videoTrackIndex: v, audioTrackIndex: a, clip, sequence: await seqSummary(s) };
+    },
+
     "pp.remove_clips": async (p) => {
       const proj = await project();
       const s = await sequence(proj, p.sequenceId);

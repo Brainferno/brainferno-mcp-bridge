@@ -89,7 +89,8 @@ Install it somewhere isolated and make it talk, rather than trusting the workflo
 then spawn `/tmp/t/bin/brainferno-mcp-bridge` with `HOME` pointed at a scratch directory (a
 fresh-machine simulation — no user config, no remote-mode port to collide with the running
 server) and speak JSON-RPC over stdio: `initialize`, `notifications/initialized`, `tools/list`.
-Expect 113 tools and the right `serverInfo` version. Two false alarms this catches: without an
+Expect 121 tools (113 in v0.2.2, before the mogrt and layer-style tools) and the right
+`serverInfo` version. Two false alarms this catches: without an
 isolated `HOME`, the test instance reads the real `config.json`, tries to bind the shared-mode
 port 7898 that the live server already holds, and dies with `EADDRINUSE`; and it will clobber
 `~/.brainferno-mcp-bridge/bridge.json`, pointing the panels at a dead port on their next reload.

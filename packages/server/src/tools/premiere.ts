@@ -351,6 +351,36 @@ export function registerPremiereTools(server: McpServer, bridge: AppBridge, opti
   );
 
   server.registerTool(
+    "pp_insert_mogrt",
+    {
+      title: "Premiere Pro: insert a Motion Graphics template",
+      description:
+        "Drop a Motion Graphics template (.mogrt) on the timeline at a time, like dragging it from the " +
+        "Essential Graphics panel. Without videoTrackIndex it lands on the first track above every video " +
+        "clip playing at that time, so it sits over the picture. Returns the placed graphic clip.",
+      inputSchema: {
+        sequenceId,
+        path: z.string().min(1).describe("Absolute path to a .mogrt file."),
+        seconds: seconds("Insert point"),
+        videoTrackIndex: z.number().int().min(0).optional().describe("Target video track, 0 = V1. Omit to land above the video at that time."),
+        audioTrackIndex: z.number().int().min(0).optional().describe("Target audio track, 0 = A1. Defaults to 0."),
+      },
+    },
+    async (a) =>
+      run(
+        "pp.insert_mogrt",
+        {
+          sequenceId: a.sequenceId ?? null,
+          path: a.path,
+          seconds: a.seconds,
+          videoTrackIndex: a.videoTrackIndex ?? null,
+          audioTrackIndex: a.audioTrackIndex ?? 0,
+        },
+        slow,
+      ),
+  );
+
+  server.registerTool(
     "pp_remove_clips",
     {
       title: "Premiere Pro: remove clips",
