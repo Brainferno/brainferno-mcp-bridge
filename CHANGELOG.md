@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.0 — 2026-09-05
 
 - After Effects `ae_import_as_comp`: import a layered Photoshop (.psd) or Illustrator (.ai)
   file as a composition — each source layer becomes its own AE layer, keeping blend modes,
