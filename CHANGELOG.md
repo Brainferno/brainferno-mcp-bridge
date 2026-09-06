@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- After Effects `ae_import_as_comp`: import a layered Photoshop (.psd) or Illustrator (.ai)
+  file as a composition — each source layer becomes its own AE layer, keeping blend modes,
+  positions, and (for PSD) editable layer styles. `cropped` chooses Composition - Cropped
+  Layers. Verified live: a PSD came in as three layers with its drop shadow editable in AE.
+  (Illustrator maps top-level layers to AE layers, so put objects on separate layers to keep
+  them separate; the file must be RGB and saved PDF-compatible.)
 - After Effects Essential Graphics: `ae_add_to_essential_graphics` exposes a layer property
   (transform channel, a text layer's source text, or any property via propertyPath) as a
   control, and `ae_export_mogrt` exports the composition as a Motion Graphics template

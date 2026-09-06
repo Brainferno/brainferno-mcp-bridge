@@ -85,11 +85,12 @@ text layers with font/size/color, properties, move, duplicate, delete), layer st
 remove), place an image as a smart object, fill, filters (Gaussian/motion/unsharp…),
 resize, crop.
 
-### After Effects — 30 tools
-Project info and file, compositions and footage (list, create, import), layers of every
-kind (footage, solid, text, null, adjustment), keyframes with easing, expressions, effects
-and their parameters, layer styles (drop shadow, glows, bevel, stroke… — add, adjust, read,
-remove), text content/font/color/justification, markers, Essential Graphics (expose a
+### After Effects — 31 tools
+Project info and file, compositions and footage (list, create, import), import a layered
+PSD or AI file as a composition (one layer each, with PSD layer styles editable), layers of
+every kind (footage, solid, text, null, adjustment), keyframes with easing, expressions,
+effects and their parameters, layer styles (drop shadow, glows, bevel, stroke… — add, adjust,
+read, remove), text content/font/color/justification, markers, Essential Graphics (expose a
 control, export a Motion Graphics template), single-frame preview, render queue, and
 headless rendering through `aerender` (the UI stays free).
 

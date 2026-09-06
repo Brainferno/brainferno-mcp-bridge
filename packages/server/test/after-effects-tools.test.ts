@@ -19,6 +19,7 @@ import {
   getKeyframesScript,
   getLayerScript,
   getLayerStylesScript,
+  importAsCompScript,
   importFootageScript,
   openProjectScript,
   removeKeyframesScript,
@@ -45,6 +46,8 @@ const SAMPLES: Record<string, string> = {
   saveInPlace: saveProjectScript(undefined),
   saveAs: saveProjectScript("C:/p/b.aep"),
   import: importFootageScript("C:/p/clip.mov"),
+  importPsdComp: importAsCompScript("C:/p/art.psd", false),
+  importAiCropped: importAsCompScript("C:/p/logo.ai", true),
   createComp: createCompScript({ name: "Main", width: 1920, height: 1080, frameRate: 30, duration: 10, pixelAspect: 1 }),
   solid: addLayerScript({ compId: 12, kind: "solid", color: "#ff8800", name: "bg" }),
   text: addLayerScript({ compId: 12, kind: "text", text: 'Say "hi"' }),
@@ -133,6 +136,14 @@ describe("After Effects tool scripts", () => {
   it("centers the text anchor on the text bounds", () => {
     expect(SAMPLES["setText"]).toContain("__centerAnchor(l);");
     expect(SAMPLES["text"]).toContain('if (kind === "text") { __centerAnchor(l); }');
+  });
+
+  it("imports PSD/AI as a composition with the right import kind", () => {
+    expect(SAMPLES["importPsdComp"]).toContain("io.importAs = ImportAsType.COMP;");
+    expect(SAMPLES["importPsdComp"]).toContain("canImportAs(ImportAsType.COMP)");
+    expect(SAMPLES["importAiCropped"]).toContain("ImportAsType.COMP_CROPPED_LAYERS");
+    // Rejects a flat/single-layer import instead of silently returning footage.
+    expect(SAMPLES["importPsdComp"]).toContain("instanceof CompItem");
   });
 
   it("wires Essential Graphics add + Motion Graphics template export", () => {

@@ -195,6 +195,33 @@ export function importFootageScript(path: string): string {
   });`);
 }
 
+/**
+ * Import a layered PSD or AI as a composition (one AE layer per source layer).
+ * ImportAsType.COMP keeps each layer at document size; COMP_CROPPED_LAYERS crops
+ * to content. The importer preserves blend modes and positions, and — for PSD —
+ * layer styles as After Effects imports them. There is no ImportOptions flag for
+ * the dialog's "editable vs merged layer styles"; AE uses its own default.
+ */
+export function importAsCompScript(path: string, cropped: boolean): string {
+  const want = cropped ? "ImportAsType.COMP_CROPPED_LAYERS" : "ImportAsType.COMP";
+  return wrap(`
+  var f = new File(${lit(path)});
+  if (!f.exists) { throw new Error("No file at " + f.fsName); }
+  return __undo("Import as composition", function () {
+    var io = new ImportOptions(f);
+    if (io.canImportAs(${want})) { io.importAs = ${want}; }
+    else if (io.canImportAs(ImportAsType.COMP)) { io.importAs = ImportAsType.COMP; }
+    else { throw new Error("After Effects can't import this as a composition. Layered .psd works; an .ai must be RGB (not CMYK) and saved with PDF compatibility."); }
+    var item = app.project.importFile(io);
+    if (!(item instanceof CompItem)) { throw new Error("Imported '" + item.name + "', but not as a composition — the file may have only one layer."); }
+    var info = __compInfo(item);
+    var layers = [];
+    for (var i = 1; i <= item.numLayers; i++) { layers.push(__layerInfo(item.layer(i))); }
+    info.layers = layers;
+    return info;
+  });`);
+}
+
 export interface CreateCompParams {
   name: string;
   width: number;
@@ -865,6 +892,23 @@ export function registerAfterEffectsTools(server: McpServer, bridge: AppBridge, 
       inputSchema: { path: z.string().min(1).describe("Absolute path to the media file.") },
     },
     async ({ path }) => run(importFootageScript(path)),
+  );
+
+  server.registerTool(
+    "ae_import_as_comp",
+    {
+      title: "After Effects: import a PSD or AI file as a composition",
+      description:
+        "Import a layered Photoshop (.psd) or Illustrator (.ai) file as a composition — every source layer becomes " +
+        "its own After Effects layer, keeping blend modes, positions, and (for PSD) layer styles as After Effects " +
+        "imports them. Illustrator files must be RGB (not CMYK) and saved with PDF compatibility. Returns the new " +
+        "composition with its layers.",
+      inputSchema: {
+        path: z.string().min(1).describe("Absolute path to a .psd or .ai file."),
+        cropped: z.boolean().optional().describe("Crop each layer to its content (Composition - Cropped Layers). Defaults to false = keep document-size layers."),
+      },
+    },
+    async ({ path, cropped }) => run(importAsCompScript(path, cropped ?? false)),
   );
 
   // ---- comps & layers -----------------------------------------------------
