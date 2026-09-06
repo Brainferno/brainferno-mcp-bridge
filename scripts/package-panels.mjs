@@ -3,12 +3,20 @@
 //   packages/panel-uxp-ppro -> brainferno-mcp-bridge-premiere-<ver>.ccx
 //   packages/panel-cep      -> brainferno-mcp-bridge-cep-<ver>.zxp   (AE + Audition)
 //
-// A UXP .ccx is just a zip of the plugin folder (install with the Unified Plugin
-// Installer Agent, or double-click). A CEP .zxp must be code-signed; we use a
-// self-signed certificate and Adobe's ZXPSignCmd, downloaded on first run into
-// the git-ignored .tools/ folder. The version is stamped from the root
-// package.json at package time so the manifests can never drift (the lesson from
-// the 0.1.0-for-two-releases bug).
+// A CEP .zxp is code-signed here with a self-signed certificate and Adobe's
+// ZXPSignCmd (downloaded on first run into the git-ignored .tools/ folder) — this
+// is fully automated.
+//
+// A UXP .ccx must be signed by Adobe's own UXP signer. Adobe is explicit that you
+// should NOT hand-zip a .ccx (a plain zip is rejected by the installer, UPIA
+// status -267). The signer lives in the UXP Developer Tool's "Package" command
+// and in `@adobe/uxp-devtools-cli` (`uxp plugin package`), whose native module
+// has no prebuilt binary for current Node, so it cannot run headless everywhere.
+// So for UXP we stage a version-stamped folder ready to package in the UXP
+// Developer Tool (Actions -> Package) and do not emit a fake .ccx.
+//
+// The version is stamped from the root package.json at package time so the
+// manifests can never drift (the lesson from the 0.1.0-for-two-releases bug).
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -88,63 +96,42 @@ function stampCep(dir) {
   writeFileSync(mf, xml);
 }
 
-// ---- zip a folder's CONTENTS (manifest at the archive root) -----------------
-function zipContents(dir, outFile) {
-  rmSync(outFile, { recursive: true, force: true });
-  if (isWin) {
-    // Windows PowerShell 5.1's Compress-Archive writes backslash entry names,
-    // which violate the ZIP spec and break strict readers; PowerShell 7 (pwsh)
-    // writes forward slashes. Require pwsh so the .ccx is spec-compliant.
-    execFileSync("pwsh", ["-NoProfile", "-Command", `Compress-Archive -Path '${dir}\\*' -DestinationPath '${outFile}' -Force`], { stdio: "inherit" });
-  } else {
-    execFileSync("zip", ["-r", "-X", outFile, "."], { cwd: dir, stdio: "inherit" });
-  }
-}
-
 async function main() {
   await ensureZxpSignCmd();
   ensureCert();
 
-  const results = [];
-
-  // UXP -> .ccx
+  // UXP -> a version-stamped folder ready for the UXP Developer Tool's Package
+  // command (a plain zip is not an installable .ccx — see the header note).
+  const staged = [];
   for (const [pkg, label] of [["panel-uxp", "photoshop"], ["panel-uxp-ppro", "premiere"]]) {
     const dir = stage(pkg);
     stampUxp(dir);
-    const zip = join(outDir, `brainferno-mcp-bridge-${label}-${version}.zip`);
-    zipContents(dir, zip);
-    const ccx = zip.replace(/\.zip$/, ".ccx");
-    rmSync(ccx, { force: true });
-    // .ccx is a zip; just rename.
-    cpSync(zip, ccx);
-    rmSync(zip, { force: true });
-    results.push(ccx);
-    console.log(`  ${ccx}`);
+    const kept = join(outDir, `uxp-${label}-${version}`);
+    rmSync(kept, { recursive: true, force: true });
+    cpSync(dir, kept, { recursive: true });
+    staged.push(kept);
+    console.log(`  staged ${kept}`);
   }
 
-  // CEP -> signed .zxp
-  {
-    const dir = stage("panel-cep");
-    stampCep(dir);
-    const zxp = join(outDir, `brainferno-mcp-bridge-cep-${version}.zxp`);
-    rmSync(zxp, { force: true });
-    execFileSync(zxpExe, ["-sign", dir, zxp, certPath, certPass], { stdio: "inherit" });
-    // Verify the signature we just wrote.
-    execFileSync(zxpExe, ["-verify", zxp, "-certInfo"], { stdio: "inherit" });
-    results.push(zxp);
-    console.log(`  ${zxp}`);
-  }
+  // CEP -> signed .zxp (fully automated).
+  const dir = stage("panel-cep");
+  stampCep(dir);
+  const zxp = join(outDir, `brainferno-mcp-bridge-cep-${version}.zxp`);
+  rmSync(zxp, { force: true });
+  execFileSync(zxpExe, ["-sign", dir, zxp, certPath, certPass], { stdio: "inherit" });
+  execFileSync(zxpExe, ["-verify", zxp, "-certInfo"], { stdio: "inherit" });
+  console.log(`  ${zxp}`);
 
   rmSync(stageDir, { recursive: true, force: true });
 
-  const upia = isWin
-    ? '"C:\\Program Files\\Common Files\\Adobe\\Adobe Desktop Common\\RemoteComponents\\UPI\\UnifiedPluginInstallerAgent\\UnifiedPluginInstallerAgent.exe"'
-    : '"/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent"';
-  console.log(`\nBuilt ${results.length} packages in dist-packages/ (version ${version}).`);
-  console.log("\nInstall the UXP plugins (Photoshop, Premiere) — double-click the .ccx, or from a terminal:");
-  for (const r of results.filter((r) => r.endsWith(".ccx"))) console.log(`  ${upia} /install "${r}"`);
-  console.log("\nInstall the CEP extension (After Effects, Audition): use a ZXP installer (e.g. the free ZXPInstaller),");
-  console.log("or `npm run install-cc` which side-loads the same panel folder with developer mode.");
+  console.log(`\nCEP extension built (After Effects + Audition), version ${version}:`);
+  console.log(`  ${zxp}`);
+  console.log("  Install it with a ZXP installer (e.g. the free ZXPInstaller), or keep using");
+  console.log("  `npm run install-cc` which side-loads the same folder with developer mode.");
+  console.log("\nUXP plugins (Photoshop, Premiere) — a .ccx must be signed by Adobe's UXP signer, so");
+  console.log("build each in the UXP Developer Tool: Add Plugin -> pick the manifest.json in the");
+  console.log("staged folder below -> Actions (…) -> Package. Then double-click the resulting .ccx.");
+  for (const s of staged) console.log(`  ${s}\\manifest.json`);
 }
 
 main().catch((e) => {

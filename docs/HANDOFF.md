@@ -152,26 +152,32 @@ last Windows run, so step 6 is not optional.
 
 ## Packaging the panels as installable plugins
 
-`npm run package` (scripts/package-panels.mjs) builds signed, installable panels into
+`npm run package` (scripts/package-panels.mjs) prepares the panels for install into
 `dist-packages/` (git-ignored), stamping the version from the root `package.json` so the
-manifests can't drift:
+manifests can't drift.
 
-- **UXP → `.ccx`** (Photoshop, Premiere). A `.ccx` is just a zip of the plugin folder with
-  `manifest.json` at the root. Built with PowerShell 7 (`pwsh`) so the entries use
-  forward slashes (Windows PowerShell 5.1's `Compress-Archive` writes spec-breaking
-  backslashes). Install by double-clicking, or from a terminal with Adobe's Unified Plugin
-  Installer Agent (UPIA), which is already on disk under
-  `…\Adobe Desktop Common\RemoteComponents\UPI\…\UnifiedPluginInstallerAgent.exe /install <file>.ccx`.
-- **CEP → `.zxp`** (After Effects, Audition — one bundle, both hosts). A `.zxp` must be
-  code-signed. The script downloads Adobe's **ZXPSignCmd** (CEP-Resources 4.1.103, Windows
-  only in that build) into `.tools/` on first run, generates a **self-signed** certificate
-  (`.tools/brainferno-selfsigned.p12`, git-ignored — regenerate, never commit), signs, and
-  verifies the signature. Install the `.zxp` with a ZXP installer (e.g. the free
+- **CEP → `.zxp`** (After Effects, Audition — one bundle, both hosts). Fully automated. A
+  `.zxp` must be code-signed; the script downloads Adobe's **ZXPSignCmd** (CEP-Resources
+  4.1.103, Windows only in that build) into `.tools/` on first run, generates a
+  **self-signed** certificate (`.tools/brainferno-selfsigned.p12`, git-ignored — regenerate,
+  never commit), signs, and verifies. Install with a ZXP installer (e.g. the free
   ZXPInstaller); the self-signed cert is fine for side-loading. `npm run install-cc` still
   side-loads the same folder with developer mode as the no-signing alternative.
+- **UXP → `.ccx`** (Photoshop, Premiere). NOT auto-built. Adobe signs a `.ccx` with its own
+  UXP signer, and is explicit that you should not hand-zip one — a plain zip is rejected by
+  the installer (UPIA status **-267**, confirmed live). The signer lives in the UXP Developer
+  Tool's **Package** command and in `@adobe/uxp-devtools-cli` (`uxp plugin package`), whose
+  native module has no prebuilt binary for current Node (fails on Node 24 here), so it can't
+  run headless. The script therefore stages a version-stamped folder
+  (`dist-packages/uxp-<app>-<ver>/`); build the `.ccx` from it in the UXP Developer Tool
+  (Add Plugin → its `manifest.json` → Actions → Package), then double-click the `.ccx` or
+  install with UPIA:
+  `…\RemoteComponents\UPI\…\UnifiedPluginInstallerAgent.exe /install <file>.ccx`.
+  UPIA refuses to install a plugin whose id is still loaded in developer mode — unload it in
+  the UXP Developer Tool first.
 
-macOS: `pwsh`/`zip` and a macOS ZXPSignCmd (from the CEP-Resources repo, dropped into
-`.tools/` by hand) are needed; the Windows build auto-downloads.
+macOS: a macOS ZXPSignCmd (from the CEP-Resources repo, dropped into `.tools/` by hand) is
+needed; the Windows build auto-downloads.
 
 ## Secrets and keys
 
