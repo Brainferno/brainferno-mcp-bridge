@@ -124,14 +124,20 @@ async function main() {
 
   rmSync(stageDir, { recursive: true, force: true });
 
+  const upia = isWin
+    ? "\"C:\\Program Files\\Common Files\\Adobe\\Adobe Desktop Common\\RemoteComponents\\UPI\\UnifiedPluginInstallerAgent\\UnifiedPluginInstallerAgent.exe\""
+    : "\"/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/…/UnifiedPluginInstallerAgent\"";
+
   console.log(`\nCEP extension built (After Effects + Audition), version ${version}:`);
   console.log(`  ${zxp}`);
-  console.log("  Install it with a ZXP installer (e.g. the free ZXPInstaller), or keep using");
-  console.log("  `npm run install-cc` which side-loads the same folder with developer mode.");
   console.log("\nUXP plugins (Photoshop, Premiere) — a .ccx must be signed by Adobe's UXP signer, so");
   console.log("build each in the UXP Developer Tool: Add Plugin -> pick the manifest.json in the");
-  console.log("staged folder below -> Actions (…) -> Package. Then double-click the resulting .ccx.");
+  console.log("staged folder below -> Actions (…) -> Package:");
   for (const s of staged) console.log(`  ${s}\\manifest.json`);
+  console.log("\nAdobe's UPIA installs BOTH the .ccx and the .zxp (double-clicking a .ccx also works);");
+  console.log("no separate ZXP installer is needed. Close the host app and Remove any dev-loaded copy first:");
+  console.log(`  ${upia} /install <file>.ccx|.zxp`);
+  console.log("Or keep `npm run install-cc`, which side-loads the folders with developer mode.");
 }
 
 main().catch((e) => {

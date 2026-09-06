@@ -160,9 +160,9 @@ manifests can't drift.
   `.zxp` must be code-signed; the script downloads Adobe's **ZXPSignCmd** (CEP-Resources
   4.1.103, Windows only in that build) into `.tools/` on first run, generates a
   **self-signed** certificate (`.tools/brainferno-selfsigned.p12`, git-ignored — regenerate,
-  never commit), signs, and verifies. Install with a ZXP installer (e.g. the free
-  ZXPInstaller); the self-signed cert is fine for side-loading. `npm run install-cc` still
-  side-loads the same folder with developer mode as the no-signing alternative.
+  never commit), signs, and verifies. The self-signed cert is fine for side-loading.
+  `npm run install-cc` still side-loads the same folder with developer mode as the
+  no-signing alternative.
 - **UXP → `.ccx`** (Photoshop, Premiere). NOT auto-built. Adobe signs a `.ccx` with its own
   UXP signer, and is explicit that you should not hand-zip one — a plain zip is rejected by
   the installer (UPIA status **-267**, confirmed live). The signer lives in the UXP Developer
@@ -170,11 +170,24 @@ manifests can't drift.
   native module has no prebuilt binary for current Node (fails on Node 24 here), so it can't
   run headless. The script therefore stages a version-stamped folder
   (`dist-packages/uxp-<app>-<ver>/`); build the `.ccx` from it in the UXP Developer Tool
-  (Add Plugin → its `manifest.json` → Actions → Package), then double-click the `.ccx` or
-  install with UPIA:
-  `…\RemoteComponents\UPI\…\UnifiedPluginInstallerAgent.exe /install <file>.ccx`.
-  UPIA refuses to install a plugin whose id is still loaded in developer mode — unload it in
-  the UXP Developer Tool first.
+  (Add Plugin → its `manifest.json` → Actions → Package). UDT names it
+  `<plugin-id>_<HOST>.ccx`, so Photoshop and Premiere come out as distinct files.
+
+**Installing — Adobe's Unified Plugin Installer Agent (UPIA) installs BOTH formats**, the
+`.ccx` and the `.zxp` (verified live: "Installation Successful" for each). It's already on
+disk; no separate ZXP installer is needed:
+
+    "…\Adobe Desktop Common\RemoteComponents\UPI\…\UnifiedPluginInstallerAgent.exe" /install <file>
+
+Double-clicking a `.ccx` also works. Two gotchas, both hit live: UPIA refuses a plugin whose
+id is still **loaded in developer mode** — in the UXP Developer Tool use **Remove** (not just
+Unload) on the entry first; and the UXP host app (Photoshop/Premiere) is best **closed**
+during install. The installed plugins land at
+`…\Roaming\Adobe\UXP\Plugins\External\<id>_<ver>` (UXP) and
+`…\Program Files (x86)\Common Files\Adobe\CEP\extensions\<name>` (CEP). To switch an app off
+the developer install and onto the installed package, remove the dev entry — for CEP that is
+the junction `…\Roaming\Adobe\CEP\extensions\<id>` that `install-cc` made (delete it with
+`rmdir`, which removes only the link, never the source it points at).
 
 macOS: a macOS ZXPSignCmd (from the CEP-Resources repo, dropped into `.tools/` by hand) is
 needed; the Windows build auto-downloads.
