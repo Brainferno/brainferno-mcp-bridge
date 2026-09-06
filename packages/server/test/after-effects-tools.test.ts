@@ -9,6 +9,8 @@ import {
   addLayerScript,
   addLayerStyleScript,
   addMarkerScript,
+  addToEssentialGraphicsScript,
+  exportMogrtScript,
   applyEffectScript,
   createCompScript,
   deleteLayerScript,
@@ -72,6 +74,9 @@ const SAMPLES: Record<string, string> = {
   styleParam: setLayerStyleParamScript(12, 2, "dropShadow", "Distance", 12),
   styleParamColor: setLayerStyleParamScript(12, 2, "stroke", "Color", "#ff8800"),
   removeStyle: removeLayerStyleScript(12, 2, "satin"),
+  egpTransform: addToEssentialGraphicsScript(12, 1, "position", undefined),
+  egpText: addToEssentialGraphicsScript(12, 1, "position", ["ADBE Text Properties", "ADBE Text Document"]),
+  exportMogrt: exportMogrtScript(12, "C:/mogrts", "Fancy Lower Third", true),
 };
 
 describe("After Effects tool scripts", () => {
@@ -128,6 +133,17 @@ describe("After Effects tool scripts", () => {
   it("centers the text anchor on the text bounds", () => {
     expect(SAMPLES["setText"]).toContain("__centerAnchor(l);");
     expect(SAMPLES["text"]).toContain('if (kind === "text") { __centerAnchor(l); }');
+  });
+
+  it("wires Essential Graphics add + Motion Graphics template export", () => {
+    expect(SAMPLES["egpTransform"]).toContain("canAddToMotionGraphicsTemplate(c)");
+    expect(SAMPLES["egpTransform"]).toContain("addToMotionGraphicsTemplate(c)");
+    expect(SAMPLES["egpText"]).toContain('["ADBE Text Properties", "ADBE Text Document"]');
+    expect(SAMPLES["exportMogrt"]).toContain("exportAsMotionGraphicsTemplate(true");
+    expect(SAMPLES["exportMogrt"]).toContain('motionGraphicsTemplateName = "Fancy Lower Third"');
+    expect(SAMPLES["exportMogrt"]).toContain('"Fancy Lower Third" + ".mogrt"');
+    // Export saves the project first; a project with no file errors instead of hanging on a prompt.
+    expect(SAMPLES["exportMogrt"]).toContain("app.project.save()");
   });
 
   it("rolls an expression back to the previous one when it fails to compile", () => {

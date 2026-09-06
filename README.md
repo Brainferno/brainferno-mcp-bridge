@@ -81,15 +81,17 @@ Counts are the tools registered per app. Each family has a live-run write-up in
 ### Photoshop — 21 tools
 Documents (list, create, open, save, export PNG/JPEG, preview image), layers (create,
 text layers with font/size/color, properties, move, duplicate, delete), layer styles
-(drop shadow, glows, bevel, stroke… — add, adjust, read, remove), place an image as a
-smart object, fill, filters (Gaussian/motion/unsharp…), resize, crop.
+(drop shadow, glows, bevel, satin, color and gradient overlay, stroke… — add, adjust, read,
+remove), place an image as a smart object, fill, filters (Gaussian/motion/unsharp…),
+resize, crop.
 
-### After Effects — 28 tools
+### After Effects — 30 tools
 Project info and file, compositions and footage (list, create, import), layers of every
 kind (footage, solid, text, null, adjustment), keyframes with easing, expressions, effects
 and their parameters, layer styles (drop shadow, glows, bevel, stroke… — add, adjust, read,
-remove), text content/font/color/justification, markers, single-frame preview,
-render queue, and headless rendering through `aerender` (the UI stays free).
+remove), text content/font/color/justification, markers, Essential Graphics (expose a
+control, export a Motion Graphics template), single-frame preview, render queue, and
+headless rendering through `aerender` (the UI stays free).
 
 ### Premiere Pro — 29 tools
 Project, sequences and items, a full sequence read (every track and clip with times),

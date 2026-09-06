@@ -233,8 +233,8 @@ export function registerPhotoshopTools(server: McpServer, bridge: AppBridge, opt
 
   // ---- layer styles -------------------------------------------------------
   const styleName = z
-    .enum(["dropShadow", "innerShadow", "outerGlow", "innerGlow", "bevelEmboss", "satin", "colorOverlay", "stroke"])
-    .describe("Layer style name. (Gradient overlay is not typed; use ps_batch_play for it.)");
+    .enum(["dropShadow", "innerShadow", "outerGlow", "innerGlow", "bevelEmboss", "satin", "colorOverlay", "gradientOverlay", "stroke"])
+    .describe("Layer style name.");
   const blendModeName = z
     .enum(["normal", "multiply", "screen", "overlay", "softLight", "hardLight", "darken", "lighten", "difference", "colorDodge", "colorBurn"])
     .optional();
@@ -244,9 +244,9 @@ export function registerPhotoshopTools(server: McpServer, bridge: AppBridge, opt
     {
       title: "Photoshop: add or edit a layer style",
       description:
-        "Add a layer style (drop shadow, inner shadow, glows, bevel & emboss, satin, color overlay, stroke) to a layer, " +
-        "or change one that is already there — the same style is updated in place, other styles are kept. " +
-        "Only the given settings change; the rest use Photoshop's defaults.",
+        "Add a layer style (drop shadow, inner shadow, glows, bevel & emboss, satin, color overlay, gradient overlay, " +
+        "stroke) to a layer, or change one that is already there — the same style is updated in place, other styles " +
+        "are kept. Only the given settings change; the rest use Photoshop's defaults.",
       inputSchema: {
         layerId,
         style: styleName,
@@ -268,6 +268,12 @@ export function registerPhotoshopTools(server: McpServer, bridge: AppBridge, opt
         highlightColor: hexColor.optional().describe("bevelEmboss highlight. Defaults to white."),
         shadowColor: hexColor.optional().describe("bevelEmboss shadow. Defaults to black."),
         altitude: z.number().min(0).max(90).optional().describe("bevelEmboss light altitude in degrees. Defaults to 30."),
+        colors: z.array(hexColor).min(2).optional().describe("gradientOverlay: two or more hex colors, spread evenly from start to end. Defaults to black→white."),
+        gradientStyle: z.enum(["linear", "radial", "angle", "reflected", "diamond"]).optional().describe("gradientOverlay shape. Defaults to linear."),
+        scale: z.number().min(10).max(150).optional().describe("gradientOverlay scale in percent. Defaults to 100."),
+        reverse: z.boolean().optional().describe("gradientOverlay: flip the gradient direction."),
+        alignWithLayer: z.boolean().optional().describe("gradientOverlay: anchor the gradient to the layer. Defaults to true."),
+        dither: z.boolean().optional().describe("gradientOverlay: dither to reduce banding."),
       },
     },
     async (p) =>
@@ -292,6 +298,12 @@ export function registerPhotoshopTools(server: McpServer, bridge: AppBridge, opt
         highlightColor: p.highlightColor ?? null,
         shadowColor: p.shadowColor ?? null,
         altitude: p.altitude ?? null,
+        colors: p.colors ?? null,
+        gradientStyle: p.gradientStyle ?? null,
+        scale: p.scale ?? null,
+        reverse: p.reverse ?? null,
+        alignWithLayer: p.alignWithLayer ?? null,
+        dither: p.dither ?? null,
       }),
   );
 

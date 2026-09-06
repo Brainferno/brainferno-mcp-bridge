@@ -93,6 +93,10 @@ describe("Photoshop tools send named commands", () => {
     expect(calls.at(-1)?.name).toBe("ps.set_layer_style");
     expect(calls.at(-1)?.params).toMatchObject({ layerId: 5, style: "dropShadow", enabled: true, color: "#102030", distance: 8, opacity: null, blendMode: null });
 
+    await client.callTool({ name: "ps_set_layer_style", arguments: { layerId: 5, style: "gradientOverlay", colors: ["#ff0000", "#00ff00", "#0000ff"], gradientStyle: "radial", angle: 45 } });
+    expect(calls.at(-1)?.name).toBe("ps.set_layer_style");
+    expect(calls.at(-1)?.params).toMatchObject({ layerId: 5, style: "gradientOverlay", colors: ["#ff0000", "#00ff00", "#0000ff"], gradientStyle: "radial", angle: 45, reverse: null });
+
     await client.callTool({ name: "ps_remove_layer_style", arguments: { layerId: 5 } });
     expect(calls.at(-1)).toEqual({ name: "ps.remove_layer_style", params: { layerId: 5, style: null } });
   });

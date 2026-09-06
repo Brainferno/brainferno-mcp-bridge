@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- After Effects Essential Graphics: `ae_add_to_essential_graphics` exposes a layer property
+  (transform channel, a text layer's source text, or any property via propertyPath) as a
+  control, and `ae_export_mogrt` exports the composition as a Motion Graphics template
+  (.mogrt). Verified live against AE 26.3.
+- Photoshop gradient overlay: `ps_set_layer_style` now takes `style: "gradientOverlay"` with
+  `colors` (two or more hex stops), `gradientStyle` (linear/radial/angle/reflected/diamond),
+  `angle`, `scale`, `reverse`, `alignWithLayer`, and `dither`.
+- After Effects `ae_set_expression` now rolls the property back to its previous expression
+  when the new one fails to compile (it used to leave the broken source assigned).
 - Layer styles for Photoshop and After Effects. Photoshop: `ps_set_layer_style` (add or edit
   a drop shadow, inner shadow, glow, bevel & emboss, satin, color overlay, or stroke — other
   styles on the layer are kept), `ps_get_layer_styles`, `ps_remove_layer_style`. After

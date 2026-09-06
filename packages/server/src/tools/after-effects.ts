@@ -524,6 +524,68 @@ export function removeLayerStyleScript(compId: number, layerIndex: number, style
   return __undo("Turn off layer style", function () { s.enabled = false; return { style: ${lit(style)}, enabled: false }; });`);
 }
 
+// ---- Essential Graphics / Motion Graphics templates -------------------------
+
+/**
+ * Expose a layer property in the comp's Essential Graphics panel so the comp can
+ * be exported as a Motion Graphics template. Verified live on AE 26.3:
+ * canAddToMotionGraphicsTemplate / addToMotionGraphicsTemplate take the comp the
+ * property lives in; the control is named after the property (AE 26.3 has no
+ * script to rename it). Source Text lives at ADBE Text Properties > Text Document.
+ */
+export function addToEssentialGraphicsScript(compId: number, layerIndex: number, property: string, propertyPath: string[] | undefined): string {
+  const path = propertyPath ? `[${propertyPath.map(lit).join(", ")}]` : "null";
+  return wrap(`
+  var c = __comp(${num(compId)}); var l = __layer(c, ${num(layerIndex)});
+  var prop = __prop(l, ${lit(property)}, ${path});
+  if (!prop.canAddToMotionGraphicsTemplate(c)) {
+    throw new Error("'" + prop.name + "' cannot be added to Essential Graphics — either its type is not supported or a control with that name is already there.");
+  }
+  return __undo("Add to Essential Graphics", function () {
+    var ok = prop.addToMotionGraphicsTemplate(c);
+    if (!ok) { throw new Error("After Effects refused to add '" + prop.name + "' to the Essential Graphics panel."); }
+    var count = c.motionGraphicsTemplateControllerCount;
+    var names = [];
+    for (var i = 1; i <= count; i++) { names.push(c.getMotionGraphicsTemplateControllerName(i)); }
+    return { added: prop.name, controllerCount: count, controllers: names };
+  });`);
+}
+
+/**
+ * Export the comp as a .mogrt. The host's exportAsMotionGraphicsTemplate takes a
+ * *folder* and names the file from motionGraphicsTemplateName, so we split the
+ * requested path, set the name, and write <folder>/<name>.mogrt. Verified live on
+ * AE 26.3 (the pre-24.3 "always returns false" bug is gone; we still check the
+ * file exists). The project must be saved — a dirty project makes AE prompt.
+ */
+export function exportMogrtScript(compId: number, folder: string, name: string, overwrite: boolean): string {
+  return wrap(`
+  var c = __comp(${num(compId)});
+  if (!app.project.file) { throw new Error("Save the After Effects project first (ae_save_project) — exporting a Motion Graphics template needs a saved project."); }
+  var fo = new Folder(${lit(folder)});
+  if (!fo.exists) { fo.create(); }
+  c.motionGraphicsTemplateName = ${lit(name)};
+  // Read everything off the comp now: exportAsMotionGraphicsTemplate invalidates
+  // the comp reference, so touching c afterwards throws "Object is invalid".
+  var compName = c.name;
+  var controllers = c.motionGraphicsTemplateControllerCount;
+  // A missing font (or any project warning) pops a modal, and any modal blocks ALL
+  // scripting until a human dismisses it. Suppress dialogs around the save+export
+  // so it stays headless.
+  var ok = false;
+  app.beginSuppressDialogs();
+  try {
+    app.project.save();
+    ok = c.exportAsMotionGraphicsTemplate(${overwrite ? "true" : "false"}, ${lit(folder)});
+  } finally {
+    app.endSuppressDialogs(false);
+  }
+  var outPath = ${lit(folder)} + "/" + ${lit(name)} + ".mogrt";
+  var f = new File(outPath);
+  if (!f.exists) { throw new Error("After Effects did not write the .mogrt (export returned " + ok + "). Does the file already exist without overwrite, or is the folder writable? " + outPath); }
+  return { compName: compName, name: ${lit(name)}, outputPath: outPath, controllerCount: controllers };`);
+}
+
 export interface SetTextParams {
   compId: number;
   layerIndex: number;
@@ -945,6 +1007,58 @@ export function registerAfterEffectsTools(server: McpServer, bridge: AppBridge, 
       inputSchema: { compId, layerIndex, property: propertyName, propertyPath, expression: z.string().nullable().describe("Expression source, or null to remove.") },
     },
     async ({ compId: id, layerIndex: li, property, propertyPath: pp, expression }) => run(setExpressionScript(id, li, property, pp, expression)),
+  );
+
+  // ---- essential graphics / motion graphics templates ---------------------
+  server.registerTool(
+    "ae_add_to_essential_graphics",
+    {
+      title: "After Effects: add a control to Essential Graphics",
+      description:
+        "Expose a layer property in the comp's Essential Graphics panel so the comp can be exported as a Motion " +
+        "Graphics template (.mogrt). Give `property` for a transform channel or `sourceText` for a text layer's " +
+        "content, or `propertyPath` (match/display names) for anything else, e.g. an effect's Slider or Color. " +
+        "The control takes the property's name (rename it in the panel; After Effects has no script for that).",
+      inputSchema: {
+        compId,
+        layerIndex,
+        property: z
+          .enum(["position", "scale", "rotation", "opacity", "anchorPoint", "sourceText"])
+          .optional()
+          .describe("Transform channel, or sourceText for a text layer's content. For anything else, use propertyPath."),
+        propertyPath,
+      },
+    },
+    async ({ compId: id, layerIndex: li, property, propertyPath: pp }) => {
+      const path = property === "sourceText" && !pp ? ["ADBE Text Properties", "ADBE Text Document"] : pp;
+      const prop = property && property !== "sourceText" ? property : "position";
+      return run(addToEssentialGraphicsScript(id, li, prop, path));
+    },
+  );
+
+  server.registerTool(
+    "ae_export_mogrt",
+    {
+      title: "After Effects: export a Motion Graphics template",
+      description:
+        "Export a composition as a Motion Graphics template (.mogrt) — the controls added with " +
+        "ae_add_to_essential_graphics become its editable fields. Saves the project first (it must have been saved " +
+        "once). Returns the written path.",
+      inputSchema: {
+        compId,
+        outputPath: z.string().min(1).describe("Absolute path ending in .mogrt. The file name (minus .mogrt) becomes the template name."),
+        overwrite: z.boolean().optional().describe("Overwrite an existing file at that path. Defaults to true."),
+      },
+      annotations: { destructiveHint: true },
+    },
+    async ({ compId: id, outputPath, overwrite }) => {
+      const norm = outputPath.replace(/\\/g, "/");
+      const slash = norm.lastIndexOf("/");
+      const folder = slash >= 0 ? norm.slice(0, slash) : ".";
+      const name = (slash >= 0 ? norm.slice(slash + 1) : norm).replace(/\.mogrt$/i, "");
+      if (!name) return run(exportMogrtScript(id, folder, "Untitled", overwrite ?? true)); // unreachable-ish; keeps a name
+      return run(exportMogrtScript(id, folder, name, overwrite ?? true));
+    },
   );
 
   // ---- effects, text, markers ---------------------------------------------

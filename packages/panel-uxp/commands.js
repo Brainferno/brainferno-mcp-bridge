@@ -103,6 +103,7 @@
     bevelEmboss: "bevelEmboss",
     satin: "chromeFX",
     colorOverlay: "solidFill",
+    gradientOverlay: "gradientFill",
     stroke: "frameFX",
   };
   const unit = (u, v) => ({ _unit: u, _value: v });
@@ -198,6 +199,42 @@
         mode: mode("normal"),
         opacity: opacity(100),
         color: color || rgbDescriptor({ red: 255, green: 0, blue: 0 }),
+      };
+    }
+    if (style === "gradientOverlay") {
+      const cols = o.colors && o.colors.length >= 2 ? o.colors : ["#000000", "#ffffff"];
+      const stops = cols.map((hx, i) => ({
+        _obj: "colorStop",
+        color: rgbDescriptor(hex(hx)),
+        type: enm("colorStopType", "userStop"),
+        location: Math.round((i * 4096) / (cols.length - 1)),
+        midpoint: 50,
+      }));
+      const transparency = [
+        { _obj: "transferSpec", opacity: unit("percentUnit", 100), location: 0, midpoint: 50 },
+        { _obj: "transferSpec", opacity: unit("percentUnit", 100), location: 4096, midpoint: 50 },
+      ];
+      const gtype = { linear: "linear", radial: "radial", angle: "angle", reflected: "reflected", diamond: "diamond" }[o.gradientStyle] || "linear";
+      return {
+        _obj: "gradientFill",
+        ...base,
+        mode: mode("normal"),
+        opacity: opacity(100),
+        gradient: {
+          _obj: "gradientClassEvent",
+          name: "Custom",
+          gradientForm: enm("gradientForm", "customStops"),
+          interfaceIconFrameDimmed: 4096,
+          colors: stops,
+          transparency: transparency,
+        },
+        angle: angle(90),
+        type: enm("gradientType", gtype),
+        reverse: pick(o.reverse, false),
+        dither: pick(o.dither, false),
+        align: pick(o.alignWithLayer, true),
+        scale: unit("percentUnit", pick(o.scale, 100)),
+        offset: { _obj: "paint", horizontal: unit("percentUnit", 0), vertical: unit("percentUnit", 0) },
       };
     }
     // stroke
