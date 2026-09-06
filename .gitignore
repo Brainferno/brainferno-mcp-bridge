@@ -5,6 +5,11 @@ node_modules/
 dist/
 *.tsbuildinfo
 
+# Panel packaging (scripts/package-panels.mjs): downloaded ZXPSignCmd, the
+# self-signed cert, and the built .ccx/.zxp packages. Never commit the cert.
+.tools/
+dist-packages/
+
 # Environment / secrets
 .env
 .env.*

@@ -13,6 +13,7 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
     "panels:sync": "node scripts/sync-bridge-client.mjs",
+    "package": "node scripts/package-panels.mjs",
     "install-cc": "npm run build && node packages/server/dist/install/cli.js"
   },
   "devDependencies": {

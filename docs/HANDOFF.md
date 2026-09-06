@@ -150,6 +150,29 @@ last Windows run, so step 6 is not optional.
      match the installed version, not `0.1.0`. That bug is fixed but was invisible for two
      releases.
 
+## Packaging the panels as installable plugins
+
+`npm run package` (scripts/package-panels.mjs) builds signed, installable panels into
+`dist-packages/` (git-ignored), stamping the version from the root `package.json` so the
+manifests can't drift:
+
+- **UXP → `.ccx`** (Photoshop, Premiere). A `.ccx` is just a zip of the plugin folder with
+  `manifest.json` at the root. Built with PowerShell 7 (`pwsh`) so the entries use
+  forward slashes (Windows PowerShell 5.1's `Compress-Archive` writes spec-breaking
+  backslashes). Install by double-clicking, or from a terminal with Adobe's Unified Plugin
+  Installer Agent (UPIA), which is already on disk under
+  `…\Adobe Desktop Common\RemoteComponents\UPI\…\UnifiedPluginInstallerAgent.exe /install <file>.ccx`.
+- **CEP → `.zxp`** (After Effects, Audition — one bundle, both hosts). A `.zxp` must be
+  code-signed. The script downloads Adobe's **ZXPSignCmd** (CEP-Resources 4.1.103, Windows
+  only in that build) into `.tools/` on first run, generates a **self-signed** certificate
+  (`.tools/brainferno-selfsigned.p12`, git-ignored — regenerate, never commit), signs, and
+  verifies the signature. Install the `.zxp` with a ZXP installer (e.g. the free
+  ZXPInstaller); the self-signed cert is fine for side-loading. `npm run install-cc` still
+  side-loads the same folder with developer mode as the no-signing alternative.
+
+macOS: `pwsh`/`zip` and a macOS ZXPSignCmd (from the CEP-Resources repo, dropped into
+`.tools/` by hand) are needed; the Windows build auto-downloads.
+
 ## Secrets and keys
 
 Never commit keys. The Illustrator MCP key and the remote token live in
