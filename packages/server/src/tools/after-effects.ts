@@ -83,6 +83,13 @@ const HELPERS = `
     var r = l.sourceRectAtTime(0, false);
     if (r && r.width > 0) { l.property("ADBE Transform Group").property("ADBE Anchor Point").setValue([r.left + r.width / 2, r.top + r.height / 2]); }
   }
+  function __originAnchor(l) {
+    l.property("ADBE Transform Group").property("ADBE Anchor Point").setValue([0, 0]);
+  }
+  function __trimLayers(c, d) {
+    // Shrinking a comp does not shorten its layers; expressions keyed to outPoint need it to.
+    for (var i = 1; i <= c.numLayers; i++) { var l = c.layer(i); if (l.outPoint > d) { try { l.outPoint = d; } catch (e) {} } }
+  }
   function __compInfo(c) {
     return { id: c.id, name: c.name, width: c.width, height: c.height, duration: c.duration, frameRate: c.frameRate, numLayers: c.numLayers, pixelAspect: c.pixelAspect };
   }
@@ -202,8 +209,18 @@ export function importFootageScript(path: string): string {
  * layer styles as After Effects imports them. There is no ImportOptions flag for
  * the dialog's "editable vs merged layer styles"; AE uses its own default.
  */
-export function importAsCompScript(path: string, cropped: boolean): string {
+export interface ImportAsCompOptions {
+  duration?: number;
+  frameRate?: number;
+}
+
+export function importAsCompScript(path: string, cropped: boolean, opts: ImportAsCompOptions = {}): string {
   const want = cropped ? "ImportAsType.COMP_CROPPED_LAYERS" : "ImportAsType.COMP";
+  // The imported comp takes the project's default length (often minutes); callers
+  // building a template want it at the real duration and frame rate right away.
+  const timing =
+    (opts.frameRate !== undefined ? `    item.frameRate = ${num(opts.frameRate)};\n` : "") +
+    (opts.duration !== undefined ? `    item.duration = ${num(opts.duration)}; __trimLayers(item, ${num(opts.duration)});\n` : "");
   return wrap(`
   var f = new File(${lit(path)});
   if (!f.exists) { throw new Error("No file at " + f.fsName); }
@@ -214,7 +231,7 @@ export function importAsCompScript(path: string, cropped: boolean): string {
     else { throw new Error("After Effects can't import this as a composition. Layered .psd works; an .ai must be RGB (not CMYK) and saved with PDF compatibility."); }
     var item = app.project.importFile(io);
     if (!(item instanceof CompItem)) { throw new Error("Imported '" + item.name + "', but not as a composition — the file may have only one layer."); }
-    var info = __compInfo(item);
+${timing}    var info = __compInfo(item);
     var layers = [];
     for (var i = 1; i <= item.numLayers; i++) { layers.push(__layerInfo(item.layer(i))); }
     info.layers = layers;
@@ -239,6 +256,28 @@ export function createCompScript(p: CreateCompParams): string {
   });`);
 }
 
+export interface CompProps {
+  name?: string;
+  duration?: number;
+  frameRate?: number;
+  width?: number;
+  height?: number;
+}
+
+export function setCompPropsScript(compId: number, p: CompProps): string {
+  const lines =
+    (p.name !== undefined ? `    c.name = ${lit(p.name)};\n` : "") +
+    (p.frameRate !== undefined ? `    c.frameRate = ${num(p.frameRate)};\n` : "") +
+    (p.width !== undefined ? `    c.width = ${num(p.width)};\n` : "") +
+    (p.height !== undefined ? `    c.height = ${num(p.height)};\n` : "") +
+    (p.duration !== undefined ? `    c.duration = ${num(p.duration)}; __trimLayers(c, ${num(p.duration)});\n` : "");
+  return wrap(`
+  var c = __comp(${num(compId)});
+  return __undo("Set comp properties", function () {
+${lines}    return __compInfo(c);
+  });`);
+}
+
 export interface AddLayerParams {
   compId: number;
   kind: "footage" | "solid" | "text" | "null" | "adjustment";
@@ -248,7 +287,11 @@ export interface AddLayerParams {
   text?: string;
   width?: number;
   height?: number;
+  /** text: where the anchor goes. center (default) = position is the text's visual centre; origin = position is the left baseline. */
+  anchor?: TextAnchor;
 }
+
+export type TextAnchor = "center" | "origin";
 
 export function addLayerScript(p: AddLayerParams): string {
   const color = p.color ? rgb(p.color) : "[1, 1, 1]";
@@ -271,7 +314,7 @@ export function addLayerScript(p: AddLayerParams): string {
     }
     var name = ${opt(p.name)};
     if (name !== null) { l.name = name; }
-    if (kind === "text") { __centerAnchor(l); }
+    if (kind === "text") { ${p.anchor === "origin" ? "__originAnchor(l);" : "__centerAnchor(l);"} }
     return __layerInfo(l);
   });`);
 }
@@ -404,13 +447,14 @@ export function setExpressionScript(compId: number, layerIndex: number, property
   });`);
 }
 
-export function applyEffectScript(compId: number, layerIndex: number, matchName: string): string {
+export function applyEffectScript(compId: number, layerIndex: number, matchName: string, name?: string): string {
   return wrap(`
   var c = __comp(${num(compId)}); var l = __layer(c, ${num(layerIndex)});
   return __undo("Apply effect", function () {
     var fx = l.property("ADBE Effect Parade");
     if (!fx.canAddProperty(${lit(matchName)})) { throw new Error("Effect not available: " + ${lit(matchName)} + " (use a match name like 'ADBE Gaussian Blur 2' or a display name)."); }
     var e = fx.addProperty(${lit(matchName)});
+${name !== undefined ? `    e.name = ${lit(name)};\n` : ""}
     var params = [];
     for (var i = 1; i <= e.numProperties; i++) { var pp = e.property(i); params.push({ index: i, name: pp.name, matchName: pp.matchName }); }
     return { index: e.propertyIndex, name: e.name, matchName: e.matchName, params: params };
@@ -482,11 +526,17 @@ export function addLayerStyleScript(compId: number, layerIndex: number, style: L
   // addProperty does not work for layer styles — the Layer Styles menu command
   // is the only way, and it needs the comp foremost and only this layer selected.
   return __undo("Add layer style", function () {
-    c.openInViewer();
-    for (var j = 1; j <= c.numLayers; j++) { c.layer(j).selected = false; }
-    l.selected = true;
-    app.executeCommand(${num(menu.id)});
-    var added = __styleGroup(g, ${lit(key)});
+    var added = null;
+    // Seen live: the command did not take when other scripts were queued behind
+    // it. Reselect and try again after a short pause before giving up.
+    for (var attempt = 0; attempt < 3 && !added; attempt++) {
+      if (attempt > 0) { $.sleep(150); }
+      c.openInViewer();
+      for (var j = 1; j <= c.numLayers; j++) { c.layer(j).selected = false; }
+      l.selected = true;
+      app.executeCommand(${num(menu.id)});
+      added = __styleGroup(g, ${lit(key)});
+    }
     if (!added) {
       // Very rare: the fixed id was renumbered. Retry via the localized label.
       var mid = 0;
@@ -621,6 +671,7 @@ export interface SetTextParams {
   font?: string;
   color?: string;
   justification?: "left" | "center" | "right";
+  anchor?: TextAnchor;
 }
 
 export function setTextScript(p: SetTextParams): string {
@@ -638,10 +689,11 @@ export function setTextScript(p: SetTextParams): string {
     v = ${opt(p.justification)};
     if (v !== null) { td.justification = v === "center" ? ParagraphJustification.CENTER_JUSTIFY : v === "right" ? ParagraphJustification.RIGHT_JUSTIFY : ParagraphJustification.LEFT_JUSTIFY; }
     st.setValue(td);
-    // Point text is positioned by its anchor; put the anchor at the visual
-    // center so position means "center of the text" regardless of
+    // Point text is positioned by its anchor; by default put the anchor at the
+    // visual center so position means "center of the text" regardless of
     // justification (CENTER_JUSTIFY did not center on the anchor here).
-    __centerAnchor(l);
+    // anchor "origin" leaves it at [0, 0]: position is then the left baseline.
+    ${p.anchor === "origin" ? "__originAnchor(l);" : "__centerAnchor(l);"}
     var info = __layerInfo(l); info.text = st.value.text; return info;
   });`);
 }
@@ -906,9 +958,11 @@ export function registerAfterEffectsTools(server: McpServer, bridge: AppBridge, 
       inputSchema: {
         path: z.string().min(1).describe("Absolute path to a .psd or .ai file."),
         cropped: z.boolean().optional().describe("Crop each layer to its content (Composition - Cropped Layers). Defaults to false = keep document-size layers."),
+        duration: z.number().positive().optional().describe("Seconds. Sets the new comp's length and trims its layers to match. Without it the comp takes the project default (often minutes)."),
+        frameRate: z.number().positive().optional().describe("Frames per second for the new comp. Defaults to the project default."),
       },
     },
-    async ({ path, cropped }) => run(importAsCompScript(path, cropped ?? false)),
+    async ({ path, cropped, duration, frameRate }) => run(importAsCompScript(path, cropped ?? false, { duration, frameRate })),
   );
 
   // ---- comps & layers -----------------------------------------------------
@@ -930,6 +984,25 @@ export function registerAfterEffectsTools(server: McpServer, bridge: AppBridge, 
   );
 
   server.registerTool(
+    "ae_set_comp_props",
+    {
+      title: "After Effects: set composition properties",
+      description:
+        "Change a composition's name, duration (seconds), frame rate, width, or height. Only given fields change. " +
+        "Shortening the duration also trims every layer whose outPoint runs past it, so outPoint-based animation lands at the new end.",
+      inputSchema: {
+        compId,
+        name: z.string().min(1).optional(),
+        duration: z.number().positive().optional().describe("Seconds."),
+        frameRate: z.number().positive().optional(),
+        width: z.number().int().positive().optional().describe("Pixels."),
+        height: z.number().int().positive().optional().describe("Pixels."),
+      },
+    },
+    async ({ compId: id, ...p }) => run(setCompPropsScript(id, p)),
+  );
+
+  server.registerTool(
     "ae_add_layer",
     {
       title: "After Effects: add a layer",
@@ -943,6 +1016,10 @@ export function registerAfterEffectsTools(server: McpServer, bridge: AppBridge, 
         color: hexColor.optional().describe("solid: fill color. Defaults to white."),
         name: z.string().min(1).optional(),
         text: z.string().optional().describe("text: initial content."),
+        anchor: z
+          .enum(["center", "origin"])
+          .optional()
+          .describe("text: center (default) makes position the text's visual centre; origin makes position the left baseline (use with left justification for lower thirds)."),
         width: z.number().int().positive().optional().describe("solid: defaults to comp width."),
         height: z.number().int().positive().optional().describe("solid: defaults to comp height."),
       },
@@ -1113,9 +1190,14 @@ export function registerAfterEffectsTools(server: McpServer, bridge: AppBridge, 
       description:
         "Add an effect to a layer by match name (e.g. 'ADBE Gaussian Blur 2', 'ADBE Drop Shadow', 'ADBE Glo2', 'ADBE Tint') " +
         "or display name. Returns the effect index and its parameter names for ae_set_effect_param.",
-      inputSchema: { compId, layerIndex, matchName: z.string().min(1) },
+      inputSchema: {
+        compId,
+        layerIndex,
+        matchName: z.string().min(1),
+        name: z.string().min(1).optional().describe("Rename the effect once applied (e.g. a Slider Control named 'Speed'). Essential Graphics shows a control under this name."),
+      },
     },
-    async ({ compId: id, layerIndex: li, matchName }) => run(applyEffectScript(id, li, matchName)),
+    async ({ compId: id, layerIndex: li, matchName, name }) => run(applyEffectScript(id, li, matchName, name)),
   );
 
   server.registerTool(
@@ -1206,6 +1288,10 @@ export function registerAfterEffectsTools(server: McpServer, bridge: AppBridge, 
         font: z.string().min(1).optional().describe("PostScript font name, e.g. Arial-BoldMT."),
         color: hexColor.optional(),
         justification: z.enum(["left", "center", "right"]).optional(),
+        anchor: z
+          .enum(["center", "origin"])
+          .optional()
+          .describe("Where the anchor ends up: center (default) = position is the text's visual centre; origin = position is the left baseline. Every call re-applies this, so pass it whenever you moved the anchor yourself."),
       },
     },
     async (p) => run(setTextScript(p)),

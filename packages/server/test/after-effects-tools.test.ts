@@ -26,6 +26,7 @@ import {
   removeLayerStyleScript,
   renderFrameScript,
   saveProjectScript,
+  setCompPropsScript,
   setEffectParamScript,
   setExpressionScript,
   setKeyframesScript,
@@ -80,6 +81,12 @@ const SAMPLES: Record<string, string> = {
   egpTransform: addToEssentialGraphicsScript(12, 1, "position", undefined),
   egpText: addToEssentialGraphicsScript(12, 1, "position", ["ADBE Text Properties", "ADBE Text Document"]),
   exportMogrt: exportMogrtScript(12, "C:/mogrts", "Fancy Lower Third", true),
+  effectNamed: applyEffectScript(12, 2, "ADBE Slider Control", "Speed"),
+  importPsdTimed: importAsCompScript("C:/p/art.psd", false, { duration: 8, frameRate: 29.97 }),
+  compProps: setCompPropsScript(12, { name: "LT", duration: 8, frameRate: 29.97, width: 1920, height: 1080 }),
+  compDurationOnly: setCompPropsScript(12, { duration: 5 }),
+  textOrigin: addLayerScript({ compId: 12, kind: "text", text: "Hi", anchor: "origin" }),
+  setTextOrigin: setTextScript({ compId: 12, layerIndex: 1, justification: "left", anchor: "origin" }),
 };
 
 describe("After Effects tool scripts", () => {
@@ -133,9 +140,49 @@ describe("After Effects tool scripts", () => {
     expect(SAMPLES["styleParamColor"]).toContain("q.setValue([1, 0.5333333333333333, 0, 1])");
   });
 
-  it("centers the text anchor on the text bounds", () => {
+  it("centers the text anchor on the text bounds by default", () => {
     expect(SAMPLES["setText"]).toContain("__centerAnchor(l);");
-    expect(SAMPLES["text"]).toContain('if (kind === "text") { __centerAnchor(l); }');
+    expect(SAMPLES["text"]).toContain("__centerAnchor(l);");
+  });
+
+  it("puts the text anchor at the origin when asked, so position is the left baseline", () => {
+    // Lower thirds place text by its left baseline; a centred anchor shoves the
+    // text half its width to the left.
+    for (const name of ["textOrigin", "setTextOrigin"]) {
+      expect(SAMPLES[name], name).not.toContain("__centerAnchor(l);");
+      expect(SAMPLES[name], name).toContain('property("ADBE Anchor Point").setValue([0, 0])');
+    }
+  });
+
+  it("names a freshly applied effect when a name is given", () => {
+    // Essential Graphics shows a slider under its effect name, so "Speed" must be settable here.
+    expect(SAMPLES["effectNamed"]).toContain('e.name = "Speed";');
+    expect(SAMPLES["effect"]).not.toContain("e.name =");
+  });
+
+  it("sets comp duration and frame rate on import and trims layers to the new duration", () => {
+    // A PSD comp comes in at the project default length (hundreds of seconds).
+    expect(SAMPLES["importPsdTimed"]).toContain("item.frameRate = 29.97;");
+    expect(SAMPLES["importPsdTimed"]).toContain("item.duration = 8;");
+    expect(SAMPLES["importPsdTimed"]).toContain("__trimLayers(item, 8)");
+    expect(SAMPLES["importPsdComp"]).not.toContain("item.duration =");
+  });
+
+  it("sets comp properties and trims layers when the duration shrinks", () => {
+    expect(SAMPLES["compProps"]).toContain('c.name = "LT";');
+    expect(SAMPLES["compProps"]).toContain("c.frameRate = 29.97;");
+    expect(SAMPLES["compProps"]).toContain("c.width = 1920;");
+    expect(SAMPLES["compProps"]).toContain("c.height = 1080;");
+    expect(SAMPLES["compProps"]).toContain("c.duration = 8;");
+    expect(SAMPLES["compProps"]).toContain("__trimLayers(c, 8)");
+    expect(SAMPLES["compDurationOnly"]).not.toContain("c.name =");
+    expect(SAMPLES["compDurationOnly"]).toContain("__undo(");
+  });
+
+  it("retries the layer-style menu command with a pause, reselecting the layer each time", () => {
+    // Seen live: the command did not take when other scripts were queued behind it.
+    expect(SAMPLES["addStyle"]).toContain("for (var attempt = 0; attempt < 3 && !added; attempt++)");
+    expect(SAMPLES["addStyle"]).toContain("$.sleep(150)");
   });
 
   it("imports PSD/AI as a composition with the right import kind", () => {
