@@ -79,6 +79,7 @@ describe("brainferno-mcp-bridge server", () => {
     const names = tools.map((t) => t.name);
 
     expect(names).toContain("ae_list_compositions");
+    expect(names).toContain("ae_set_comp_props");
     expect(names).toContain("pp_list_sequences");
     expect(names).toContain("ps_list_documents");
     expect(names).toContain("ai_list_documents");

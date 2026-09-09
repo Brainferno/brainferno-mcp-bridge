@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+Found while building a lower-third .mogrt skill end to end (Illustrator → Photoshop →
+After Effects → Premiere):
+
+- After Effects `ae_apply_effect` takes an optional `name` and renames the effect once
+  applied. Essential Graphics labels a control with its effect name, so a Slider Control
+  named `Speed` now shows as "Speed" in Premiere instead of "Slider Control".
+- After Effects `ae_import_as_comp` takes optional `duration` and `frameRate`. Without them
+  the imported comp came in at the project default (241 s) and every layer with it.
+  Giving a duration also trims the layers to it, so outPoint-anchored outros land at the end.
+- New After Effects tool `ae_set_comp_props`: name, duration, frameRate, width, height on an
+  existing comp; a shorter duration trims layers the same way.
+- After Effects `ae_add_layer` (text) and `ae_set_text` take `anchor: "center" | "origin"`.
+  The default keeps the anchor at the text's visual centre; `origin` leaves it at [0, 0] so
+  position is the left baseline — what a left-justified lower third wants. (Before, text
+  placed by its left edge rendered half its width too far left.)
+- After Effects `ae_add_layer_style` retries the Layer Styles menu command up to three times
+  with a short pause, reselecting the layer each time. Seen live: the command did not take
+  when other scripts were queued behind it and the tool failed with "menu command did not
+  take".
+- Known limit, not fixed: Premiere `pp_set_effect_param` cannot set a .mogrt text field
+  (`Graphic Parameters` → text control); the UXP API rejects strings ("Illegal Parameter
+  type") and reads the value back as null. Numbers (sliders) work.
+
 ## v0.3.0 — 2026-09-05
 
 - After Effects `ae_import_as_comp`: import a layered Photoshop (.psd) or Illustrator (.ai)
