@@ -97,6 +97,8 @@ long-blocking call.
   in-memory MCP transport plus a fake panel over a real WebSocket
   (`packages/server/test/server.test.ts`) — new tools get at least a not-connected-path test,
   and a round-trip test where behavior warrants it.
+- Panels carry no version of their own: `npm run panels:stamp` writes the server package's
+  version into the manifests and `PANEL_VERSION` literals, and the suite fails if they drift.
 
 ## License of contributions
 

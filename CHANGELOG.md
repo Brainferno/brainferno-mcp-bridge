@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **Codex CLI and Gemini CLI are first-class clients.** The installer registers the
+  server with every MCP client CLI it finds (Claude Code, Codex CLI, Gemini CLI; filter
+  with `--clients`), each with the env defaults that suit it. Three new env vars carry
+  the differences: `BRAINFERNO_MCP_DEFAULT_WAIT` (false = long tools return a jobId at
+  once, for Codex's 60-second tool timeout — the advertised `wait` parameter now states
+  the live default), `BRAINFERNO_MCP_PREVIEW` (`path` returns previews as file paths for
+  clients that cannot show the model images; `inline`, `both`), and
+  `BRAINFERNO_MCP_JOB_WAIT_SECONDS` (the default `cc_job_wait` timeout, set to 50 for
+  Codex so each poll returns inside its limit). Claude Code keeps exactly the old
+  behavior. In shared mode the installer prints per-client connection snippets — Codex
+  reads the bearer token from an env var, Gemini from a headers block.
+- **Panel versions can no longer drift.** `npm run panels:stamp` writes the package
+  version into the three panel manifests and each panel's `PANEL_VERSION`, and a test
+  fails when a bump forgets it. v0.3.0 shipped with its panels still reporting 0.2.0
+  (Photoshop, After Effects/Audition) and 0.1.0 (Premiere); they are now stamped 0.3.0.
+
 Found while building a lower-third .mogrt skill end to end (Illustrator → Photoshop →
 After Effects → Premiere):
 
