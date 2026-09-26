@@ -144,7 +144,7 @@ The full tool table is in [Tool reference](#tool-reference).
   a name. See `docs/spikes/13-macos-live.md`.
 - The Adobe apps you want to control (2024 or newer; Premiere Pro 25.6+ for its panel).
 - [Node.js](https://nodejs.org) 20 or newer.
-- [Claude Code](https://claude.com/claude-code) (or another MCP client).
+- An MCP client: [Claude Code](https://claude.com/claude-code), [Codex CLI](https://developers.openai.com/codex/cli), [Gemini CLI](https://github.com/google-gemini/gemini-cli), or any other. The installer registers the server with all three CLIs it finds; see [Other MCP clients](#other-mcp-clients-codex-cli-gemini-cli-and-more) for what differs outside Claude Code.
 - Optional: [ffmpeg](https://ffmpeg.org) on your PATH for the audio tools
   (`winget install ffmpeg` / `brew install ffmpeg`). It is never bundled — the server runs the
   copy you install; see [FFmpeg licensing](#ffmpeg).
@@ -185,7 +185,7 @@ Then it: writes `~/.brainferno-mcp-bridge/config.json`, asks for your Illustrato
 chose Illustrator (paste the line Illustrator shows; it is checked on the spot), links the
 After Effects/Audition panel, sets Media Encoder's service address, opens or closes the
 firewall port, prints the Photoshop/Premiere panel steps, and offers to register the server
-with Claude Code. On macOS it asks one more question when both Illustrator and Illustrator
+with every MCP client CLI it finds — Claude Code, Codex CLI, Gemini CLI. On macOS it asks one more question when both Illustrator and Illustrator
 (Beta) are installed — see below.
 
 Non-interactive examples (from a source checkout, replace `brainferno-mcp-bridge-install`
@@ -199,7 +199,8 @@ brainferno-mcp-bridge-install --apps ppro,ame --mode shared --yes      # Premier
 
 App names: `ps ae ppro ai au ame` or `all`. Re-run the installer any time to change apps
 or mode. Other flags: `--token`, `--port`, `--host`, `--illustrator-key`, `--illustrator-url`,
-`--illustrator-app`, `--no-panels`, `--no-ame`, `--no-firewall`, `--no-illustrator`, `--register`.
+`--illustrator-app`, `--no-panels`, `--no-ame`, `--no-firewall`, `--no-illustrator`, `--register`,
+`--clients claude,codex,gemini`.
 
 #### On macOS
 
@@ -240,6 +241,36 @@ Open it once per app; it connects on its own and shows a log and a kill switch.
 
 In Claude Code: `/mcp` shows **brainferno** connected. Try: *"Which Adobe apps are
 connected?"* (`cc_connected_apps`), then anything from the examples above.
+
+### Other MCP clients: Codex CLI, Gemini CLI, and more
+
+The installer registers the server with every client CLI it finds. To do it by hand
+(replace the path with your install's `dist/index.js` — the installer prints the exact
+line):
+
+```bash
+codex mcp add brainferno --env BRAINFERNO_MCP_DEFAULT_WAIT=false \
+  --env BRAINFERNO_MCP_PREVIEW=path --env BRAINFERNO_MCP_JOB_WAIT_SECONDS=50 \
+  -- node "<path>/dist/index.js"
+gemini mcp add -s user -e BRAINFERNO_MCP_DEFAULT_WAIT=false brainferno node "<path>/dist/index.js"
+```
+
+The env vars adapt the server to each client — Claude Code runs without them:
+
+- **Codex CLI kills any tool call at 60 seconds** (`tool_timeout_sec`).
+  `BRAINFERNO_MCP_DEFAULT_WAIT=false` makes renders, exports and pipelines return a
+  `jobId` immediately instead of blocking; the agent polls `cc_job_wait`, whose default
+  timeout `BRAINFERNO_MCP_JOB_WAIT_SECONDS=50` keeps each poll inside Codex's limit.
+  Alternatively raise `tool_timeout_sec` for this server in `~/.codex/config.toml`.
+- **Codex cannot show the model MCP image blocks**, so `BRAINFERNO_MCP_PREVIEW=path`
+  returns previews as file paths (its own `view_image` tool reads them). Gemini CLI
+  renders images, so it keeps inline previews.
+
+Any other MCP client works the same way: stdio `node <path>/dist/index.js`, plus whichever
+of the three env vars its timeouts and image support call for. In *shared* mode the server
+also speaks Streamable HTTP with a bearer token (next section); Codex takes the token from
+an env var named by `bearer_token_env_var` in `~/.codex/config.toml`, Gemini from a
+`headers` block in `~/.gemini/settings.json` — the installer prints both snippets.
 
 ### Using it from another computer
 
@@ -349,6 +380,9 @@ override it:
 | `BRAINFERNO_MCP_AME_WEBSERVICE` | *(auto-detect)* | Path to Media Encoder's `ame_webservice_console` |
 | `BRAINFERNO_MCP_AME_PORT` / `_AME_IDLE_MS` | *(from its ini)* / `600000` | Media Encoder service port; idle time before it is stopped |
 | `BRAINFERNO_MCP_HTTP_PORT` / `_HTTP_HOST` / `_HTTP_TOKEN` | *(off)* / `127.0.0.1` / *(none)* | Remote mode (set by the installer's *shared* choice) |
+| `BRAINFERNO_MCP_DEFAULT_WAIT` | `true` | Whether long tools (renders, exports, pipelines) block when `wait` is not passed; `false` returns a jobId at once — for clients with short tool timeouts ([Codex](#other-mcp-clients-codex-cli-gemini-cli-and-more)) |
+| `BRAINFERNO_MCP_PREVIEW` | `both` | Preview tools return `inline` (image only), `path` (file path only — for clients that can't show the model images), or `both` |
+| `BRAINFERNO_MCP_JOB_WAIT_SECONDS` | `300` | Default `cc_job_wait` timeout; keep it below the client's own tool timeout |
 | `BRAINFERNO_MCP_LOG_LEVEL` | `info` | `error` \| `warn` \| `info` \| `debug` |
 
 ## Security
@@ -424,7 +458,9 @@ docs/                build plan, protocol, live-run notes (spikes/), Audition AP
   process and what npm actually does after a publish).
 - **Not yet**: double-click panel installs (`.ccx`/`.zxp`) so the UXP Developer
   Tool is not needed; a single signed installer; TLS for shared mode; Audition multitrack
-  writes; Media Encoder queue control.
+  writes; Media Encoder queue control. The Codex CLI / Gemini CLI lanes are built and
+  unit-tested but not yet verified against the live CLIs — that run is
+  `docs/spikes/15-multi-client-lanes.md`.
 - Roadmap: `docs/BUILD_PLAN.md` (Phase 6).
 
 ## License

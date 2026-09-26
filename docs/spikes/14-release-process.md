@@ -27,7 +27,7 @@ server ships depending on the previous protocol. Then `npm install` to refresh
 `package-lock.json`. The workflow's own gate (tag == server version == protocol version)
 catches the first three but not the pin, because the pin is not one of the things it compares.
 The panels used to be a seventh, silent spot (three manifests plus each panel's
-`PANEL_VERSION` literal, and the Premiere one sat at 0.1.0 for two releases):
+`PANEL_VERSION` literal, and the Premiere one still read 0.1.0 when v0.3.0 shipped):
 `npm run panels:stamp` now writes them all from `packages/server/package.json`, and
 `test/panel-versions.test.ts` fails the suite when a bump forgets it.
 
