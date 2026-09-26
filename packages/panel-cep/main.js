@@ -11,7 +11,7 @@
  * eval, so the generic `eval` command works here.
  */
 
-const PANEL_VERSION = "0.2.2";
+const PANEL_VERSION = "0.3.0";
 
 const el = (id) => document.getElementById(id);
 const logEl = el("log");
