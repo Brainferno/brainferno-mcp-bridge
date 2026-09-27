@@ -95,8 +95,9 @@ make it talk:
 
 then spawn `/tmp/t/bin/brainferno-mcp-bridge` with **`HOME` pointed at a scratch directory**
 and speak JSON-RPC over stdio: `initialize`, `notifications/initialized`, `tools/list`. Expect
-113 tools (ps 18, ae 24, pp 28, ai 7, au 12, ame 6, audio 9, pipeline 4, cc 5) and the version
-you just shipped.
+125 tools as of v0.3.1 (ps 21, ae 32, pp 29, ai 7, au 12, ame 6, audio 9, pipeline 4, cc 5) and
+the version you just shipped. The scratch `HOME` has no key or env set, so `cc_eval_script` and
+the `ai_beta_*` tools stay unregistered and are not in that count.
 
 The isolated `HOME` is not optional on a machine that already runs this server:
 - without it the test instance reads the real `config.json`, tries to bind the shared-mode
