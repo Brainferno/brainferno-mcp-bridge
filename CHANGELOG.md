@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.1 — 2026-09-27
 
 - **Codex CLI and Gemini CLI are first-class clients.** The installer registers the
   server with every MCP client CLI it finds (Claude Code, Codex CLI, Gemini CLI; filter
@@ -16,7 +16,8 @@
 - **Panel versions can no longer drift.** `npm run panels:stamp` writes the package
   version into the three panel manifests and each panel's `PANEL_VERSION`, and a test
   fails when a bump forgets it. v0.3.0 shipped with its panels still reporting 0.2.0
-  (Photoshop, After Effects/Audition) and 0.1.0 (Premiere); they are now stamped 0.3.0.
+  (Photoshop, After Effects/Audition) and 0.1.0 (Premiere); from this release on they
+  carry the package version.
 
 Found while building a lower-third .mogrt skill end to end (Illustrator → Photoshop →
 After Effects → Premiere):
