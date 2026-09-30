@@ -319,6 +319,126 @@ export function addLayerScript(p: AddLayerParams): string {
   });`);
 }
 
+export interface AddShapeParams {
+  compId: number;
+  kind: "rectangle" | "ellipse" | "star" | "polygon";
+  width?: number;
+  height?: number;
+  points?: number;
+  outerRadius?: number;
+  innerRadius?: number;
+  roundness?: number;
+  position?: [number, number];
+  fill?: string | null;
+  stroke?: string | null;
+  strokeWidth?: number;
+  name?: string;
+}
+
+/**
+ * Create a shape layer with one parametric shape (rectangle/ellipse/star/polygon)
+ * plus an optional fill and stroke. The vector tree is layer → "ADBE Root Vectors
+ * Group" (Contents) → "ADBE Vector Group" → its "ADBE Vectors Group" holding the
+ * shape, then Fill, then Stroke (stroke last so it draws on top). Verified live.
+ */
+export function addShapeScript(p: AddShapeParams): string {
+  const w = p.width ?? 200;
+  const h = p.height ?? 200;
+  const points = p.points ?? 5;
+  const outer = p.outerRadius ?? 100;
+  const inner = p.innerRadius ?? 50;
+  const fill = p.fill === undefined ? "#ffffff" : p.fill; // null clears fill
+  const strokeWidth = p.strokeWidth ?? (p.stroke ? 4 : 0);
+  const strokeColor = p.stroke ?? "#000000";
+  const pos = p.position ? `[${num(p.position[0])}, ${num(p.position[1])}]` : "[c.width / 2, c.height / 2]";
+  let shapeBody: string;
+  if (p.kind === "rectangle") {
+    shapeBody = `
+    var shape = gc.addProperty("ADBE Vector Shape - Rect");
+    shape.property("ADBE Vector Rect Size").setValue([${num(w)}, ${num(h)}]);
+    ${p.roundness ? `shape.property("ADBE Vector Rect Roundness").setValue(${num(p.roundness)});` : ""}`;
+  } else if (p.kind === "ellipse") {
+    shapeBody = `
+    var shape = gc.addProperty("ADBE Vector Shape - Ellipse");
+    shape.property("ADBE Vector Ellipse Size").setValue([${num(w)}, ${num(h)}]);`;
+  } else {
+    shapeBody = `
+    var shape = gc.addProperty("ADBE Vector Shape - Star");
+    shape.property("ADBE Vector Star Type").setValue(${p.kind === "polygon" ? "2" : "1"});
+    shape.property("ADBE Vector Star Points").setValue(${num(points)});
+    shape.property("ADBE Vector Star Outer Radius").setValue(${num(outer)});
+    ${p.kind === "star" ? `shape.property("ADBE Vector Star Inner Radius").setValue(${num(inner)});` : ""}`;
+  }
+  return wrap(`
+  var c = __comp(${num(p.compId)});
+  return __undo("Add shape", function () {
+    var l = c.layers.addShape();
+    var name = ${opt(p.name)}; if (name !== null) { l.name = name; }
+    var root = l.property("ADBE Root Vectors Group");
+    var grp = root.addProperty("ADBE Vector Group");
+    var gc = grp.property("ADBE Vectors Group");
+    ${shapeBody}
+    ${fill === null ? "" : `gc.addProperty("ADBE Vector Graphic - Fill").property("ADBE Vector Fill Color").setValue(${rgb(fill)});`}
+    ${strokeWidth > 0 ? `var st = gc.addProperty("ADBE Vector Graphic - Stroke"); st.property("ADBE Vector Stroke Color").setValue(${rgb(strokeColor)}); st.property("ADBE Vector Stroke Width").setValue(${num(strokeWidth)});` : ""}
+    l.property("ADBE Transform Group").property("ADBE Position").setValue(${pos});
+    return __layerInfo(l);
+  });`);
+}
+
+export interface AddMaskParams {
+  compId: number;
+  layerIndex: number;
+  kind: "rectangle" | "ellipse";
+  left?: number;
+  top?: number;
+  right?: number;
+  bottom?: number;
+  mode?: "add" | "subtract" | "intersect" | "lighten" | "darken" | "difference" | "none";
+  feather?: number;
+  opacity?: number;
+  expansion?: number;
+  name?: string;
+}
+
+/**
+ * Add a rectangle or ellipse mask to a layer, in that layer's coordinates. A rect
+ * is a 4-vertex closed Shape; an ellipse is a 4-vertex closed Shape with the
+ * standard 0.5523·radius bezier handles. Bounds default to the whole comp.
+ * Verified live on a solid.
+ */
+export function addMaskScript(p: AddMaskParams): string {
+  const mode = { add: "ADD", subtract: "SUBTRACT", intersect: "INTERSECT", lighten: "LIGHTEN", darken: "DARKEN", difference: "DIFFERENCE", none: "NONE" }[p.mode ?? "add"];
+  const L = p.left === undefined ? "0" : num(p.left);
+  const T = p.top === undefined ? "0" : num(p.top);
+  const R = p.right === undefined ? "c.width" : num(p.right);
+  const B = p.bottom === undefined ? "c.height" : num(p.bottom);
+  const shapeBody =
+    p.kind === "rectangle"
+      ? `s.vertices = [[L, T], [R, T], [R, B], [L, B]]; s.closed = true;`
+      : `var cx = (L + R) / 2, cy = (T + B) / 2, rx = (R - L) / 2, ry = (B - T) / 2, k = 0.5522847498;
+         s.vertices = [[cx, T], [L, cy], [cx, B], [R, cy]];
+         s.inTangents  = [[rx * k, 0], [0, -ry * k], [-rx * k, 0], [0, ry * k]];
+         s.outTangents = [[-rx * k, 0], [0, ry * k], [rx * k, 0], [0, -ry * k]];
+         s.closed = true;`;
+  return wrap(`
+  var c = __comp(${num(p.compId)}); var l = __layer(c, ${num(p.layerIndex)});
+  return __undo("Add mask", function () {
+    var parade = l.property("ADBE Mask Parade");
+    if (!parade) { throw new Error("Layer " + ${num(p.layerIndex)} + " cannot take masks."); }
+    var mask = parade.addProperty("ADBE Mask Atom");
+    var name = ${opt(p.name)}; if (name !== null) { mask.name = name; }
+    var L = ${L}, T = ${T}, R = ${R}, B = ${B};
+    var s = new Shape();
+    ${shapeBody}
+    mask.property("ADBE Mask Shape").setValue(s);
+    mask.maskMode = MaskMode.${mode};
+    ${p.feather ? `mask.property("ADBE Mask Feather").setValue([${num(p.feather)}, ${num(p.feather)}]);` : ""}
+    ${p.opacity === undefined ? "" : `mask.property("ADBE Mask Opacity").setValue(${num(p.opacity)});`}
+    ${p.expansion ? `mask.property("ADBE Mask Offset").setValue(${num(p.expansion)});` : ""}
+    return { mask: mask.name, mode: ${lit(p.mode ?? "add")}, masks: parade.numProperties };
+  });`);
+}
+
 export interface LayerProps {
   name?: string;
   enabled?: boolean;
@@ -1027,6 +1147,92 @@ export function registerAfterEffectsTools(server: McpServer, bridge: AppBridge, 
       },
     },
     async (p) => run(addLayerScript(p)),
+  );
+
+  server.registerTool(
+    "ae_add_shape",
+    {
+      title: "After Effects: add a shape layer",
+      description:
+        "Create a shape layer with one parametric shape and an optional fill and stroke. kind: rectangle or ellipse " +
+        "(width/height), star or polygon (points, outerRadius, and — star only — innerRadius). Colors are hex; a stroke " +
+        "is added when stroke or strokeWidth is given. position is the layer centre (defaults to the comp centre).",
+      inputSchema: {
+        compId,
+        kind: z.enum(["rectangle", "ellipse", "star", "polygon"]),
+        width: z.number().positive().optional().describe("rectangle/ellipse width in px. Defaults to 200."),
+        height: z.number().positive().optional().describe("rectangle/ellipse height in px. Defaults to 200."),
+        points: z.number().int().min(3).optional().describe("star/polygon point count. Defaults to 5."),
+        outerRadius: z.number().positive().optional().describe("star/polygon outer radius in px. Defaults to 100."),
+        innerRadius: z.number().positive().optional().describe("star inner radius in px. Defaults to 50."),
+        roundness: z.number().min(0).optional().describe("rectangle corner roundness in px."),
+        position: z.array(z.number().finite()).length(2).optional().describe("[x, y] layer centre. Defaults to the comp centre."),
+        fill: hexColor.nullable().optional().describe("Fill color (hex). Defaults to white; null for no fill."),
+        stroke: hexColor.optional().describe("Stroke color (hex). Omit for no stroke."),
+        strokeWidth: z.number().min(0).optional().describe("Stroke width in px (defaults to 4 when a stroke color is given)."),
+        name: z.string().min(1).optional(),
+      },
+    },
+    async (p) =>
+      run(
+        addShapeScript({
+          compId: p.compId,
+          kind: p.kind,
+          ...(p.width !== undefined ? { width: p.width } : {}),
+          ...(p.height !== undefined ? { height: p.height } : {}),
+          ...(p.points !== undefined ? { points: p.points } : {}),
+          ...(p.outerRadius !== undefined ? { outerRadius: p.outerRadius } : {}),
+          ...(p.innerRadius !== undefined ? { innerRadius: p.innerRadius } : {}),
+          ...(p.roundness !== undefined ? { roundness: p.roundness } : {}),
+          ...(p.position !== undefined ? { position: [p.position[0]!, p.position[1]!] } : {}),
+          ...(p.fill !== undefined ? { fill: p.fill } : {}),
+          ...(p.stroke !== undefined ? { stroke: p.stroke } : {}),
+          ...(p.strokeWidth !== undefined ? { strokeWidth: p.strokeWidth } : {}),
+          ...(p.name !== undefined ? { name: p.name } : {}),
+        }),
+      ),
+  );
+
+  server.registerTool(
+    "ae_add_mask",
+    {
+      title: "After Effects: add a mask to a layer",
+      description:
+        "Add a rectangle or ellipse mask to a layer, in that layer's coordinates. Bounds are left/top/right/bottom " +
+        "(default: the whole comp). mode is add (default), subtract, intersect, lighten, darken, difference, or none. " +
+        "feather and expansion are in pixels; opacity is 0–100.",
+      inputSchema: {
+        compId,
+        layerIndex,
+        kind: z.enum(["rectangle", "ellipse"]),
+        left: z.number().finite().optional(),
+        top: z.number().finite().optional(),
+        right: z.number().finite().optional(),
+        bottom: z.number().finite().optional(),
+        mode: z.enum(["add", "subtract", "intersect", "lighten", "darken", "difference", "none"]).optional(),
+        feather: z.number().min(0).optional(),
+        opacity: z.number().min(0).max(100).optional(),
+        expansion: z.number().finite().optional(),
+        name: z.string().min(1).optional(),
+      },
+    },
+    async ({ compId: id, layerIndex: li, ...p }) =>
+      run(
+        addMaskScript({
+          compId: id,
+          layerIndex: li,
+          kind: p.kind,
+          ...(p.left !== undefined ? { left: p.left } : {}),
+          ...(p.top !== undefined ? { top: p.top } : {}),
+          ...(p.right !== undefined ? { right: p.right } : {}),
+          ...(p.bottom !== undefined ? { bottom: p.bottom } : {}),
+          ...(p.mode !== undefined ? { mode: p.mode } : {}),
+          ...(p.feather !== undefined ? { feather: p.feather } : {}),
+          ...(p.opacity !== undefined ? { opacity: p.opacity } : {}),
+          ...(p.expansion !== undefined ? { expansion: p.expansion } : {}),
+          ...(p.name !== undefined ? { name: p.name } : {}),
+        }),
+      ),
   );
 
   server.registerTool(

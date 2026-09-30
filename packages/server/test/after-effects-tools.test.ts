@@ -9,6 +9,8 @@ import {
   addLayerScript,
   addLayerStyleScript,
   addMarkerScript,
+  addMaskScript,
+  addShapeScript,
   addToEssentialGraphicsScript,
   exportMogrtScript,
   applyEffectScript,
@@ -47,6 +49,10 @@ const SAMPLES: Record<string, string> = {
   saveInPlace: saveProjectScript(undefined),
   saveAs: saveProjectScript("C:/p/b.aep"),
   import: importFootageScript("C:/p/clip.mov"),
+  shapeRect: addShapeScript({ compId: 12, kind: "rectangle", width: 300, height: 200, fill: "#ff5522", stroke: "#000000", strokeWidth: 8 }),
+  shapeStar: addShapeScript({ compId: 12, kind: "star", points: 6, outerRadius: 120, innerRadius: 60, fill: null }),
+  maskRect: addMaskScript({ compId: 12, layerIndex: 1, kind: "rectangle", left: 100, top: 50, right: 400, bottom: 300, feather: 20 }),
+  maskEllipse: addMaskScript({ compId: 12, layerIndex: 1, kind: "ellipse", mode: "subtract" }),
   importPsdComp: importAsCompScript("C:/p/art.psd", false),
   importAiCropped: importAsCompScript("C:/p/logo.ai", true),
   createComp: createCompScript({ name: "Main", width: 1920, height: 1080, frameRate: 30, duration: 10, pixelAspect: 1 }),
@@ -183,6 +189,27 @@ describe("After Effects tool scripts", () => {
     // Seen live: the command did not take when other scripts were queued behind it.
     expect(SAMPLES["addStyle"]).toContain("for (var attempt = 0; attempt < 3 && !added; attempt++)");
     expect(SAMPLES["addStyle"]).toContain("$.sleep(150)");
+  });
+
+  it("builds shape layers through the vector group tree", () => {
+    expect(SAMPLES["shapeRect"]).toContain('addShape()');
+    expect(SAMPLES["shapeRect"]).toContain('l.property("ADBE Root Vectors Group")');
+    expect(SAMPLES["shapeRect"]).toContain('addProperty("ADBE Vector Shape - Rect")');
+    expect(SAMPLES["shapeRect"]).toContain('addProperty("ADBE Vector Graphic - Fill")');
+    expect(SAMPLES["shapeRect"]).toContain('addProperty("ADBE Vector Graphic - Stroke")');
+    // star uses the polystar shape; a null fill adds no fill.
+    expect(SAMPLES["shapeStar"]).toContain('addProperty("ADBE Vector Shape - Star")');
+    expect(SAMPLES["shapeStar"]).not.toContain("ADBE Vector Graphic - Fill");
+  });
+
+  it("adds masks as closed Shapes with the right mode", () => {
+    expect(SAMPLES["maskRect"]).toContain('parade.addProperty("ADBE Mask Atom")');
+    expect(SAMPLES["maskRect"]).toContain("s.vertices = [[L, T], [R, T], [R, B], [L, B]]");
+    expect(SAMPLES["maskRect"]).toContain("mask.maskMode = MaskMode.ADD");
+    // ellipse gets bezier handles; subtract maps to the SUBTRACT enum; default bounds are the comp.
+    expect(SAMPLES["maskEllipse"]).toContain("0.5522847498");
+    expect(SAMPLES["maskEllipse"]).toContain("mask.maskMode = MaskMode.SUBTRACT");
+    expect(SAMPLES["maskEllipse"]).toContain("R = c.width");
   });
 
   it("imports PSD/AI as a composition with the right import kind", () => {

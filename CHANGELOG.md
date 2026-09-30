@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- After Effects `ae_add_shape`: create a shape layer with a parametric rectangle, ellipse,
+  star, or polygon plus an optional fill and stroke (hex colors, stroke width, corner
+  roundness, star/polygon points and radii). Verified live.
+- After Effects `ae_add_mask`: add a rectangle or ellipse mask to a layer in the layer's
+  coordinates, with mode (add/subtract/intersect/lighten/darken/difference/none), feather,
+  opacity, and expansion; ellipse masks use proper bezier handles. Verified live. (Solids
+  and text layers were already available via `ae_add_layer`.)
+
 ## v0.3.1 — 2026-09-27
 
 - **Codex CLI and Gemini CLI are first-class clients.** The installer registers the

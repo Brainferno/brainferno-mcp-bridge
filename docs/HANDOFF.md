@@ -91,12 +91,13 @@ Install it somewhere isolated and make it talk, rather than trusting the workflo
 then spawn `/tmp/t/bin/brainferno-mcp-bridge` with `HOME` pointed at a scratch directory (a
 fresh-machine simulation — no user config, no remote-mode port to collide with the running
 server) and speak JSON-RPC over stdio: `initialize`, `notifications/initialized`, `tools/list`.
-Expect 125 tools as of v0.3.1 (124 in v0.3.0, before `ae_set_comp_props`; 113 in v0.2.2, before
-the mogrt, layer-style, Essential Graphics, and PSD/AI-import tools) and the right `serverInfo`
-version. Two false alarms this catches: without an isolated `HOME`, the test instance reads the
-real `config.json`, tries to bind the shared-mode port 7898 that the live server already holds,
-and dies with `EADDRINUSE`; and it will clobber `~/.brainferno-mcp-bridge/bridge.json`, pointing
-the panels at a dead port on their next reload.
+Expect 127 tools (125 as of v0.3.1, before the `ae_add_shape`/`ae_add_mask` tools; 124 in
+v0.3.0, before `ae_set_comp_props`; 113 in v0.2.2, before the mogrt, layer-style, Essential
+Graphics, and PSD/AI-import tools) and the right `serverInfo` version. Two false alarms this
+catches: without an isolated `HOME`, the test instance reads the real `config.json`, tries to
+bind the shared-mode port 7898 that the live server already holds, and dies with `EADDRINUSE`;
+and it will clobber `~/.brainferno-mcp-bridge/bridge.json`, pointing the panels at a dead port
+on their next reload.
 
 **This is how the version-drift bug was found, and the lesson worth keeping:** the server had
 been telling every MCP client and every panel that it was `0.1.0` since the first release. The
