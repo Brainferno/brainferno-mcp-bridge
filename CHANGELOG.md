@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.2 — 2026-09-30
 
 - After Effects `ae_add_shape`: create a shape layer with a parametric rectangle, ellipse,
   star, or polygon plus an optional fill and stroke (hex colors, stroke width, corner
