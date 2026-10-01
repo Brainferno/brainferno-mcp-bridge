@@ -12,9 +12,10 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
   `v0.2.2` is the current release; npm packages `brainferno-mcp-bridge` and
   `@brainferno/mcp-bridge-protocol` published with trusted publishing — a `vX.Y.Z` tag
   publishes and creates the GitHub release by itself. See **Releasing** below.
-- Everything is verified live on **Windows 11** with the Adobe 2026 apps: Photoshop 18,
-  After Effects 24, Premiere Pro 28, Illustrator 7 (+ Adobe's 46 via `ai_beta_call`),
-  Audition 12, Media Encoder 6, audio/ffmpeg 9, pipelines 4, jobs 4.
+- Everything is verified live on **Windows 11** with the Adobe 2026 apps: Photoshop 21,
+  After Effects 34, Premiere Pro 29, Illustrator 7 (+ Adobe's 46 via `ai_beta_call`),
+  Audition 12, Media Encoder 6, audio/ffmpeg 9, pipelines 4, jobs 4. (The "Expect N tools"
+  line below and these per-app numbers are checked by `tool-counts.test.ts`.)
 - **macOS run on 2026-08-28** (macOS 26, Adobe 2026 apps, Node 26): panels, Illustrator via
   osascript, previews, ffmpeg all fine as written. Two real bugs fixed — the aerender path
   (`Folder.appPackage` is the `.app` itself on macOS) and Media Encoder (nested console bundle,

@@ -26,7 +26,7 @@ Driven entirely from Claude Code through the hub and the Brainferno MCP Bridge C
   text ended at the anchor. `ae_set_text` and text `ae_add_layer` now move the anchor point to
   the center of `sourceRectAtTime`, so `position` always means the visual center of the text.
 - Same restart discipline as Photoshop: after a rebuild, kill the server pid from
-  `~/.adobe-cc-mcp/bridge.json`, then `/mcp` reconnect. The CEP panel reconnects on its own.
+  `~/.brainferno-mcp-bridge/bridge.json`, then `/mcp` reconnect. The CEP panel reconnects on its own.
 - aerender reads the project **from disk**: `ae_render_comp` saves first, and needs a project
   that has been saved once (`ae_save_project` with a path).
 

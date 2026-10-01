@@ -16,7 +16,7 @@ software for use with those Adobe products; it is not made or endorsed by Adobe 
 comp, cuts the sequence, normalizes the audio, renders the file, and shows you previews along
 the way. Every action is one undo step in the app, so you can always step back.
 
-- **124 tools** across six applications, plus an ffmpeg audio lane that works with every
+- **127 tools** across six applications, plus an ffmpeg audio lane that works with every
   Adobe app closed.
 - **Cross-app pipelines**: one request runs Photoshop → After Effects → aerender → Premiere
   → ffmpeg → back onto the timeline, with progress and a clear report if a step fails.
@@ -85,7 +85,7 @@ text layers with font/size/color, properties, move, duplicate, delete), layer st
 remove), place an image as a smart object, fill, filters (Gaussian/motion/unsharp…),
 resize, crop.
 
-### After Effects — 33 tools
+### After Effects — 34 tools
 Project info and file, compositions and footage (list, create, import), import a layered
 PSD or AI file as a composition (one layer each, with PSD layer styles editable), layers of
 every kind (footage, solid, text, null, adjustment), shape layers (rectangle, ellipse, star,
@@ -343,9 +343,9 @@ The wire protocol is documented in [`docs/protocol.md`](docs/protocol.md).
 | --- | --- | --- |
 | `cc_connected_apps` | all | Each app's lane, panel, engine, and connection state |
 | `cc_job_status` · `cc_list_jobs` · `cc_job_wait` · `cc_job_cancel` | jobs | Background jobs; `wait` streams progress; long renders/exports take `wait:false` and return a jobId |
-| `ps_*` (18) | Photoshop | Documents (list/create/open/save/export/preview), layers (create/text/props/move/duplicate/delete), place image, fill, filters, resize, crop — [live run](docs/spikes/05-photoshop-tools-live.md) |
-| `ae_*` (24) | After Effects | Project/comps/footage, layers of every kind, keyframes + easing, expressions, effects + params, text, markers, frame preview, render queue, headless aerender — [live run](docs/spikes/06-aftereffects-tools-live.md) |
-| `pp_*` (28) | Premiere Pro | Project/sequences/items, get_sequence (tracks + clips), import, create sequence from media, insert/overwrite, ripple remove, move/trim/props, transitions, effects + keyframes, markers, frame preview, export presets, export in-app or to Media Encoder — [live run](docs/spikes/07-premiere-tools-live.md) |
+| `ps_*` (21) | Photoshop | Documents (list/create/open/save/export/preview), layers (create/text/props/move/duplicate/delete), layer styles, place image, fill, filters, resize, crop — [live run](docs/spikes/05-photoshop-tools-live.md) |
+| `ae_*` (34) | After Effects | Project/comps/footage, PSD/AI import as comp, layers of every kind, shapes and masks, keyframes + easing, expressions, effects + params, layer styles, text, markers, Essential Graphics, frame preview, render queue, headless aerender — [live run](docs/spikes/06-aftereffects-tools-live.md) |
+| `pp_*` (29) | Premiere Pro | Project/sequences/items, get_sequence (tracks + clips), import, create sequence from media, insert/overwrite, ripple remove, move/trim/props, transitions, effects + keyframes, markers, frame preview, export presets, export in-app or to Media Encoder — [live run](docs/spikes/07-premiere-tools-live.md) |
 | `ai_*` (7) | Illustrator | Documents, shapes, text, save, export artboard, preview (panel-less) |
 | `ai_beta_status` · `ai_beta_list_tools` · `ai_beta_call` | Illustrator (Adobe's MCP) | Pass-through to Adobe's 46 Illustrator tools — needs a key ([docs](docs/illustrator-beta.md), [sweep](docs/spikes/12-illustrator-beta-sweep.md)) |
 | `au_*` (12) | Audition | App/document state, 600+ menu commands, Favorites, markers, transport, open/save/export, API dump — [live run](docs/spikes/08-audition-tools-live.md) |

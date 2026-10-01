@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 
+import * as AE from "../src/tools/after-effects.js";
 import {
   AERENDER_INFO,
   aerenderExecutable,
   LIST_COMPOSITIONS,
   LIST_FOOTAGE,
   PROJECT_INFO,
+  queueRenderScript,
   addLayerScript,
   addLayerStyleScript,
   addMarkerScript,
@@ -93,16 +95,84 @@ const SAMPLES: Record<string, string> = {
   compDurationOnly: setCompPropsScript(12, { duration: 5 }),
   textOrigin: addLayerScript({ compId: 12, kind: "text", text: "Hi", anchor: "origin" }),
   setTextOrigin: setTextScript({ compId: 12, layerIndex: 1, justification: "left", anchor: "origin" }),
+  queueRender: queueRenderScript("Main", "C:/renders/main.mov", "H.264 - Match Render Settings"),
 };
+
+// The exported script builders whose output does NOT mutate the project (reads
+// and constants). Everything else must wrap its mutation in __undo(). A new
+// builder absent from both this set and SAMPLES fails the coverage test below,
+// so a new mutating tool can't silently skip the undo and ES3 checks.
+const READ_ONLY_BUILDERS = new Set([
+  "getCompScript",
+  "getLayerScript",
+  "getKeyframesScript",
+  "getLayerStylesScript",
+  "aerenderExecutable", // pure path helper, not a script
+]);
+const READ_ONLY_CONSTS = new Set(["LIST_COMPOSITIONS", "LIST_FOOTAGE", "PROJECT_INFO", "AERENDER_INFO"]);
+
+// Mutating builders that MUST wrap their change in __undo (one tool call = one Ctrl-Z).
+const MUST_UNDO = new Set([
+  "addLayerScript", "setLayerPropsScript", "duplicateLayerScript", "deleteLayerScript",
+  "setKeyframesScript", "removeKeyframesScript", "setExpressionScript", "applyEffectScript",
+  "setEffectParamScript", "setTextScript", "addMarkerScript", "importFootageScript",
+  "importAsCompScript", "createCompScript", "addLayerStyleScript", "setLayerStyleParamScript",
+  "removeLayerStyleScript", "addToEssentialGraphicsScript", "addShapeScript", "addMaskScript",
+  "setCompPropsScript", "queueRenderScript",
+]);
+// Builders that change state but legitimately do not use __undo: app-level ops
+// (open/save), a self-cleaning preview render, and the Essential Graphics export
+// (it saves the project and suppresses dialogs). Each is here on purpose.
+const NO_UNDO_OK = new Set(["openProjectScript", "saveProjectScript", "renderFrameScript", "exportMogrtScript"]);
 
 describe("After Effects tool scripts", () => {
   it("are all ES3-clean", () => {
     for (const [name, src] of Object.entries(SAMPLES)) expect(es3Violations(src), name).toEqual([]);
   });
 
-  it("wrap mutations in an undo group", () => {
-    for (const name of ["createComp", "solid", "props", "dup", "del", "keys", "expr", "effect", "effectParam", "setText", "marker", "import", "addStyle", "styleParam", "removeStyle"]) {
-      expect(SAMPLES[name], name).toContain("__undo(");
+  it("classifies every exported script builder (so a new mutating tool can't skip __undo)", () => {
+    const exported = [
+      ...Object.keys(AE).filter((k) => /Script$/.test(k) && typeof (AE as Record<string, unknown>)[k] === "function"),
+      ...READ_ONLY_CONSTS,
+    ];
+    const classified = new Set([...MUST_UNDO, ...NO_UNDO_OK, ...READ_ONLY_BUILDERS, ...READ_ONLY_CONSTS]);
+    const unclassified = exported.filter((k) => !classified.has(k));
+    expect(unclassified, "classify these in after-effects-tools.test.ts: MUST_UNDO / NO_UNDO_OK / READ_ONLY_BUILDERS").toEqual([]);
+    const exportedSet = new Set(exported);
+    const stale = [...classified].filter((k) => !exportedSet.has(k) && k !== "aerenderExecutable");
+    expect(stale, "these classifications name builders that no longer exist").toEqual([]);
+  });
+
+  it("every MUST_UNDO builder wraps its mutation in an undo group", () => {
+    // Call each mutating builder once with representative args and check the script.
+    const calls: Record<string, () => string> = {
+      addLayerScript: () => addLayerScript({ compId: 12, kind: "solid", color: "#112233" }),
+      setLayerPropsScript: () => setLayerPropsScript(12, 1, { opacity: 50 }),
+      duplicateLayerScript: () => duplicateLayerScript(12, 1, "c"),
+      deleteLayerScript: () => deleteLayerScript(12, 1),
+      setKeyframesScript: () => setKeyframesScript({ compId: 12, layerIndex: 1, property: "opacity", keys: [{ time: 0, value: 0 }] }),
+      removeKeyframesScript: () => removeKeyframesScript(12, 1, "opacity", undefined),
+      setExpressionScript: () => setExpressionScript(12, 1, "opacity", undefined, "0"),
+      applyEffectScript: () => applyEffectScript(12, 1, "ADBE Gaussian Blur 2"),
+      setEffectParamScript: () => setEffectParamScript(12, 1, 1, "Blurriness", 5),
+      setTextScript: () => setTextScript({ compId: 12, layerIndex: 1, text: "x" }),
+      addMarkerScript: () => addMarkerScript(12, 1, "m", undefined, undefined),
+      importFootageScript: () => importFootageScript("C:/x.mov"),
+      importAsCompScript: () => importAsCompScript("C:/x.psd", false),
+      createCompScript: () => createCompScript({ name: "C", width: 1920, height: 1080, frameRate: 30, duration: 10, pixelAspect: 1 }),
+      addLayerStyleScript: () => addLayerStyleScript(12, 1, "dropShadow"),
+      setLayerStyleParamScript: () => setLayerStyleParamScript(12, 1, "dropShadow", "Distance", 5),
+      removeLayerStyleScript: () => removeLayerStyleScript(12, 1, "dropShadow"),
+      addToEssentialGraphicsScript: () => addToEssentialGraphicsScript(12, 1, "position", undefined),
+      addShapeScript: () => addShapeScript({ compId: 12, kind: "rectangle" }),
+      addMaskScript: () => addMaskScript({ compId: 12, layerIndex: 1, kind: "rectangle" }),
+      setCompPropsScript: () => setCompPropsScript(12, { duration: 5 }),
+      queueRenderScript: () => queueRenderScript("Main", "C:/r.mov", undefined),
+    };
+    for (const name of MUST_UNDO) {
+      const build = calls[name];
+      expect(build, `add a sample call for ${name}`).toBeDefined();
+      expect(build!(), name).toContain("__undo(");
     }
   });
 

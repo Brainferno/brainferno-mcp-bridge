@@ -849,6 +849,22 @@ export function renderFrameScript(compId: number, time: number, path: string, ma
   return { path: ${lit(path)}, time: ${num(time)}, width: w, height: h, sourceWidth: c.width, sourceHeight: c.height };`);
 }
 
+/** Add a comp (by name) to the render queue with an output path and optional output-module template. */
+export function queueRenderScript(compName: string, outputPath: string, templateName: string | undefined): string {
+  return wrap(`
+  var target = null;
+  for (var i = 1; i <= app.project.numItems; i++) { var item = app.project.item(i); if (item instanceof CompItem && item.name === ${lit(compName)}) { target = item; break; } }
+  if (target === null) { throw new Error("No composition named " + ${lit(compName)}); }
+  return __undo("Queue render", function () {
+    var rqItem = app.project.renderQueue.items.add(target);
+    var output = rqItem.outputModule(1);
+    var template = ${opt(templateName)};
+    if (template !== null) { output.applyTemplate(template); }
+    output.file = new File(${lit(outputPath)});
+    return { queueIndex: app.project.renderQueue.numItems, compName: target.name, outputPath: output.file.fsName, status: "queued" };
+  });`);
+}
+
 export const AERENDER_INFO = wrap(`
   var proj = app.project;
   var appFolder = Folder.appPackage.fsName;
@@ -1548,21 +1564,7 @@ export function registerAfterEffectsTools(server: McpServer, bridge: AppBridge, 
         templateName: z.string().min(1).optional().describe("Output module template, e.g. 'H.264 - Match Render Settings'."),
       },
     },
-    async ({ compName, outputPath, templateName }) =>
-      run(
-        wrap(`
-  var target = null;
-  for (var i = 1; i <= app.project.numItems; i++) { var item = app.project.item(i); if (item instanceof CompItem && item.name === ${lit(compName)}) { target = item; break; } }
-  if (target === null) { throw new Error("No composition named " + ${lit(compName)}); }
-  return __undo("Queue render", function () {
-    var rqItem = app.project.renderQueue.items.add(target);
-    var output = rqItem.outputModule(1);
-    var template = ${opt(templateName)};
-    if (template !== null) { output.applyTemplate(template); }
-    output.file = new File(${lit(outputPath)});
-    return { queueIndex: app.project.renderQueue.numItems, compName: target.name, outputPath: output.file.fsName, status: "queued" };
-  });`),
-      ),
+    async ({ compName, outputPath, templateName }) => run(queueRenderScript(compName, outputPath, templateName)),
   );
 
   server.registerTool(

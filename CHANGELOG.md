@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Doc-drift guard (X-03): `tool-counts.test.ts` counts the live tool registry under the
+  default config and fails, printing the right number, when a tool count in `README.md` or
+  `docs/HANDOFF.md` disagrees. Fixed the stale counts it caught (After Effects 33 → 34, total
+  124 → 127, and the per-prefix table), plus a stale env-var name and handshake path in the
+  spike docs and a done item in `BUILD_PLAN.md`.
+- After Effects test coverage (X-03): every exported script builder is now classified
+  (read-only / undo-wrapped / app-level), so a new mutating tool can't silently skip the
+  `__undo` and ES3 checks; `ae_queue_render` moved from an inline script to the exported
+  `queueRenderScript` builder so it joins those checks.
+
 ## v0.3.2 — 2026-09-30
 
 - After Effects `ae_add_shape`: create a shape layer with a parametric rectangle, ellipse,

@@ -27,4 +27,4 @@ Driven entirely from Claude Code through the hub and the Brainferno MCP Bridge p
 list_documents · list_layers · create_document · open_document · save_document · export ·
 get_preview · create_layer · create_text_layer · set_layer_props · move_layer ·
 duplicate_layer · delete_layer · place_image · fill · apply_filter · resize_image · crop
-(+ `ps_batch_play` when `ADOBE_CC_MCP_ALLOW_RAW_SCRIPTS=1`).
+(+ `ps_batch_play` when `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS=1`).
