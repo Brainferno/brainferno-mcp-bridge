@@ -37,8 +37,10 @@ for `const `, `let `, `=>`, `` ` `` and `JSON.` — any hit is a rejection.
 - Every script is a single IIFE whose final expression is the JSON-serializable
   return value: `(function () { ... return value; })()` in ExtendScript,
   `(() => { ... })()` or `(async () => { ... })()` in UXP.
-- Interpolate dynamic values into scripts **only** through `JSON.stringify` on
-  the TypeScript side (see `renderQueueScript` in `packages/server/src/tools/after-effects.ts`).
+- Interpolate dynamic values into scripts **only** through `jsStringLiteral`
+  (`packages/server/src/bridge/script-escape.ts`), which also escapes the line- and
+  paragraph-separator characters U+2028 and U+2029 that a raw `JSON.stringify` would leave to
+  break the script. Use the `lit`/`opt`/`num` helpers built on it (see `after-effects.ts`).
   Never concatenate raw user input into script source.
 - Throw `Error` with an actionable message for expected failures ("No project is
   open") — the bridge surfaces it as a `ScriptError`.
@@ -63,7 +65,11 @@ server.registerTool(
 - Zod schemas: every parameter carries `.describe()`. Optional params state
   their default in the description.
 - Tools are registered unconditionally — a closed app returns the actionable
-  `AppNotConnectedError` message, it does not vanish from the tool list.
+  `AppNotConnectedError` message, it does not vanish from the tool list. The two
+  exceptions are deliberate gates: the raw-script escape hatches `cc_eval_script`
+  (After Effects, Illustrator, Audition) and `ps_batch_play` (Photoshop) register
+  only when `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS=1` is set in the server env, and the
+  Illustrator-delegate tools register only with a configured key.
 
 ## Annotations — set honestly
 
@@ -74,17 +80,19 @@ server.registerTool(
 
 ## Errors
 
-`guard()` converts typed bridge failures into readable tool errors. Error text
-always says what happened **and what to do next**. Planned error codes
-(`APP_NOT_CONNECTED`, `SCRIPT_ERROR`, `TIMEOUT`, `JOB_FAILED`, `PATH_DENIED`)
-prefix the message once the Phase A hardening lands.
+`guard()` converts typed bridge failures (`AppNotConnectedError`, `ScriptError`,
+timeouts) into readable tool errors. Error text always says what happened **and what
+to do next**; for expected failures `throw new Error("<what happened> — <what to do
+next>")`. (Earlier drafts planned a code prefix such as `SCRIPT_ERROR:`; that was not
+adopted — the actionable message is the contract.)
 
 ## Timeouts
 
-The default eval timeout comes from config. Tools whose operation is known-slow
-(exports, renders, big imports) pass an explicit `timeoutMs` via `EvalOptions`;
-anything longer than ~2 minutes must become a job (Phase A step 3) instead of a
-long-blocking call.
+Pass a `timeoutClass` (`"fast"`, `"slow"`, `"render"`) in `EvalOptions`; the default
+comes from config. Anything that can run longer than ~2 minutes (renders, big exports)
+becomes a job through `runOrQueue` (`packages/server/src/tools/jobs.ts`) with a `wait`
+parameter — `wait: false` returns a jobId at once and the client polls it with
+`cc_job_wait`.
 
 ## Process rules
 
@@ -99,6 +107,10 @@ long-blocking call.
   and a round-trip test where behavior warrants it.
 - Panels carry no version of their own: `npm run panels:stamp` writes the server package's
   version into the manifests and `PANEL_VERSION` literals, and the suite fails if they drift.
+- Tool counts in `README.md` and `docs/HANDOFF.md` are enforced by
+  `packages/server/test/tool-counts.test.ts` — do not hand-edit a count; the test prints the
+  right number. The per-app test pattern (the `SAMPLES` map, the ES3 and `__undo` coverage
+  checks) is written up in `docs/feature-requests/00_PREAMBLE.md`.
 
 ## License of contributions
 
