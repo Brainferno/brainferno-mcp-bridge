@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.3 — 2026-10-01
 
 - Doc-drift guard (X-03): `tool-counts.test.ts` counts the live tool registry under the
   default config and fails, printing the right number, when a tool count in `README.md` or
