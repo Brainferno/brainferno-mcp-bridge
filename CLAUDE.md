@@ -1,6 +1,6 @@
 # brainferno-mcp-bridge
 
-TypeScript MCP server (npm workspaces: `packages/server`, `protocol`, `panel-cep`, `panel-uxp`, `panel-uxp-ppro`) that lets an MCP client drive Adobe apps (Photoshop, After Effects, Premiere Pro, Illustrator, Audition, Media Encoder). Windows and macOS only.
+TypeScript MCP server (npm workspaces: `packages/server`, `protocol`, `bridge-client`, `panel-cep`, `panel-uxp`, `panel-uxp-ppro`) that lets an MCP client drive Adobe apps (Photoshop, After Effects, Premiere Pro, Illustrator, Audition, Media Encoder). Windows and macOS only.
 
 @CONTRIBUTING.md
 @docs/HANDOFF.md
