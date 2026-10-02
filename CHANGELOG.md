@@ -11,6 +11,20 @@
   (read-only / undo-wrapped / app-level), so a new mutating tool can't silently skip the
   `__undo` and ES3 checks; `ae_queue_render` moved from an inline script to the exported
   `queueRenderScript` builder so it joins those checks.
+- Repo guide (G1): added `CLAUDE.md` — a short front-door note (commands, non-negotiables,
+  where the spikes/quirks/feature-requests live) that imports `CONTRIBUTING.md` and
+  `docs/HANDOFF.md`. Added the `docs/feature-requests/` pack (one prompt file per feature,
+  starting from `00_PREAMBLE.md`).
+- `CONTRIBUTING.md` brought in line with the code (G2): script values go through
+  `jsStringLiteral` (with the U+2028/U+2029 note), the actual-message error contract (no
+  planned code prefix), `timeoutClass` + `runOrQueue`/`cc_job_wait` for long work, the two
+  deliberate tool gates (raw-script escape hatches, Illustrator delegate), and a note that
+  `tool-counts.test.ts` enforces the counts.
+- Durable quirks moved into the repo (G4): five notes under `docs/quirks/` — AE layer styles,
+  AE mogrt export, AE PSD/AI import, AE shapes/masks, and panel packaging — so every clone
+  carries the hard-won gotchas instead of them living only in one machine's memory.
+- `CLAUDE.md` accuracy (G8): the workspace list was missing the `bridge-client` package; added
+  it (found via the `claude-md-improver` audit).
 
 ## v0.3.2 — 2026-09-30
 
