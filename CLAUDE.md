@@ -19,7 +19,7 @@ TypeScript MCP server (npm workspaces: `packages/server`, `protocol`, `panel-cep
 - Never `console.log` — stdout is the MCP wire; use `log` from `src/logging.ts`
 - Tools register unconditionally; a closed app returns an actionable error, never a guess
 - zod params each get `.describe()`; set `readOnlyHint`/`destructiveHint` honestly; pass `timeoutClass`
-- Before editing an app's tools, read its spike in `docs/spikes/`
+- Before editing an app's tools, read its spike in `docs/spikes/` and any note in `docs/quirks/`
 - Never hand-type tool counts or versions in docs — `tool-counts.test.ts` enforces them
 
 ## Feature requests
