@@ -20,16 +20,22 @@ Copy-Item -Recurse "C:\Users\Vince Parker\Documents\brainferno-mcp-handoff" "C:\
 ## Build order
 `X-03` → `X-01` → `AE-16` → `AE-01` → `AE-03` → `AE-02` → `AE-04` → `AE-05` → `AE-06` → `AE-07` → `X-02` → P2 After Effects → P3 → the other apps.
 
-## Contents (39 files)
+Then, **once an app's base features above have shipped**, run that app's deep-dive pass
+(`PS-20`, `PP-20`, `AI-20`, `AU-20`): map the app's full scripting surface, find the gaps, and
+brainstorm new tools for better production, art, video, and audio. Each deep dive emits a gap
+matrix plus new numbered prompt files (`PS-21`+, `PP-21`+, `AI-21`+, `AU-21`+). After Effects is
+excluded — its gaps are already enumerated as AE-01…AE-16.
+
+## Contents (43 files)
 ```
 README.md                       this file
 00_GLOBAL_PLAN.md               MD-file system + global fixes
 00_PREAMBLE.md                  paste-first prompt: repo rules, test pattern, definition of done
-after-effects/   AE-01 … AE-16   (verified)
-photoshop/       PS-01 … PS-04   (unverified)
-premiere/        PP-01 … PP-05   (unverified)
-illustrator/     AI-01 … AI-04   (unverified)
-audition/        AU-01 … AU-04   (unverified)
+after-effects/   AE-01 … AE-16            (verified)
+photoshop/       PS-01 … PS-04, PS-20     (unverified)
+premiere/        PP-01 … PP-05, PP-20     (unverified)
+illustrator/     AI-01 … AI-04, AI-20     (unverified)
+audition/        AU-01 … AU-04, AU-20     (unverified)
 cross-app/       X-01 … X-03
 ```
 
@@ -71,6 +77,10 @@ cross-app/       X-01 … X-03
 | AU-02 | Effects with parameters, favorites | P2 | unverified |
 | AU-03 | Selection and markers | P2 | unverified |
 | AU-04 | Export parameters, AME queueing | P3 | unverified |
+| PS-20 | Photoshop deep dive + future-tools brainstorm (runs after PS-01…04) | P3 | unverified |
+| PP-20 | Premiere deep dive + future-tools brainstorm (runs after PP-01…05) | P3 | unverified |
+| AI-20 | Illustrator deep dive + future-tools brainstorm (runs after AI-01…04) | P3 | unverified |
+| AU-20 | Audition deep dive + future-tools brainstorm (runs after AU-01…04) | P3 | unverified |
 
 ## Evidence legend
 - **verified** — the gap was hit against After Effects 26.5 with server v0.3.2, and the claims were checked against `packages/server/src/tools/after-effects.ts` (or the named source files for cross-app prompts).
