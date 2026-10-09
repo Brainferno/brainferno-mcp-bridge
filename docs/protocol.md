@@ -75,7 +75,10 @@ work there. ExtendScript-engine panels (After Effects, Audition) implement the g
 `eval` command (`params: {script}`) via `evalScript` — a host API, not JS `eval`. Hot-path
 commands are promoted to named panel functions over time. A panel advertises the command
 names it implements in `hello.capabilities`; the server turns an unimplemented command into
-a structured "update the panel" error rather than a hang.
+a structured "update the panel" error rather than a hang. (Since AE-16 the text says so too:
+a panel's `UNKNOWN_COMMAND` reads "The <app> panel does not support this command (…) — it is
+older than this server; update the brainferno-mcp-bridge panel (or reload it after updating),
+then retry." The wire code travels on `ScriptError.details.code`.)
 
 ## Hub rules
 

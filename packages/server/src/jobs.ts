@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
+import { jobErrorMessage } from "./tools/result.js";
+
 /**
  * In-memory job registry for anything that runs longer than a tool call
  * should block: aerender, Premiere exports, and the cross-app pipelines.
@@ -225,7 +227,8 @@ export class JobRegistry {
           job.status = "cancelled";
           break;
         }
-        const message = e instanceof Error ? e.message : String(e);
+        // An enriched After Effects ScriptError (AE-16) or an UNKNOWN_COMMAND keeps its full text; anything else its message.
+        const message = jobErrorMessage(e);
         step.status = "failed";
         step.error = message;
         job.status = "failed";

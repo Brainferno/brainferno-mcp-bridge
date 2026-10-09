@@ -9,7 +9,7 @@ import { BridgeServer, type BridgeServerOptions } from "../src/bridge/socket.js"
 import { PROTOCOL_VERSION } from "@brainferno/mcp-bridge-protocol";
 import { pidAlive, readHandshake, removeHandshake, writeHandshake } from "../src/bridge/handshake.js";
 import { jsStringLiteral } from "../src/bridge/script-escape.js";
-import { AppDisconnectedError } from "../src/bridge/types.js";
+import { AppDisconnectedError, ScriptError } from "../src/bridge/types.js";
 import type { AppId } from "@brainferno/mcp-bridge-protocol";
 
 let bridge: BridgeServer | undefined;
@@ -238,6 +238,27 @@ describe("BridgeServer command routing", () => {
     await expect(call).rejects.toBeInstanceOf(AppDisconnectedError);
   });
 
+  it("keeps the panel's wire error code on the ScriptError, and the message and line as sent (AE-16)", async () => {
+    const b = makeBridge();
+    await b.ready();
+    const panel = await open(b.port());
+    const captured = captureCmd(panel);
+    hello(panel, "after_effects", "s3cret");
+    await new Promise((r) => setTimeout(r, 20));
+
+    const call = b.bridgeFor("after_effects").evaluate("1");
+    const { id } = await captured;
+    panel.send(JSON.stringify({ type: "result", id, ok: false, error: { code: "HOST_ERROR", message: "boom", line: 7 } }));
+    const error = await call.catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ScriptError);
+    const se = error as ScriptError;
+    expect(se.message).toBe("boom");
+    expect(se.scriptLine).toBe(7);
+    expect(se.appId).toBe("after_effects");
+    expect(se.details).toEqual({ code: "HOST_ERROR" });
+    panel.close();
+  });
+
   it("reports app-not-connected immediately, without waiting for a timeout", async () => {
     const b = makeBridge({ defaultTimeoutMs: 60_000 });
     await b.ready();
@@ -293,6 +314,66 @@ describe("BridgeServer panelInfo", () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(b.panelInfo("after_effects")?.panelVersion).toBe("0.3.4");
     second.close();
+  });
+});
+
+describe("BridgeServer connection epoch (AE-16)", () => {
+  async function helloAndWelcome(port: number, appId: AppId): Promise<WebSocket> {
+    const ws = await open(port);
+    const welcomed = new Promise<void>((resolve) =>
+      ws.on("message", (raw) => {
+        if (JSON.parse(raw.toString()).type === "welcome") resolve();
+      }),
+    );
+    hello(ws, appId, "s3cret");
+    await welcomed;
+    return ws;
+  }
+
+  it("counts panel hellos per app: 0 before, 1 after the first, 2 after a replacing panel", async () => {
+    const b = makeBridge();
+    await b.ready();
+    const ae = b.bridgeFor("after_effects");
+    expect(ae.connectionEpoch!()).toBe(0);
+
+    const first = await helloAndWelcome(b.port(), "after_effects");
+    expect(ae.connectionEpoch!()).toBe(1);
+    // A second bridge object reads the same counter (bridgeFor builds a new object each call).
+    expect(b.bridgeFor("after_effects").connectionEpoch!()).toBe(1);
+    expect(b.bridgeFor("photoshop").connectionEpoch!()).toBe(0);
+
+    // A second hello on an authenticated socket is ignored, so it does not count.
+    hello(first, "after_effects", "s3cret");
+    await new Promise((r) => setTimeout(r, 30));
+    expect(ae.connectionEpoch!()).toBe(1);
+
+    const replaced = awaitClose(first);
+    const second = await helloAndWelcome(b.port(), "after_effects");
+    expect(await replaced).toBe(4004);
+    expect(ae.connectionEpoch!()).toBe(2);
+    second.close();
+  });
+});
+
+describe("BridgeServer redactionSecrets (AE-16)", () => {
+  it("is empty in insecure mode", async () => {
+    const b = makeBridge({ insecure: true, token: "" });
+    await b.ready();
+    expect(b.redactionSecrets()).toEqual([]);
+  });
+
+  it("is the explicit token when one is configured", async () => {
+    const b = makeBridge({ token: "an-explicit-token" });
+    await b.ready();
+    expect(b.redactionSecrets()).toEqual(["an-explicit-token"]);
+  });
+
+  it("is the generated token when none is configured", async () => {
+    const b = makeBridge({ token: "" });
+    await b.ready();
+    const s = b.redactionSecrets();
+    expect(s).toHaveLength(1);
+    expect(s[0]).toMatch(/^[0-9a-f]{64}$/);
   });
 });
 

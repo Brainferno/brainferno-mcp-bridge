@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-One run-script contract and a gate clients can see (X-01).
+One run-script contract and a gate clients can see (X-01); After Effects errors that say where and why (AE-16).
 
 **Breaking**
 
@@ -72,6 +72,34 @@ One run-script contract and a gate clients can see (X-01).
   line; see Fixed). When the gate is open the server writes one
   `AUDIT raw scripts ENABLED for …` line at startup; the "raw-script tool is disabled" info
   lines are gone.
+- After Effects tool errors (AE-16) are one paragraph naming the tool and its arguments, where
+  it failed (`at body line N (script line M)` with the failing line and its neighbours,
+  `in helper __x`, or `outside this tool's own code` for an error the panel hit while
+  converting the result) and what to do next; the old `(line N)` was a line of the generated
+  script. Echoed arguments are cut (80 characters per string, 5 items per array, 300 overall)
+  and never show the server's keys or tokens. No error-code prefix. Other apps' script errors
+  read exactly as before.
+- After Effects lookups explain themselves (AE-16): a bad `compId` lists the compositions (or
+  says how to make one); an out-of-range `layerIndex` lists the range and each layer's name and
+  kind; a property path that does not resolve names the layer and its kind, the resolved part,
+  the failing segment and the child names in the vocabulary the path used (match names or
+  display names; shape groups, masks, effects and text animators by name), or says the group
+  exists only on another kind of layer, or that it is empty and which tool fills it;
+  `ae_set_effect_param` lists the layer's effects or the effect's parameters; `ae_set_text`,
+  `ae_add_mask` and the layer-style tools name the layer and kind. Lists are cut by length so
+  the advice at the end is never lost.
+- "Did you mean" (AE-16): `ae_apply_effect` suggests up to 3 installed effects
+  (`ADBE Gausian Blur 2` → `ADBE Gaussian Blur 2`), reading the installed list once per session
+  on the first miss and again after the panel reconnects (a filtered read when the full list is
+  slow); a name that differs from an installed one only in case gets that exact match name, and
+  an installed effect After Effects would not add to the layer gets a note instead of guesses.
+  Property, effect and parameter misses suggest from the names they list.
+- After Effects scripts are sent as pure ASCII (AE-16): non-ASCII characters travel as `\uXXXX`
+  escapes; the result is the same text.
+- All apps (AE-16): a panel older than the server (`UNKNOWN_COMMAND`) now says to update or
+  reload the panel instead of "Script failed"; a panel that disconnects mid-call says the call
+  may have partly run and how to reconnect, instead of "Unexpected failure" (and is logged at
+  `warn`, no longer as an unhandled error).
 
 **Added**
 
@@ -103,6 +131,14 @@ One run-script contract and a gate clients can see (X-01).
   log line, so a script containing line breaks could add lines of its own to the server log.
   The excerpt (now at `debug`) is escaped onto one line, so a script cannot forge a log line
   such as an `AUDIT` record.
+- After Effects (AE-16): a missing `compId` surfaced "internal verification failure, sorry!
+  {Item Not Found}"; so did `ae_add_layer` with `kind: "footage"` and an unknown `itemId`,
+  inside an undo group. Both now say what to pass, and the footage item is looked up before
+  anything changes. `ae_set_layer_props` with an out-of-range `parentIndex` applied every
+  other change before failing; the parent is now checked first. `ae_apply_effect` and
+  `ae_set_effect_param` on a camera or light failed with a null error. Job and pipeline errors
+  from After Effects scripts kept only the bare host message. `ae_apply_effect`'s `matchName`
+  had no description.
 
 **Docs**
 
@@ -124,6 +160,14 @@ One run-script contract and a gate clients can see (X-01).
   script builder classified as `MUST_UNDO`, `NO_UNDO_OK` or `READ_ONLY_BUILDERS`;
   `es3Violations` in the new `test/es3.ts`) and drops its stale notes (CONTRIBUTING's
   `jsStringLiteral` text, tool counts and the `ae_queue_render` gap before X-03).
+- AE-16: the AE-16 prompt corrections (no error-code prefix, no font promise, the fake-panel
+  frame with `code: "HOST_ERROR"`, stale line cites; status in review), `IMPLEMENTATION_PLAN.md`
+  superseded notes on error codes, `CONTRIBUTING.md` Errors (`ScriptError.details`,
+  `scriptErrorText`, the disconnect text), AE-03 / AE-04 / AE-14 / AE-01 / X-01 notes,
+  `00_PREAMBLE.md` (the shared-core list gains `tools/raw-script.ts`; After Effects tools call
+  `evaluateAe` and register through `withToolContext`; the error-test harness), the README
+  (what a tool error says), `docs/protocol.md`, and spike 06 (how error lines are read; the
+  live probes still pending).
 
 ## v0.3.3 — 2026-10-01
 

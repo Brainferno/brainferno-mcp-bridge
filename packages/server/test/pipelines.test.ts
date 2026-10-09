@@ -6,8 +6,9 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import type { AppBridge, JsonValue } from "../src/bridge/types.js";
+import { ScriptError, type AppBridge, type JsonValue } from "../src/bridge/types.js";
 import { JobRegistry } from "../src/jobs.js";
+import { AE_PRELUDE_LINES } from "../src/tools/after-effects.js";
 import { registerJobTools } from "../src/tools/jobs.js";
 import { registerPipelineTools } from "../src/tools/pipelines.js";
 
@@ -36,16 +37,20 @@ describe("pipelines compose the single-app commands as one job", () => {
   let close: () => Promise<void>;
   let calls: Call[];
   let aeFails: boolean;
+  let aeScriptFails: boolean;
   let jobs: JobRegistry;
 
   beforeEach(async () => {
     calls = [];
     aeFails = false;
+    aeScriptFails = false;
     jobs = new JobRegistry({ workRoot: join(tmpdir(), `acm-pipe-${process.pid}`) });
     const server = new McpServer({ name: "t", version: "0" });
     const photoshop = fakeBridge("photoshop", calls, (c): JsonValue => (c.name === "ps.export" ? { path: (c.params as { path: string }).path, format: "png" } : { ok: true }));
     const afterEffects = fakeBridge("after_effects", calls, (c): JsonValue => {
       if (aeFails) throw new Error("AE said no");
+      // The host's report for the import's `if (!f.exists)` line (body line 2).
+      if (aeScriptFails) throw new ScriptError("after_effects", "No file at X", AE_PRELUDE_LINES + 3, { code: "HOST_ERROR" });
       return c.script?.includes("importFile") ? { id: 42, name: "photoshop-export.png" } : { index: 1, name: "layer" };
     });
     const premiere = fakeBridge("premiere", calls, () => ({ ok: true }));
@@ -98,6 +103,17 @@ describe("pipelines compose the single-app commands as one job", () => {
     const view = JSON.parse(text(r)) as { status: string; error: { step: string; recoveryTool: string; completedSteps: string[]; message: string } };
     expect(view.status).toBe("failed");
     expect(view.error).toMatchObject({ step: "Import into After Effects", recoveryTool: "ae_import_footage", completedSteps: ["Export from Photoshop"], message: "AE said no" });
+  });
+
+  it("an After Effects script failure in a step reads where it failed, with no tool echo (AE-16)", async () => {
+    aeScriptFails = true;
+    const r = await client.callTool({ name: "pipeline_ps_to_ae", arguments: { compId: 1 } });
+    expect(r.isError).toBe(true);
+    const view = JSON.parse(text(r)) as { error: { step: string; message: string } };
+    expect(view.error.step).toBe("Import into After Effects");
+    expect(view.error.message).toMatch(/^Script failed in After Effects at body line 2 \(script line \d+\): No file at X — /);
+    expect(view.error.message).toContain(">>> 2: if (!f.exists)");
+    expect(view.error.message).not.toContain("(pipeline_");
   });
 
   it("wait:false returns a jobId that cc_job_wait resolves", async () => {

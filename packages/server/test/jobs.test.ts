@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { ScriptError } from "../src/bridge/types.js";
 import { JobRegistry, jobView } from "../src/jobs.js";
 
 const registry = () => new JobRegistry({ workRoot: join(tmpdir(), `acm-jobs-${process.pid}`) });
@@ -42,6 +43,18 @@ describe("job registry", () => {
     expect(j.status).toBe("failed");
     expect(j.error).toEqual({ step: "boom", message: "nope", recoveryTool: "fix_it", completedSteps: ["ok"] });
     expect(j.steps.map((s) => s.status)).toEqual(["succeeded", "failed", "skipped"]);
+  });
+
+  it("records an enriched After Effects script failure as its full text, and other apps' as before (AE-16)", async () => {
+    const jobs = registry();
+    const enriched = new ScriptError("after_effects", "No file at C:\\x.png", 350, { where: "body", bodyLine: 2, excerpt: [">>> 2: if (!f.exists) { x(); }"], next: "pass a real path" });
+    const a = await jobs.start("t", [{ name: "ae", recoveryTool: "ae_import_footage", run: async () => Promise.reject(enriched) }]).done;
+    const text = "Script failed in After Effects at body line 2 (script line 350): No file at C:\\x.png \u2014 pass a real path. Code: >>> 2: if (!f.exists) { x(); }";
+    expect(a.error?.message).toBe(text);
+    expect(a.steps[0]?.error).toBe(text);
+
+    const b = await jobs.start("t", [{ name: "pp", run: async () => Promise.reject(new ScriptError("premiere", "x", 3, { code: "HOST_ERROR" })) }]).done;
+    expect(b.error?.message).toBe("x");
   });
 
   it("cancels between steps and aborts a running step through the signal", async () => {

@@ -19,12 +19,12 @@ You are working in the `brainferno-mcp-bridge` repo: a TypeScript MCP server for
 - **One IIFE per script**; its final expression is the JSON-serializable result. Helper functions go *inside* it.
 - **Mutations are wrapped in `__undo("Name", fn)`** so one tool call is one Ctrl-Z.
 - **Dynamic values go into scripts only through `jsStringLiteral`** (`packages/server/src/bridge/script-escape.ts`). It also escapes U+2028 and U+2029, which a raw `JSON.stringify` would leave in place (CONTRIBUTING says the same since `G2`). Use the `lit`/`opt`/`num` helpers built on it. Never concatenate raw input into script source.
-- **zod raw shapes**: every parameter has `.describe()`, and optional ones state their default. Reuse the shared schemas (`compId`, `layerIndex`, near `after-effects.ts:958-959`).
+- **zod raw shapes**: every parameter has `.describe()`, and optional ones state their default. Reuse the shared schemas (`compId`, `layerIndex`, declared just above `registerAfterEffectsTools` in `after-effects.ts`).
 - **Annotations, set honestly**: `readOnlyHint` on anything that cannot change host state; `destructiveHint` on delete / overwrite / save / flatten / raw-script tools; `idempotentHint` only when a repeat call is a no-op.
-- **Errors**: expected failures `throw new Error("<what happened> — <what to do next>")`. Host lookups by id or name fail loudly; never act on a guessed default.
+- **Errors**: expected failures `throw new Error("<what happened> — <what to do next>")`. Host lookups by id or name fail loudly; never act on a guessed default. In After Effects, reuse the helpers that already explain a miss (`__comp`, `__layer`, `__prop`, `__kids`) and cut any list you add by length as well as count (`__list`, `__BUDGET`), so the clause after the dash survives; resolve id and index lookups before `__undo` opens (AE-16 does for `parentIndex` and the footage `itemId`), so a bad one changes nothing.
 - **Timeouts**: pass `timeoutClass` (`"fast"`, `"slow"`, `"render"`). Anything over about 2 minutes becomes a job through `runOrQueue`.
 - **No `console.log`** — stdout is the MCP wire. Use `log` from `packages/server/src/logging.ts`.
-- **Shared core** (`packages/protocol/`, `packages/server/src/bridge/`, `server.ts`, `tools/result.ts`) changes go through the architect (the repo owner). If a prompt needs one, say so in the PR.
+- **Shared core** (`packages/protocol/`, `packages/server/src/bridge/`, `server.ts`, `tools/result.ts`, `tools/raw-script.ts`) changes go through the architect (the repo owner). If a prompt needs one, say so in the PR.
 - **Never** commit keys or tokens, copy code from Adobe sample repos, or paste Adobe-authored documentation. Use full Adobe product names in user-facing text.
 
 ## Tool pattern
@@ -36,7 +36,7 @@ server.registerTool(
   async ({ compId: id }) => run(getCompScript(id), { timeoutClass: "fast" }),
 );
 ```
-`run` is `guard(async () => jsonResult(await bridge.evaluate(script, opts)))`. Export every script builder (`xxxScript(...)`) built with `wrap`, `lit`, `opt`, `num` so tests can reach it.
+`run` is `guard(async () => jsonResult(await evaluateAe(bridge, script, opts)))`. Since AE-16 every After Effects evaluate site — `run`, a tool's own `guard`, a job or pipeline step — calls `evaluateAe`, not `bridge.evaluate`, so a script error comes back with where its line falls, the code around it, and the tool and its arguments. Register on the `server` that `registerAfterEffectsTools` builds with `withToolContext` (`tools/call-context.ts`); it records the tool name and arguments for those errors. Export every script builder (`xxxScript(...)`) built with `wrap`, `lit`, `opt`, `num` so tests can reach it.
 
 ## Test pattern (After Effects; copy it for other apps)
 File: `packages/server/test/after-effects-tools.test.ts`.
@@ -44,6 +44,7 @@ File: `packages/server/test/after-effects-tools.test.ts`.
 - **Classify every exported `xxxScript` builder** (an exported function whose name ends in `Script`) in one set: `MUST_UNDO` (it mutates, so its script must contain `__undo(`; also add a sample call for it in the "every MUST_UNDO builder wraps its mutation in an undo group" test, which fails without one), `NO_UNDO_OK` (it changes state but legitimately has no undo group, such as an app-level open/save, a self-cleaning preview or an export; say why in the comment), or `READ_ONLY_BUILDERS` (it only reads). Read-only script constants such as `LIST_COMPOSITIONS` go in `READ_ONLY_CONSTS`. The "classifies every exported script builder" test finds the builders by that name pattern and fails for one in no set, and for a `MUST_UNDO` / `NO_UNDO_OK` / `READ_ONLY_BUILDERS` entry that is not an exported builder. That is all it checks: it does not discover constants (keep `READ_ONLY_CONSTS` by hand), it does not check that a name is in only one set, and helpers not named `...Script` are not classified — `aerenderExecutable` sits in `READ_ONLY_BUILDERS` as the one hard-coded exemption from the stale-entry check.
 - The escaping test ("escape strings as JS literals") checks only a few samples: add a `toContain` assertion that your builder's string arguments come out escaped.
 - Add targeted `toContain` assertions for the new behavior.
+- Error text (After Effects): `packages/server/test/ae-host.ts` runs a generated script in a `node:vm` stand-in for After Effects that reports error lines the way After Effects does; `after-effects-errors.test.ts` shows how to assert a body line, a helper name and a message. Compute line numbers from `AE_PRELUDE_LINES`, `aeHelperRanges()` and the builder's output; never type them.
 - Add a not-connected-path test, and a round-trip test with the fake panel in `packages/server/test/server.test.ts` where behavior warrants it.
 
 ## Definition of done (every prompt)

@@ -35,6 +35,25 @@ Driven entirely from Claude Code through the hub and the Brainferno MCP Bridge C
   wrapper is inside `host.jsx`'s `__acmEval` — reports `e.line` counted within `src` itself. A
   SyntaxError reports the line too (line 1 for `var x = ;`). So a typed tool's error line is
   relative to the whole `wrap()`ped script, and AE-16's prelude subtraction is the right fix.
+- **How AE-16 reads a typed tool's error line** (`locateAeError` in `after-effects.ts`): the
+  first body statement is body line 1 (`AE_PRELUDE_LINES` is derived from the prelude, never
+  typed); a line inside a shared helper names the helper (`in helper __prop`), since After
+  Effects reports the helper's own line, not the call site; and a line that falls in neither
+  reads as "outside this tool's own code". The CEP panel's `host.jsx` serializes the result in
+  the same `try` as the `eval`, so an error it raises there — a host object in the result —
+  carries host.jsx's own line number (the observed "line 40" was `__acmJson`'s `var x = v[k];`).
+  Every After Effects script therefore starts with `HOST_LINE_GUARD` (100) blank lines, so a
+  host.jsx line can never land on a helper or a body line. After Effects scripts also travel as
+  pure ASCII since AE-16 (`\uXXXX` escapes; same text in the host).
+- **AE-16 live probes — pending.** The unit tests cover the vm stand-in; these need After
+  Effects 26.5 (spec §13) and decide two constants and three message claims before merge:
+  `app.effects` count, read time and which read mode ran (full or filtered); whether
+  `PropertyType.PROPERTY` exists and what `.property()` on a leaf does; whether the Effect
+  Parade, Mask Parade and Layer Styles groups are null on cameras and lights; `canAddProperty`
+  case sensitivity and display-name acceptance (`EFFECT_NAMES_CASE_SENSITIVE`,
+  `EFFECT_DISPLAY_NAMES_ACCEPTED`, and the "or display name" claim in `ae_apply_effect`); the
+  line After Effects reports for a native error inside an `else if` branch; the comp-width and
+  solid-width setters' range errors.
 - aerender reads the project **from disk**: `ae_render_comp` saves first, and needs a project
   that has been saved once (`ae_save_project` with a path).
 

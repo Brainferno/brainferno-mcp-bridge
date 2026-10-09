@@ -24,7 +24,7 @@ An MCP client building many layers, masks, and expressions had no way to run a m
    - Inputs: `script` (string, ES3, one IIFE or a statement list — state which in `.describe()`), `args` (object, optional, exposed to the script as `__args`), `undoGroupName` (default `"Brainferno script"`), `suppressDialogs` (boolean, default `true`), `timeoutMs` (optional; default from config).
    - Runs the caller's script through `rawScriptWrapper` inside `app.beginUndoGroup(undoGroupName)` / `app.endUndoGroup()` (end it in a `finally`), so one call is one Ctrl-Z — the part X-01 does not do.
    - Returns: the X-01 envelope `{ ok, error?, durationMs, value, logs, logsDropped? }` (`toEnvelope` / `envelopeResult`); `logs` collects `__log(msg)` calls.
-   - Errors: `{ message, line, bodyLine }` as the wrapper computes it; if `ae_run_script` adds code around the caller's text, make sure `bodyLine` still points into the caller's script (see `AE-16`). Dispatched failures go through `dispatchedFailure` (JSON envelope); not-dispatched ones stay plain text.
+   - Errors: `{ message, line, bodyLine }` as the wrapper computes it; if `ae_run_script` adds code around the caller's text, make sure `bodyLine` still points into the caller's script (see X-01's `rawScriptWrapper` / `toEnvelope`). If `ae_run_script` registers inside `registerAfterEffectsTools`, keep its name in `AE_NO_ARG_ECHO` there (AE-16 put it in already) so the error context never echoes the script text. Dispatched failures go through `dispatchedFailure` (JSON envelope); not-dispatched ones stay plain text.
    - Annotations: `destructiveHint: true`; `timeoutClass: "slow"`. Same gate as `cc_eval_script`.
    - Audit every call, run or refused, with `auditRawCall`.
 

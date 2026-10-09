@@ -4,9 +4,12 @@ import * as AE from "../src/tools/after-effects.js";
 import {
   AERENDER_INFO,
   aerenderExecutable,
+  filteredEffectsScript,
   LIST_COMPOSITIONS,
   LIST_FOOTAGE,
+  LIST_INSTALLED_EFFECTS,
   PROJECT_INFO,
+  wrapAe,
   queueRenderScript,
   addLayerScript,
   addLayerStyleScript,
@@ -96,6 +99,9 @@ const SAMPLES: Record<string, string> = {
   textOrigin: addLayerScript({ compId: 12, kind: "text", text: "Hi", anchor: "origin" }),
   setTextOrigin: setTextScript({ compId: 12, layerIndex: 1, justification: "left", anchor: "origin" }),
   queueRender: queueRenderScript("Main", "C:/renders/main.mov", "H.264 - Match Render Settings"),
+  listEffects: LIST_INSTALLED_EFFECTS,
+  filteredEffects: filteredEffectsScript("gausian blur", 3),
+  propsParentOnly: setLayerPropsScript(12, 2, { parentIndex: 1 }),
 };
 
 // Exported builders whose script only reads the project. The "classifies every
@@ -111,9 +117,10 @@ const READ_ONLY_BUILDERS = new Set([
   "getLayerScript",
   "getKeyframesScript",
   "getLayerStylesScript",
+  "filteredEffectsScript", // AE-16: the effect catalog's filtered read
   "aerenderExecutable", // pure path helper, not a script
 ]);
-const READ_ONLY_CONSTS = new Set(["LIST_COMPOSITIONS", "LIST_FOOTAGE", "PROJECT_INFO", "AERENDER_INFO"]);
+const READ_ONLY_CONSTS = new Set(["LIST_COMPOSITIONS", "LIST_FOOTAGE", "PROJECT_INFO", "AERENDER_INFO", "LIST_INSTALLED_EFFECTS"]);
 
 // Mutating builders that MUST wrap their change in __undo (one tool call = one Ctrl-Z).
 const MUST_UNDO = new Set([
@@ -190,8 +197,37 @@ describe("After Effects tool scripts", () => {
     expect(SAMPLES["keys"]).toContain('__prop(l, "position", null)');
     expect(SAMPLES["keysPath"]).toContain('["ADBE Effect Parade", "Gaussian Blur", "Blurriness"]');
     expect(SAMPLES["props"]).toContain('v = [100, 200]; if (v !== null) { t.property("ADBE Position").setValue(v); }');
-    expect(SAMPLES["props"]).toContain("l.parent = __layer(c, 1);");
+    // AE-16 (M9): the parent is resolved before the undo group, with the "Parent" role in its message,
+    // so an out-of-range parentIndex fails before anything changes (was: l.parent = __layer(c, 1); inside it).
+    expect(SAMPLES["props"]).toContain('var parentLayer = __layer(c, 1, "Parent");');
+    expect(SAMPLES["props"]).toContain("l.parent = parentLayer;");
+    expect(SAMPLES["props"]!.indexOf('__layer(c, 1, "Parent")')).toBeLessThan(SAMPLES["props"]!.indexOf('__undo("Set layer properties"'));
+    expect(SAMPLES["propsParentOnly"]).toContain('var parentLayer = __layer(c, 1, "Parent");');
     expect(SAMPLES["unparent"]).toContain("l.parent = null;");
+    expect(SAMPLES["unparent"]).not.toContain("parentLayer");
+  });
+
+  it("travels as pure ASCII, every script built on the one prelude (AE-16)", () => {
+    const suffix = "\n})()";
+    const prelude = wrapAe("").slice(0, -suffix.length);
+    for (const [name, src] of Object.entries(SAMPLES)) {
+      expect(/^[\x00-\x7f]*$/.test(src), name).toBe(true);
+      expect(src.startsWith(prelude), name).toBe(true);
+      expect(src.endsWith(suffix), name).toBe(true);
+    }
+  });
+
+  it("says which names exist when an effect, parameter or footage lookup fails (AE-16)", () => {
+    expect(SAMPLES["effect"]).toContain('throw new Error("Effect not available: " + "ADBE Gaussian Blur 2"');
+    expect(SAMPLES["effectParam"]).toContain("effects on this layer: ");
+    expect(SAMPLES["effectParam"]).toContain("parameters: ");
+    // The footage item is looked up (and a bad id reported) before the undo group opens.
+    const footage = SAMPLES["footage"]!;
+    expect(footage).toContain("app.project.itemByID(7)");
+    expect(footage.indexOf("app.project.itemByID(7)")).toBeLessThan(footage.indexOf('__undo("Add layer"'));
+    const body = (s: string) => s.slice(wrapAe("").length - "\n})()".length);
+    expect(body(SAMPLES["solid"]!)).not.toContain("itemByID");
+    expect(body(addLayerScript({ compId: 12, kind: "footage" }))).not.toContain("itemByID");
   });
 
   it("converts hex colors to 0–1 RGB arrays", () => {

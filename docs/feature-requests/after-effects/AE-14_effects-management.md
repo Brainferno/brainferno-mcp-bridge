@@ -22,7 +22,7 @@ depends_on: [AE-05]
 - **`ae_remove_effect`** — layer args, `effect`. `destructiveHint: true`.
 - **`ae_set_effect_enabled`** — layer args, `effect`, `enabled`.
 - **`ae_move_effect`** — layer args, `effect`, `toIndex`.
-- `ae_apply_effect`: on an unknown `matchName`, throw with up to 5 close matches (`did you mean`; see `AE-16`).
+- `ae_apply_effect`: AE-16 already returns up to 3 close installed names on an unknown name (`tools/suggest.ts` with `stripAeVendor`, threshold max(2, 30 % of the name without its vendor prefix), case-folded; an installed name After Effects refused gets a note instead). Reuse `LIST_INSTALLED_EFFECTS` and the session's `EffectCatalog` (refreshed per panel connection) for `ae_list_available_effects` (extend the tuple with `category`); for 5 suggestions pass `limit: 5`.
 
 ## API hints (ES3)
 - `app.effects` — array of `{ displayName, matchName, category, version }` for every installed effect.

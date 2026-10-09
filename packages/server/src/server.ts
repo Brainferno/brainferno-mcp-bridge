@@ -22,6 +22,7 @@ import { registerMediaEncoderTools } from "./tools/media-encoder.js";
 import { registerPhotoshopTools } from "./tools/photoshop.js";
 import { registerPipelineTools } from "./tools/pipelines.js";
 import { registerPremiereTools } from "./tools/premiere.js";
+import { setRedactionSecrets } from "./tools/echo.js";
 import { setPreviewMode } from "./tools/result.js";
 
 /**
@@ -66,6 +67,8 @@ export function buildRuntime(config: Config): Runtime {
     handshakeFilePath: config.handshakeFilePath,
     allowedOrigins: config.allowedOrigins,
   });
+  // Error text AE-16 echoes (arguments, code excerpts, host messages) never carries these.
+  setRedactionSecrets([config.bridgeToken, config.httpToken, config.illustratorMcpKey, ...bridge.redactionSecrets()]);
   const illustratorBridge = new OsScriptBridge({ appId: "illustrator", defaultTimeoutMs: config.evalTimeoutMs, target: config.illustratorApp });
   const illustratorDelegate = new IllustratorDelegate({ url: config.illustratorMcpUrl, token: config.illustratorMcpKey });
   // Job work folders sit beside the handshake file (~/.brainferno-mcp-bridge/work/<jobId>/).

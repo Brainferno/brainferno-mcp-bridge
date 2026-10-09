@@ -5,7 +5,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import type { AppBridge, JsonValue } from "../bridge/types.js";
 import type { JobContext, JobRegistry, JobStepDef } from "../jobs.js";
-import { addLayerScript, importFootageScript, renderCompHeadless } from "./after-effects.js";
+import { addLayerScript, evaluateAe, importFootageScript, renderCompHeadless } from "./after-effects.js";
 import { denoise, measureLoudness, normalizeLoudness, type AudioToolOptions } from "./audio.js";
 import { exportArtboardScript } from "./illustrator.js";
 import { runOrQueue, waitParam, type ProgressExtra } from "./jobs.js";
@@ -81,7 +81,7 @@ export function registerPipelineTools(server: McpServer, deps: PipelineDeps): vo
               const path = str(obj(prev[0])["path"]);
               if (!path) throw new Error("No export path from the previous step.");
               ctx.log(`importing ${path}`);
-              return deps.afterEffects.evaluate(importFootageScript(path), { timeoutClass: "slow" });
+              return evaluateAe(deps.afterEffects, importFootageScript(path), { timeoutClass: "slow" });
             },
           },
           {
@@ -91,7 +91,7 @@ export function registerPipelineTools(server: McpServer, deps: PipelineDeps): vo
             run: async (_ctx, prev) => {
               const itemId = obj(prev[1])["id"];
               if (typeof itemId !== "number") throw new Error("The imported footage has no id.");
-              return deps.afterEffects.evaluate(addLayerScript({ compId: a.compId!, kind: "footage", itemId, ...(a.layerName !== undefined ? { name: a.layerName } : {}) }), { timeoutClass: "slow" });
+              return evaluateAe(deps.afterEffects, addLayerScript({ compId: a.compId!, kind: "footage", itemId, ...(a.layerName !== undefined ? { name: a.layerName } : {}) }), { timeoutClass: "slow" });
             },
           },
         ];
