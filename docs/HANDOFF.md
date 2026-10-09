@@ -19,20 +19,27 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
   Audition 12, Media Encoder 6, audio/ffmpeg 9, pipelines 4, jobs 4. (`tool-counts.test.ts`
   checks the "Expect N tools" line below and the README's per-app headers; it does not check
   this line, so update it by hand from the numbers the test reports.)
-- **X-01 (raw-script contract and gate) is unit-tested only.** `cc_eval_script`,
-  `ps_batch_play` and the new `cc_get_capabilities` are always registered; the raw tools refuse
-  unless `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS` names the app, and return one envelope
-  (`packages/server/src/tools/raw-script.ts`). Not yet run against a real host: the ES3 wrapper
-  (direct eval inside an inner function, the `e.line` calibration that yields `bodyLine` and
-  the `e.source` check that withholds it for errors from other code, the plain-data check on
-  host objects, and the guard that removes data properties a script added to
-  `Object.prototype` and restores ones it changed, against a snapshot taken before the script
-  ran — check whether a stock host has data members of its own there: the guard leaves them
-  alone, but the serializer writes them into every result) in After Effects, Illustrator and
-  Audition; the in-band `_obj: "error"` detection in
-  `ps_batch_play`; and in the os-script lane, the runner-failure classification
-  (it keys on PowerShell's `New-Object` / COM error text and osascript's trailing error number —
-  check the real texts) and the macOS `with timeout of` wrapper around `do javascript`.
+- **X-01 (raw-script contract and gate).** `cc_eval_script`, `ps_batch_play` and the new
+  `cc_get_capabilities` are always registered; the raw tools refuse unless
+  `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS` names the app, and return one envelope
+  (`packages/server/src/tools/raw-script.ts`).
+  - **Verified live on After Effects 26.5 (Windows 11, 2026-10-09)** with the gate set to
+    `after_effects`, 18 probes, all as designed: completion values (statement lists, function
+    declarations, IIFEs, `undefined` → `null`); `__log` and its 200-line cap; declared vars stay
+    local to the call; a non-ASCII string round-trips; a SyntaxError and a runtime error come back
+    as `ok: false` with `line` = `bodyLine` = the line in the caller's script (ExtendScript reports
+    lines relative to the innermost eval, so the calibration gives `lineBase` 0); returning
+    `app.project` is refused as a host object in milliseconds, while plain data built from host
+    values passes; a script that put data on `Object.prototype` is reported and the host is
+    healed for the next call; refusals for Audition and Photoshop are plain text and never
+    dispatched; `cc_get_capabilities` reports the panel's version and host version from its
+    hello; one audit line per call, with no payload. The stock After Effects engine has no data
+    members of its own on `Object.prototype` (no stray keys in any envelope).
+  - **Still unit-tested only:** the same wrapper on Illustrator (os-script lane) and Audition; the
+    in-band `_obj: "error"` detection in `ps_batch_play`; and in the os-script lane, the
+    runner-failure classification (it keys on PowerShell's `New-Object` / COM error text and
+    osascript's trailing error number — check the real texts) and the macOS `with timeout of`
+    wrapper around `do javascript`.
 - **macOS run on 2026-08-28** (macOS 26, Adobe 2026 apps, Node 26): panels, Illustrator via
   osascript, previews, ffmpeg all fine as written. Two real bugs fixed — the aerender path
   (`Folder.appPackage` is the `.app` itself on macOS) and Media Encoder (nested console bundle,
@@ -41,11 +48,19 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
 
 ## Working routine that saved the most time
 
-- Server change: `npm run build`, kill the running server (`pid` in
-  `~/.brainferno-mcp-bridge/bridge.json`), then `/mcp` → brainferno → reconnect in Claude Code.
-  A plain reconnect reuses the old process.
+- Server change: `npm run build`, kill the running server, then `/mcp` → brainferno →
+  reconnect in Claude Code. A plain reconnect reuses the old process.
+- **Kill the right server.** With more than one Claude Code window open, each runs its own
+  brainferno server, and the `pid` in `~/.brainferno-mcp-bridge/bridge.json` is simply the
+  server that started last — it may belong to another window. Find yours by its parent: the
+  `node …\packages\server\dist\index.js` process whose parent is this session's `claude.exe`
+  (`Get-CimInstance Win32_Process` shows `ParentProcessId` and `CommandLine`). A panel stays on
+  the server it already joined until it reconnects, so it may not be on the bridge.json one.
 - UXP panel change (Photoshop, Premiere): reload in the UXP Developer Tool. CEP panel change
   (After Effects, Audition): close and reopen the panel.
+- When a server shuts down cleanly it tells the panels "bye", and the CEP panel then engages
+  its kill switch ("no reconnect until you press Connect"): press **Connect** in the panel. It
+  reconnects by itself only after an abnormal drop (socket code 1006), re-reading bridge.json.
 - Batch several fixes per reload; every reload needs the operator's hands.
 - After moving or renaming the repo folder, run `npm install` (workspace links break).
 - ExtendScript stays ES3 (`var`, no arrow functions, no `JSON`). Each app has quirks listed in

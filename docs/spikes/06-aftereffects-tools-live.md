@@ -25,8 +25,16 @@ Driven entirely from Claude Code through the hub and the Brainferno MCP Bridge C
 - **`ParagraphJustification.CENTER_JUSTIFY` did not center point text on the anchor** — the
   text ended at the anchor. `ae_set_text` and text `ae_add_layer` now move the anchor point to
   the center of `sourceRectAtTime`, so `position` always means the visual center of the text.
-- Same restart discipline as Photoshop: after a rebuild, kill the server pid from
-  `~/.brainferno-mcp-bridge/bridge.json`, then `/mcp` reconnect. The CEP panel reconnects on its own.
+- Same restart discipline as Photoshop: after a rebuild, kill this session's server, then `/mcp`
+  reconnect. With several Claude Code windows open, the pid in `~/.brainferno-mcp-bridge/bridge.json`
+  may be another window's server (see HANDOFF "Kill the right server"). The CEP panel reconnects on
+  its own only after an abnormal drop; a clean shutdown sends "bye", the panel engages its kill
+  switch, and you press **Connect** in it.
+- **Line numbers are relative to the innermost eval** (verified live on 26.5, 2026-10-09, during
+  X-01): a script run through `eval(src)` — even nested inside another eval, as the raw-script
+  wrapper is inside `host.jsx`'s `__acmEval` — reports `e.line` counted within `src` itself. A
+  SyntaxError reports the line too (line 1 for `var x = ;`). So a typed tool's error line is
+  relative to the whole `wrap()`ped script, and AE-16's prelude subtraction is the right fix.
 - aerender reads the project **from disk**: `ae_render_comp` saves first, and needs a project
   that has been saved once (`ae_save_project` with a path).
 

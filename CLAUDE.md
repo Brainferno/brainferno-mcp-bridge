@@ -7,7 +7,7 @@ TypeScript MCP server (npm workspaces: `packages/server`, `protocol`, `bridge-cl
 
 ## Commands
 - `npm run typecheck && npm test` — must pass before every commit
-- `npm run build` — then kill the running server pid (`~/.brainferno-mcp-bridge/bridge.json`) and `/mcp` → brainferno → reconnect (a plain reconnect reuses the old process)
+- `npm run build` — then kill *this session's* server and `/mcp` → brainferno → reconnect (a plain reconnect reuses the old process). With several Claude Code windows open, the pid in `~/.brainferno-mcp-bridge/bridge.json` may be another window's server — match by parent process (see HANDOFF "Kill the right server")
 - `npm run panels:stamp` — sync the six panel version spots after a version bump
 - `npm run package` — build installable panels (.ccx / self-signed .zxp)
 - `npm run install-cc` — installer (panels + client config)
