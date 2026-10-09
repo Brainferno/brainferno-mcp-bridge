@@ -14,6 +14,11 @@ export function setLogLevel(level: LogLevel): void {
   threshold = level;
 }
 
+/** The current threshold (so a test that changes it can put it back). */
+export function getLogLevel(): LogLevel {
+  return threshold;
+}
+
 function emit(level: LogLevel, message: string, detail?: unknown): void {
   if (RANK[level] > RANK[threshold]) return;
   const line = `[brainferno-mcp-bridge] ${level.toUpperCase()} ${message}`;

@@ -9,10 +9,12 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
   **Windows and macOS** on Node 20/22 — the two platforms Adobe ships Creative Cloud for, and
   so the only ones this software supports. (The extra build runner in `ci.yml` is just a fast
   machine for the platform-independent tests; the comment there explains it.)
-  `v0.2.2` is the current release; npm packages `brainferno-mcp-bridge` and
+  The current release is the latest `vX.Y.Z` tag (the README's npm badge shows it; no doc
+  names the number by hand); npm packages `brainferno-mcp-bridge` and
   `@brainferno/mcp-bridge-protocol` published with trusted publishing — a `vX.Y.Z` tag
   publishes and creates the GitHub release by itself. See **Releasing** below.
-- Everything is verified live on **Windows 11** with the Adobe 2026 apps: Photoshop 22,
+- Everything is verified live on **Windows 11** with the Adobe 2026 apps: Photoshop 21
+  (+ `ps_batch_play`, unit-tested only since X-01 — see the next bullet),
   After Effects 34, Premiere Pro 29, Illustrator 7 (+ Adobe's 46 via `ai_beta_call`),
   Audition 12, Media Encoder 6, audio/ffmpeg 9, pipelines 4, jobs 4. (`tool-counts.test.ts`
   checks the "Expect N tools" line below and the README's per-app headers; it does not check
@@ -21,9 +23,16 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
   `ps_batch_play` and the new `cc_get_capabilities` are always registered; the raw tools refuse
   unless `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS` names the app, and return one envelope
   (`packages/server/src/tools/raw-script.ts`). Not yet run against a real host: the ES3 wrapper
-  (direct eval inside an inner function, the `e.line` calibration that yields `bodyLine`, the
-  plain-data check on host objects) in After Effects, Illustrator and Audition, and the in-band
-  `_obj: "error"` detection in `ps_batch_play`.
+  (direct eval inside an inner function, the `e.line` calibration that yields `bodyLine` and
+  the `e.source` check that withholds it for errors from other code, the plain-data check on
+  host objects, and the guard that removes data properties a script added to
+  `Object.prototype` and restores ones it changed, against a snapshot taken before the script
+  ran — check whether a stock host has data members of its own there: the guard leaves them
+  alone, but the serializer writes them into every result) in After Effects, Illustrator and
+  Audition; the in-band `_obj: "error"` detection in
+  `ps_batch_play`; and in the os-script lane, the runner-failure classification
+  (it keys on PowerShell's `New-Object` / COM error text and osascript's trailing error number —
+  check the real texts) and the macOS `with timeout of` wrapper around `do javascript`.
 - **macOS run on 2026-08-28** (macOS 26, Adobe 2026 apps, Node 26): panels, Illustrator via
   osascript, previews, ffmpeg all fine as written. Two real bugs fixed — the aerender path
   (`Folder.appPackage` is the `.app` itself on macOS) and Media Encoder (nested console bundle,

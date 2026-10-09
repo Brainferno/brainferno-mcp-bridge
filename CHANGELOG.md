@@ -17,10 +17,27 @@ One run-script contract and a gate clients can see (X-01).
   returns `ok: false` (an `isError` result) naming the failing descriptor, instead of reporting
   success.
 - `cc_eval_script` runs the script through an ES3 wrapper. The value of its last statement is
-  still the result (an IIFE still works; a top-level `return` is a syntax error), and the new
-  `__log(msg)` collects log lines (up to 200 lines / 20000 characters; `logsDropped` counts the
-  rest). A result that is not plain data — a host object such as a layer, a comp or a `Date` —
-  is now refused with its path instead of being serialized best-effort.
+  still the result (an IIFE still works; a top-level `return` is a syntax error).
+  - The new `__log(msg)` collects log lines: up to 200 lines / 20000 characters, each line cut
+    at 2000. `logsDropped` counts the rest, and once a line is dropped every later one is too,
+    so `logs` is always a prefix of what was logged. `__log` never throws into the script: a
+    value that cannot be turned into text is logged as `[unprintable]`.
+  - A result that is not plain data — a host object such as a layer, a comp or a `Date` — is
+    now refused with its path instead of being serialized best-effort. The check covers exactly
+    what the hosts' serializer writes, inherited keys included: an instance of the ES3
+    `Ctor.prototype = { … }` pattern holding a host object is refused, and a cycle fails fast
+    instead of overflowing the serializer. Plain data with its own `constructor` key is
+    accepted.
+  - `error.bodyLine` is the failing line in the caller's script. It is set only when the host's
+    line numbers can be calibrated and the error was raised in the caller's own text, not in a
+    `$.evalFile`'d library or a helper an earlier call left behind; otherwise it is `null`.
+  - A script that adds data (non-function) properties to `Object.prototype`, or changes ones
+    already there, fails, naming them: every object would inherit them, which breaks the
+    host's serializer for every later call to that app, typed tools included. Added ones are
+    removed and changed ones set back to their value from before the call; the error says
+    which, and names any it could not remove or restore. Members other code (another
+    extension, a startup script) put there before the call are left alone. A script that had
+    already failed keeps its own error first.
 
 **Changed**
 
@@ -32,17 +49,29 @@ One run-script contract and a gate clients can see (X-01).
   `illustrator`, `audition`; the short names `ae`, `ps`, `ai`, `au` work too). Premiere Pro,
   Media Encoder and unknown names are ignored with a warning, never enabled.
 - `=1` / `all` now actually reaches Illustrator: its raw scripts go through the OS scripting
-  lane, which launches Illustrator if it is closed.
+  lane, which launches Illustrator if it is closed. A runner failure after the script may have
+  reached Illustrator — AppleScript giving up on the reply, Illustrator crashing or quitting
+  mid-script — gives the JSON envelope "the script was sent; it may have partly run — check
+  Illustrator before re-running". Only failures that provably happen before dispatch are plain
+  text (the runner cannot start; COM cannot create the object, e.g. class not registered;
+  AppleScript -600, -1728, -1743, -10814: app not running, not found, Automation not allowed),
+  and a failure the lane cannot classify counts as sent. A call that leaves no result file says
+  so and names the likely causes (a modal dialog, a temp file that could not be read or
+  written); the script's own syntax errors come back as `ok: false`. The typed `ai_*` tools
+  show the same messages as before.
 - Remote (shared HTTP) sessions refuse raw scripts unless the new
   `BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS=1` is set.
-- `cc_eval_script` refuses an app whose tools are not enabled (`BRAINFERNO_MCP_APPS`).
+- `cc_eval_script` refuses an app whose tools are not enabled (`BRAINFERNO_MCP_APPS`): the
+  refusal says to rerun the installer and pick the app, or to set `BRAINFERNO_MCP_APPS` to the
+  full list of apps, since it replaces the installer's choice rather than adding to it.
   `timeoutMs` is capped at 30 minutes.
 - New audit line for every raw call, run or refused, on both tools (`ps_batch_play` had none):
   `AUDIT raw-script tool=… app=… sha256=<12 hex> len=… [count=…] via=stdio|http:<8 chars> outcome=run|refused`.
   It is written at every log level and carries no script text; the first 200 characters of a
   script that runs moved to the `debug` log (`cc_eval_script` used to put them in a `warn`
-  line). When the gate is open the server writes one `AUDIT raw scripts ENABLED for …` line at
-  startup; the "raw-script tool is disabled" info lines are gone.
+  line; see Fixed). When the gate is open the server writes one
+  `AUDIT raw scripts ENABLED for …` line at startup; the "raw-script tool is disabled" info
+  lines are gone.
 
 **Added**
 
@@ -60,7 +89,20 @@ One run-script contract and a gate clients can see (X-01).
   `ai_*` tools.
 - `ps_batch_play` reported failed descriptors as success (see Breaking).
 - The OS scripting lane left the temporary script and result files on disk when the runner
-  failed or timed out; it now removes them in every case.
+  failed or timed out. Both are now removed when the call ends, whatever the outcome. A result
+  written by a script that outlives its timeout, or the files of a server killed mid-call, are
+  swept on a later call (and at the next start) once they are older than twice the longest
+  deadline a call can get (the 30-minute `timeoutMs` cap, or `BRAINFERNO_MCP_EVAL_TIMEOUT_MS`
+  when that is longer) plus 5 minutes: 65 minutes with the default settings.
+- macOS: typed `ai_*` calls with a deadline above about two minutes
+  (`BRAINFERNO_MCP_EVAL_TIMEOUT_MS`) failed at AppleScript's default 120 s Apple-event timeout
+  (-1712) while Illustrator kept running the script. `do javascript` now runs inside
+  `with timeout of <deadline + 5> seconds`, so the server's own deadline is the one that fires
+  (for `cc_eval_script`, as the timeout envelope).
+- `cc_eval_script` wrote the first 200 characters of every script, unescaped, into a `warn`
+  log line, so a script containing line breaks could add lines of its own to the server log.
+  The excerpt (now at `debug`) is escaped onto one line, so a script cannot forge a log line
+  such as an `AUDIT` record.
 
 **Docs**
 
@@ -73,6 +115,15 @@ One run-script contract and a gate clients can see (X-01).
   `pp_run_action` was built.
 - README (raw scripts section, configuration, security), `.env.example`, `docs/HANDOFF.md`,
   `docs/feature-requests/00_PREAMBLE.md` and spikes 05 and 14 updated to match.
+- `CONTRIBUTING.md`: failed or cancelled jobs carry JSON errors too (the job view), so JSON is
+  the dispatch signal only for the raw-script tools; the error-shape rule names the os-script
+  lane's `RunnerExitedError`. `docs/HANDOFF.md` no longer counts `ps_batch_play` as verified
+  live and no longer names a release by hand. `AE-01` is rebased on X-01 (reuse
+  `raw-script.ts`, the shared refusal text, an undo group for `ae_run_script`), and
+  `00_PREAMBLE.md` describes the After Effects test pattern as it is since X-03 (every exported
+  script builder classified as `MUST_UNDO`, `NO_UNDO_OK` or `READ_ONLY_BUILDERS`;
+  `es3Violations` in the new `test/es3.ts`) and drops its stale notes (CONTRIBUTING's
+  `jsStringLiteral` text, tool counts and the `ae_queue_render` gap before X-03).
 
 ## v0.3.3 — 2026-10-01
 

@@ -5,8 +5,10 @@ import { APPS, APP_IDS, PROTOCOL_VERSION, type AppId } from "@brainferno/mcp-bri
 import type { BridgeServer } from "../bridge/socket.js";
 import type { AppBridge } from "../bridge/types.js";
 import type { RawScriptApp } from "../config.js";
+import { MAX_EXPLICIT_TIMEOUT_MS, NO_RESULT_MESSAGE } from "../drivers/osscript.js";
 import { SERVER_VERSION } from "../version.js";
 import {
+  ILLUSTRATOR_RAW_NO_RESULT_MESSAGE,
   auditRawCall,
   dispatchedFailure,
   envelopeResult,
@@ -18,8 +20,11 @@ import {
 import { errorResult, guard, jsonResult } from "./result.js";
 
 export interface DiagnosticOptions {
-  /** Apps whose tools are registered (cc_connected_apps lists these); missing = all five. */
-  enabledApps?: readonly AppId[];
+  /**
+   * Apps whose tools are registered (cc_connected_apps lists these). Required, with no
+   * fallback: the raw-script gate refuses any app not listed here before touching a lane.
+   */
+  enabledApps: readonly AppId[];
   /** Apps the raw-script gate (BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS) opens. Empty = cc_eval_script refuses every call. */
   rawScriptApps: readonly RawScriptApp[];
   /** Gate tokens that named no raw-capable app; reported by cc_get_capabilities. */
@@ -54,7 +59,7 @@ export function registerDiagnosticTools(
   bridge: BridgeServer,
   options: DiagnosticOptions,
 ): void {
-  const enabled: readonly AppId[] = options.enabledApps ?? APP_IDS;
+  const enabled: readonly AppId[] = options.enabledApps;
   const session = { remote: options.remote, allowRemote: options.allowRemoteRawScripts };
 
   server.registerTool(
@@ -183,7 +188,9 @@ export function registerDiagnosticTools(
         "Variables and functions the script declares stay local to the call; assigning to an undeclared name " +
         "creates a global that persists in the host.\n" +
         "Returns the envelope { ok, error?: { message, line, bodyLine }, durationMs, value, logs, logsDropped? }. " +
-        "bodyLine is the line in your script when the host's line numbers could be calibrated, else null. " +
+        "bodyLine is the line in your script that failed. bodyLine is null when the error was raised outside your " +
+        "script's own text (for example in a $.evalFile'd library, or in a helper an earlier call left as a global) " +
+        "or the host's line numbering cannot be calibrated. " +
         "durationMs is the server round trip, including any wait behind other calls to the same app (and, for " +
         "Illustrator, starting the OS script runner — which launches Illustrator if it is closed).\n" +
         "Error shape: an error with plain text means nothing was dispatched (raw scripts disabled, app not enabled, " +
@@ -203,7 +210,7 @@ export function registerDiagnosticTools(
           .number()
           .int()
           .positive()
-          .max(30 * 60_000)
+          .max(MAX_EXPLICIT_TIMEOUT_MS)
           .optional()
           .describe("Override the result timeout for this call, in ms (default: the server's slow timeout; max 30 minutes)."),
       },
@@ -218,7 +225,8 @@ export function registerDiagnosticTools(
         return errorResult(gate.reason);
       }
       auditRawCall({ tool: "cc_eval_script", app: appId, payload: script, outcome: "run", via });
-      const target = APPS[appId].lane === "os-script" ? options.illustratorBridge : bridge.bridgeFor(appId);
+      const osScript = APPS[appId].lane === "os-script";
+      const target = osScript ? options.illustratorBridge : bridge.bridgeFor(appId);
       return guard(async () => {
         const t0 = Date.now();
         try {
@@ -227,10 +235,16 @@ export function registerDiagnosticTools(
         } catch (error) {
           const env = dispatchedFailure(error, Date.now() - t0, {
             noun: "the script",
-            onScriptError: (message) => `${message} — the script was sent; it may have partly run`,
+            onScriptError: (message) =>
+              // The lane's "probably failed to parse" cannot be a raw script's cause: the wrapper
+              // reports the caller's syntax errors as ok:false.
+              osScript && message === NO_RESULT_MESSAGE
+                ? ILLUSTRATOR_RAW_NO_RESULT_MESSAGE
+                : `${message} — the script was sent; it may have partly run`,
           });
           if (env !== null) return envelopeResult(env);
-          throw error; // AppNotConnectedError (not dispatched) and anything else: guard() → plain text.
+          // A plain AppNotConnectedError (nothing was dispatched) and anything else: guard() → plain text.
+          throw error;
         }
       });
     },

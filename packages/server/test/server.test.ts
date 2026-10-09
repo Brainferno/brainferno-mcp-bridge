@@ -1,7 +1,7 @@
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import vm from "node:vm";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -13,15 +13,25 @@ import type { BridgeServer } from "../src/bridge/socket.js";
 import { PROTOCOL_VERSION } from "@brainferno/mcp-bridge-protocol";
 import type { Config } from "../src/config.js";
 import type { AppId } from "@brainferno/mcp-bridge-protocol";
-import { OsScriptBridge, type ScriptRunner } from "../src/drivers/osscript.js";
+import {
+  MAC_RUNNER_PROFILE,
+  NO_RESULT_MESSAGE,
+  OsScriptBridge,
+  WINDOWS_RUNNER_PROFILE,
+  spawnRunner,
+  type RunnerProfile,
+  type ScriptRunner,
+} from "../src/drivers/osscript.js";
 import { log } from "../src/logging.js";
 import {
+  ILLUSTRATOR_RAW_NO_RESULT_MESSAGE,
   RAW_SCRIPTS_DISABLED_MESSAGE,
   REMOTE_RAW_SCRIPTS_REFUSED_MESSAGE,
   asciiLiteral,
   rawScriptWrapper,
 } from "../src/tools/raw-script.js";
 import { SERVER_VERSION } from "../src/version.js";
+import { hostEval, runJsxFile } from "./host-vm.js";
 
 // Port 0 lets the OS pick a free one; insecure mode skips auth and the handshake
 // file so tests never touch the real ~/.brainferno-mcp-bridge/bridge.json.
@@ -100,10 +110,28 @@ function reply(panel: WebSocket, id: string, value: unknown, ok = true): void {
 const textOf = (r: unknown) => (r as { content: { type: string; text: string }[] }).content[0]!.text;
 const settle = () => new Promise((r) => setTimeout(r, 50));
 
+/** Work dirs the injected Illustrator lanes use; each is removed after its test. */
+const tempDirs: string[] = [];
+
+/** A fresh empty dir under the OS temp dir, removed after the current test. */
+function tempDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  tempDirs.push(dir);
+  return dir;
+}
+
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+});
+
 /**
  * A runtime plus one MCP session on it. `remote` builds a remote-session server; `sessionId`
  * stands in for the HTTP transport's session id (what `via=` is derived from);
- * `illustratorBridge` replaces the os-script lane (so no test ever launches Illustrator).
+ * `illustratorBridge` replaces the os-script lane.
+ *
+ * The real os-script lane would launch Illustrator over COM/AppleScript, so a session ALWAYS
+ * gets an injected lane: the test's own, or one whose runner counts calls and throws. With
+ * the throwing one, `close()` asserts the lane was never reached.
  */
 async function startSession(
   overrides: Partial<Config>,
@@ -111,9 +139,22 @@ async function startSession(
 ) {
   const rt = buildRuntime({ ...config, ...overrides });
   await rt.bridge.ready();
-  const server = createMcpServer(opts.illustratorBridge ? { ...rt, illustratorBridge: opts.illustratorBridge } : rt, {
-    remote: opts.remote,
-  });
+  let runnerCalls = 0;
+  // Never created: OsScriptBridge makes its work dir only when a call runs (its sweep tolerates a
+  // missing dir), and this lane must never run one.
+  const noAiDir = join(tmpdir(), `acm-no-ai-${randomUUID()}`);
+  const illustratorBridge =
+    opts.illustratorBridge ??
+    new OsScriptBridge({
+      appId: "illustrator",
+      defaultTimeoutMs: 1_000,
+      workDir: noAiDir,
+      runner: async () => {
+        runnerCalls++;
+        throw new Error("this test must not reach the Illustrator lane");
+      },
+    });
+  const server = createMcpServer({ ...rt, illustratorBridge }, { remote: opts.remote });
   const [ct, st] = InMemoryTransport.createLinkedPair();
   if (opts.sessionId !== undefined) st.sessionId = opts.sessionId;
   const c = new Client({ name: "raw", version: "0" });
@@ -121,12 +162,37 @@ async function startSession(
   return {
     c,
     bridge: rt.bridge,
+    /** Calls that reached the injected throwing lane (always 0 when the test supplied its own). */
+    illustratorRunnerCalls: () => runnerCalls,
     close: async () => {
       await c.close();
       await server.close();
       await rt.bridge.close();
+      const leftOnDisk = existsSync(noAiDir);
+      rmSync(noAiDir, { recursive: true, force: true, maxRetries: 3 });
+      if (opts.illustratorBridge === undefined) {
+        expect(runnerCalls, "the Illustrator lane must stay untouched").toBe(0);
+        expect(leftOnDisk, "the unused Illustrator lane must leave nothing on disk").toBe(false);
+      }
     },
   };
+}
+
+/**
+ * A runner that takes the .jsx (the script has reached the runner) and then fails the way a
+ * real runner process does: a child process that prints `stderr` and exits 1, classified by
+ * the real spawnRunner with a real platform profile.
+ */
+function exitingRunner(stderr: string, profile: RunnerProfile, seen: { jsx: string }): ScriptRunner {
+  return async (jsxPath, signal) => {
+    seen.jsx = readFileSync(jsxPath, "utf8");
+    // exitCode, not process.exit(): stderr to a pipe is async on POSIX and exit() could cut it off.
+    await spawnRunner(process.execPath, ["-e", `process.exitCode = 1; process.stderr.write(${JSON.stringify(stderr)});`], signal, profile);
+  };
+}
+
+function illustratorLane(runner: ScriptRunner, workDir = tempDir("acm-raw-ai-")): OsScriptBridge {
+  return new OsScriptBridge({ appId: "illustrator", defaultTimeoutMs: 1_000, runner, workDir });
 }
 
 /** The raw-script audit lines (not the startup gate line) the spy saw. */
@@ -215,6 +281,14 @@ describe("brainferno-mcp-bridge server", () => {
     } finally {
       audit.mockRestore();
     }
+  });
+
+  it("says in cc_eval_script's description both reasons bodyLine can be null", async () => {
+    const tool = (await client.listTools()).tools.find((t) => t.name === "cc_eval_script");
+    expect(tool?.description).toContain(
+      "bodyLine is null when the error was raised outside your script's own text (for example in a $.evalFile'd " +
+        "library, or in a helper an earlier call left as a global) or the host's line numbering cannot be calibrated.",
+    );
   });
 
   it("does not advertise the Illustrator delegate tools without a key", async () => {
@@ -320,7 +394,7 @@ describe("cc_eval_script with the gate open for After Effects", () => {
     const s = await startSession(AE_ONLY);
     const panel = await connectPanel(s.bridge.port(), "after_effects");
     // The fake panel evaluates exactly what it received, the way host.jsx's __acmEval does.
-    const cmds = recordCmds(panel, (f) => reply(panel, f.id, vm.runInNewContext(f.params.script!)));
+    const cmds = recordCmds(panel, (f) => reply(panel, f.id, hostEval(f.params.script!)));
     const script = 'var comps = 3;\n__log("counting " + comps + " café");\ncomps * 2';
 
     const r = await s.c.callTool({ name: "cc_eval_script", arguments: { appId: "after_effects", script } });
@@ -342,7 +416,7 @@ describe("cc_eval_script with the gate open for After Effects", () => {
   it("returns a script failure and a non-plain result as isError JSON envelopes", async () => {
     const s = await startSession(AE_ONLY);
     const panel = await connectPanel(s.bridge.port(), "after_effects");
-    recordCmds(panel, (f) => reply(panel, f.id, vm.runInNewContext(f.params.script!)));
+    recordCmds(panel, (f) => reply(panel, f.id, hostEval(f.params.script!)));
 
     const thrown = await s.c.callTool({ name: "cc_eval_script", arguments: { appId: "after_effects", script: "var a = 1;\nnull.boom" } });
     expect(thrown.isError).toBe(true);
@@ -450,12 +524,17 @@ describe("cc_eval_script with the gate open for After Effects", () => {
     await s.close();
 
     // Gate open for everything, but Illustrator's tools are not enabled: refused before any lane.
+    // (startSession injects a counting lane, so this cannot reach COM/AppleScript even if the
+    // enabled-apps check regressed.)
     const t = await startSession({ allowRawScripts: true, rawScriptApps: ["after_effects", "photoshop", "illustrator", "audition"], enabledApps: ["after_effects"] });
     const i = await t.c.callTool({ name: "cc_eval_script", arguments: { appId: "illustrator", script: "1" } });
     expect(i.isError).toBe(true);
     expect(textOf(i)).toBe(
-      "Illustrator tools are not enabled on this server — add illustrator to BRAINFERNO_MCP_APPS (or rerun npm run install-cc) and restart.",
+      "Illustrator tools are not enabled on this server — rerun npm run install-cc and pick Illustrator, or set " +
+        "BRAINFERNO_MCP_APPS to the full list of apps you want including illustrator (it replaces the installer's " +
+        "choice), then restart.",
     );
+    expect(t.illustratorRunnerCalls()).toBe(0);
     expect(rawAuditLines(audit).at(-1)).toMatch(/app=illustrator .* outcome=refused$/);
     await t.close();
   });
@@ -466,24 +545,23 @@ describe("cc_eval_script for Illustrator goes down the os-script lane", () => {
     vi.restoreAllMocks();
   });
 
-  it("splices the wrapper into the .jsx, never sends it to the hub, and cleans up", async () => {
+  const AI_GATE: Partial<Config> = { allowRawScripts: true, rawScriptApps: ["illustrator"] };
+  beforeEach(() => {
     vi.spyOn(log, "audit").mockImplementation(() => {});
-    const workDir = mkdtempSync(join(tmpdir(), "acm-raw-ai-"));
+  });
+
+  it("splices the wrapper into the .jsx, never sends it to the hub, and cleans up", async () => {
+    const workDir = tempDir("acm-raw-ai-");
     const script = 'var name = "Illüstrator \\"doc\\"";\n__log(name);\nname.length';
     let jsx = "";
-    // Stands in for COM/AppleScript: checks the generated .jsx, then runs the spliced wrapper in
-    // node:vm and writes the result file the way the prelude's __acmWrite would.
+    // Stands in for COM/AppleScript: checks the generated .jsx, then runs the whole of it in
+    // node:vm the way $.evalFile would — prelude, wrapper, __acmJson and __acmWrite included.
     const fakeRunner: ScriptRunner = async (jsxPath) => {
       jsx = readFileSync(jsxPath, "utf8");
-      const start = jsx.indexOf("var __acmValue = ") + "var __acmValue = ".length;
-      const end = jsx.indexOf(";\n  __acmResult = { ok: true");
-      const wrapper = jsx.slice(start, end);
-      const value = vm.runInNewContext(wrapper);
-      const resultPath = /__acmWrite\("([^"]+)"/.exec(jsx)![1]!;
-      writeFileSync(resultPath, JSON.stringify({ ok: true, value }), "utf8");
+      runJsxFile(jsxPath);
     };
     const illustratorBridge = new OsScriptBridge({ appId: "illustrator", defaultTimeoutMs: 1_000, runner: fakeRunner, workDir });
-    const s = await startSession({ allowRawScripts: true, rawScriptApps: ["illustrator"] }, { illustratorBridge });
+    const s = await startSession(AI_GATE, { illustratorBridge });
     // A rogue socket panel claiming to be Illustrator must never see the script.
     const rogue = await connectPanel(s.bridge.port(), "illustrator");
     const rogueCmds = recordCmds(rogue);
@@ -505,6 +583,113 @@ describe("cc_eval_script for Illustrator goes down the os-script lane", () => {
     rogue.close();
     await s.close();
   });
+
+  it("hands the runner the call's timeoutMs", async () => {
+    const seen: (number | undefined)[] = [];
+    const lane = illustratorLane(async (jsxPath, _signal, timeoutMs) => {
+      seen.push(timeoutMs);
+      runJsxFile(jsxPath);
+    });
+    const s = await startSession(AI_GATE, { illustratorBridge: lane });
+    const r = await s.c.callTool({ name: "cc_eval_script", arguments: { appId: "illustrator", script: "40 + 2", timeoutMs: 4_321 } });
+    expect(JSON.parse(textOf(r))).toMatchObject({ ok: true, value: 42 });
+    expect(seen).toEqual([4_321]);
+    await s.close();
+  });
+
+  it("a runner that fails after the script was sent gives the JSON envelope, not plain text", async () => {
+    // macOS: AppleScript gave up waiting (its own Apple-event timeout) while Illustrator kept running.
+    const seen = { jsx: "" };
+    const out = "0:61: execution error: Adobe Illustrator got an error: AppleEvent timed out. (-1712)";
+    const s = await startSession(AI_GATE, { illustratorBridge: illustratorLane(exitingRunner(out, MAC_RUNNER_PROFILE, seen)) });
+    const r = await s.c.callTool({ name: "cc_eval_script", arguments: { appId: "illustrator", script: "app.documents.length" } });
+    expect(seen.jsx).toContain(rawScriptWrapper("app.documents.length"));
+    expect(r.isError).toBe(true);
+    const env = JSON.parse(textOf(r));
+    expect(env).toMatchObject({ ok: false, value: null, logs: [], error: { line: null, bodyLine: null } });
+    expect(env.error.message).toBe(
+      `The script runner failed (${out}) — the script was sent; it may have partly run — check Illustrator before re-running`,
+    );
+
+    // Windows: Illustrator went away during DoJavaScript.
+    const rpc = 'Exception calling "DoJavaScript" with "1" argument(s): "The RPC server is unavailable. (Exception from HRESULT: 0x800706BA)"';
+    const w = await startSession(AI_GATE, { illustratorBridge: illustratorLane(exitingRunner(rpc, WINDOWS_RUNNER_PROFILE, seen)) });
+    const r2 = await w.c.callTool({ name: "cc_eval_script", arguments: { appId: "illustrator", script: "1" } });
+    expect(r2.isError).toBe(true);
+    expect(JSON.parse(textOf(r2)).error.message).toContain("the script was sent; it may have partly run — check Illustrator");
+
+    // A runner failure the lane cannot explain is treated as dispatched too (when in doubt).
+    const odd = await startSession(AI_GATE, {
+      illustratorBridge: illustratorLane(async (jsxPath) => {
+        readFileSync(jsxPath, "utf8");
+        throw new Error("pipe closed");
+      }),
+    });
+    const r3 = await odd.c.callTool({ name: "cc_eval_script", arguments: { appId: "illustrator", script: "1" } });
+    expect(r3.isError).toBe(true);
+    expect(JSON.parse(textOf(r3)).error.message).toContain("(pipe closed) — the script was sent");
+    await s.close();
+    await w.close();
+    await odd.close();
+  });
+
+  it("a runner that never reached Illustrator stays plain text (nothing was dispatched)", async () => {
+    const seen = { jsx: "" };
+    const notRegistered =
+      "New-Object : Retrieving the COM class factory for component with CLSID {00000000-0000-0000-0000-000000000000} " +
+      "failed due to the following error: 80040154 Class not registered (Exception from HRESULT: 0x80040154 (REGDB_E_CLASSNOTREG)).";
+    const s = await startSession(AI_GATE, { illustratorBridge: illustratorLane(exitingRunner(notRegistered, WINDOWS_RUNNER_PROFILE, seen)) });
+    const r = await s.c.callTool({ name: "cc_eval_script", arguments: { appId: "illustrator", script: "1" } });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toBe(`No running host connected for "illustrator". ${WINDOWS_RUNNER_PROFILE.notConnectedHint} (${notRegistered})`);
+    expect(() => JSON.parse(textOf(r))).toThrow();
+
+    const mac = await startSession(AI_GATE, {
+      illustratorBridge: illustratorLane(exitingRunner("0:61: execution error: Not authorized to send Apple events to Adobe Illustrator. (-1743)", MAC_RUNNER_PROFILE, seen)),
+    });
+    const r2 = await mac.c.callTool({ name: "cc_eval_script", arguments: { appId: "illustrator", script: "1" } });
+    expect(textOf(r2)).toMatch(/^No running host connected for "illustrator"\. Could not reach Illustrator via AppleScript\./);
+    await s.close();
+    await mac.close();
+  });
+
+  it("no result file: a neutral message, not a hint at ES3 syntax (the wrapper reports syntax errors itself)", async () => {
+    const s = await startSession(AI_GATE, { illustratorBridge: illustratorLane(async () => {}) });
+    const r = await s.c.callTool({ name: "cc_eval_script", arguments: { appId: "illustrator", script: "app.documents.length" } });
+    expect(r.isError).toBe(true);
+    const env = JSON.parse(textOf(r));
+    expect(env.error.message).toBe(ILLUSTRATOR_RAW_NO_RESULT_MESSAGE);
+    expect(env.error.message).toBe(
+      "Illustrator produced no result file — the script may not have run (a modal dialog, or the temp .jsx/result file " +
+        "could not be read or written). Syntax errors in your script come back as ok:false with a message, not like " +
+        "this — check Illustrator before re-running.",
+    );
+    expect(env.error.message).not.toMatch(/ES3|parse/);
+
+    // A real syntax error in the caller's script does come back as ok:false with its own message.
+    const real = await startSession(AI_GATE, { illustratorBridge: illustratorLane(async (jsxPath) => runJsxFile(jsxPath)) });
+    const bad = JSON.parse(textOf(await real.c.callTool({ name: "cc_eval_script", arguments: { appId: "illustrator", script: "var x = ;" } })));
+    expect(bad.ok).toBe(false);
+    expect(bad.error.message).not.toBe(ILLUSTRATOR_RAW_NO_RESULT_MESSAGE);
+    await s.close();
+    await real.close();
+  });
+
+  it("the typed ai_* tools keep their messages for the same runner failures", async () => {
+    const seen = { jsx: "" };
+    const rpc = 'Exception calling "DoJavaScript" with "1" argument(s): "The RPC server is unavailable. (Exception from HRESULT: 0x800706BA)"';
+    const s = await startSession({}, { illustratorBridge: illustratorLane(exitingRunner(rpc, WINDOWS_RUNNER_PROFILE, seen)) });
+    const dispatched = await s.c.callTool({ name: "ai_list_documents", arguments: {} });
+    expect(dispatched.isError).toBe(true);
+    expect(textOf(dispatched)).toBe(`No running host connected for "illustrator". ${WINDOWS_RUNNER_PROFILE.notConnectedHint} (${rpc})`);
+
+    const none = await startSession({}, { illustratorBridge: illustratorLane(async () => {}) });
+    const noResult = await none.c.callTool({ name: "ai_list_documents", arguments: {} });
+    expect(textOf(noResult)).toBe(`Script failed in illustrator: ${NO_RESULT_MESSAGE}`);
+    expect(NO_RESULT_MESSAGE).toBe("The script produced no result — it probably failed to parse (ES3 syntax only).");
+    await s.close();
+    await none.close();
+  });
 });
 
 describe("raw scripts in a remote (shared HTTP) session", () => {
@@ -517,7 +702,7 @@ describe("raw scripts in a remote (shared HTTP) session", () => {
     const gate: Partial<Config> = { allowRawScripts: true, rawScriptApps: ["after_effects"] };
     const s = await startSession(gate, { remote: true, sessionId: "a1b2c3d4-0000-4000-8000-000000000000" });
     const panel = await connectPanel(s.bridge.port(), "after_effects");
-    const cmds = recordCmds(panel, (f) => reply(panel, f.id, vm.runInNewContext(f.params.script!)));
+    const cmds = recordCmds(panel, (f) => reply(panel, f.id, hostEval(f.params.script!)));
 
     const r = await s.c.callTool({ name: "cc_eval_script", arguments: { appId: "after_effects", script: "1" } });
     expect(r.isError).toBe(true);
@@ -535,7 +720,7 @@ describe("raw scripts in a remote (shared HTTP) session", () => {
 
     const allowed = await startSession({ ...gate, allowRemoteRawScripts: true }, { remote: true, sessionId: "ffff0000-1111" });
     const p2 = await connectPanel(allowed.bridge.port(), "after_effects");
-    const cmds2 = recordCmds(p2, (f) => reply(p2, f.id, vm.runInNewContext(f.params.script!)));
+    const cmds2 = recordCmds(p2, (f) => reply(p2, f.id, hostEval(f.params.script!)));
     const ok = await allowed.c.callTool({ name: "cc_eval_script", arguments: { appId: "after_effects", script: "40 + 2" } });
     expect(ok.isError).toBeFalsy();
     expect(JSON.parse(textOf(ok)).value).toBe(42);

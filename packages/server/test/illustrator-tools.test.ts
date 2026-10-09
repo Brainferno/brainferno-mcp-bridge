@@ -8,7 +8,7 @@ import {
   previewScript,
   saveDocumentScript,
 } from "../src/tools/illustrator.js";
-import { es3Violations } from "./osscript.test.js";
+import { es3Violations } from "./es3.js";
 
 const SAMPLES: Record<string, string> = {
   createDocument: createDocumentScript(1080, 1080, "rgb"),
