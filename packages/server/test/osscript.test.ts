@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -128,6 +128,50 @@ describe("OsScriptBridge", () => {
 
   it("is always reachable (the lane can launch the app)", () => {
     expect(makeBridge(fakeRunner(() => undefined)).isConnected()).toBe(true);
+  });
+});
+
+describe("OsScriptBridge temp-file cleanup", () => {
+  /** A bridge on its own empty work dir; `runner` sees the .jsx path first so a test can check it existed. */
+  function bridgeIn(runner: ScriptRunner, timeoutMs = 1_000) {
+    const workDir = mkdtempSync(join(tmpdir(), "acm-osscript-clean-"));
+    return { workDir, bridge: new OsScriptBridge({ appId: "illustrator", defaultTimeoutMs: timeoutMs, runner, workDir }) };
+  }
+
+  it("removes the script when the runner fails", async () => {
+    let sawJsx = false;
+    const { workDir, bridge } = bridgeIn(async (jsxPath) => {
+      sawJsx = existsSync(jsxPath);
+      throw new Error("COM class not registered");
+    });
+    await expect(bridge.evaluate("1")).rejects.toBeInstanceOf(AppNotConnectedError);
+    expect(sawJsx).toBe(true);
+    expect(readdirSync(workDir)).toEqual([]);
+  });
+
+  it("removes the script when the runner never finishes (timeout)", async () => {
+    let sawJsx = false;
+    const { workDir, bridge } = bridgeIn(
+      (jsxPath, signal) =>
+        new Promise<void>((_, reject) => {
+          sawJsx = existsSync(jsxPath);
+          signal.addEventListener("abort", () => reject(new Error("aborted")));
+        }),
+      50,
+    );
+    await expect(bridge.evaluate("1")).rejects.toBeInstanceOf(EvalTimeoutError);
+    expect(sawJsx).toBe(true);
+    expect(readdirSync(workDir)).toEqual([]);
+  });
+
+  it("removes both files after a run that produced a result, and after one that produced none", async () => {
+    const ok = bridgeIn(fakeRunner(() => JSON.stringify({ ok: true, value: 1 })));
+    expect(await ok.bridge.evaluate("1")).toBe(1);
+    expect(readdirSync(ok.workDir)).toEqual([]);
+
+    const none = bridgeIn(fakeRunner(() => undefined));
+    await expect(none.bridge.evaluate("1")).rejects.toBeInstanceOf(ScriptError);
+    expect(readdirSync(none.workDir)).toEqual([]);
   });
 });
 

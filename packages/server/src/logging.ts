@@ -34,4 +34,11 @@ export const log = {
   warn: (message: string, detail?: unknown) => emit("warn", message, detail),
   info: (message: string, detail?: unknown) => emit("info", message, detail),
   debug: (message: string, detail?: unknown) => emit("debug", message, detail),
+  /**
+   * Security audit trail (raw-script calls, the raw-script gate at startup). Written at
+   * every log level — BRAINFERNO_MCP_LOG_LEVEL cannot silence it.
+   */
+  audit: (message: string) => {
+    process.stderr.write(`[brainferno-mcp-bridge] AUDIT ${message}\n`);
+  },
 };

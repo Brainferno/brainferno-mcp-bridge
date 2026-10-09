@@ -46,3 +46,56 @@ save_project · import_files · create_sequence · set_active_sequence · set_pl
 insert_clip · remove_clips · move_clip · trim_clip · set_clip_props · add_transition ·
 apply_effect · remove_effect · set_effect_param · add_marker · export_frame ·
 list_export_presets · export_sequence
+
+## Raw script / generic runner investigation (X-01, 2026-10-08)
+
+Question from X-01: can the `premierepro` UXP API take a gated script-eval or a generic action
+runner (`pp_run_action`)? Answer so far: **not today, possibly with a manifest permission —
+unproven.** Nothing was built; this records the evidence and the probe that would settle it.
+
+- **No eval path today.** The panel (`packages/panel-uxp-ppro/commands.js`) is a fixed table of
+  named commands — 29 when this was written, advertised live in its hello `capabilities` — and
+  the server's `pp_*` tools only ever send those names (`bridge.execute`); nothing in the panel
+  or the server evaluates a script string. `cc_eval_script` covers only the ExtendScript hosts.
+- **Where "UXP cannot eval" comes from.** Spike 03 (Photoshop 27.9.1) found `new Function`
+  blocked with a "code generation from strings disallowed" error. That panel's manifest
+  (`manifestVersion` 5) asks for no code-generation permission, so the finding describes UXP's
+  default, not a hard limit. It was never tested in Premiere Pro.
+- **Premiere Pro's runtime knows the permission.** On Premiere Pro 26.5.2 (build 26.5.2.5,
+  Windows) the UXP runtime library `dynamic-torqnative.dll` (UXP 9.3) contains
+  `allowCodeGenerationFromStrings` as a plugin flag: a check that it is a boolean, and loader
+  checks that refuse string-code paths while it is false. Adobe's Frame.io panel that ships
+  with Premiere Pro (`UXP/plugins/com.adobe.frameio.uxp/manifest.json`, `manifestVersion` 6)
+  sets it to `true` under `requiredPermissions`. Found by reading the installed files; Premiere
+  Pro was not run for this.
+- **Untested:** whether a third-party plugin is granted it — ours is `manifestVersion` 5 —
+  either dev-loaded through the UXP Developer Tool or installed as a `.ccx` through UPIA, and
+  whether it needs `manifestVersion` 6.
+- **Even if eval works, a raw script is not one undo step.** Every `pp_*` mutation is one undo
+  step because it runs inside `project.lockedAccess` + `executeTransaction`, and those callbacks
+  are synchronous (the rule at the top of `commands.js`). The `premierepro` API is
+  promise-based, so a script that awaits cannot run inside a single transaction: a raw Premiere
+  Pro script would be several undo steps, or limited to building one synchronous compound
+  action from objects fetched beforehand.
+
+**Operator probe** (needs Premiere Pro and someone at the UXP Developer Tool):
+
+1. In a *copy* of `packages/panel-uxp-ppro`, add `"allowCodeGenerationFromStrings": true` to
+   `requiredPermissions` in `manifest.json`.
+2. In the UXP Developer Tool, **Unload** then **Load** the copy (manifest changes need both).
+3. In that plugin's UDT console, run `new Function("return 1+1")()`; record the result or the
+   exact error.
+4. Package the copy as a `.ccx` (UDT → Package), remove the dev entry, install it through UPIA
+   (see "Packaging the panels" in `docs/HANDOFF.md`) and repeat step 3.
+5. Record the Premiere Pro build and the manifest's `manifestVersion` with each result; if v5
+   is refused, note whether v6 changes it.
+
+**Recommendation.** No `pp_run_action` in X-01. If the probe passes, `pp_run_action` gets its
+own prompt — same gate and envelope (`packages/server/src/tools/raw-script.ts`), plus an
+explicit undo story. If it fails, Premiere Pro coverage keeps growing through named commands
+(`PP-01` to `PP-05`).
+
+**Lead worth following.** Premiere Pro 26.5.2 also ships an `AgenticSkills` folder (three
+`SKILL.md` skill folders). It may point to a first-party agent surface inside Premiere Pro — a
+possible delegate lane like Illustrator's `ai_beta_call` — rather than an eval in our panel.
+Not investigated further.

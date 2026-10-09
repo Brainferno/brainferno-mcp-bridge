@@ -72,10 +72,24 @@ export interface Config {
   /** How often the bridge pings each panel to detect a dead connection. */
   heartbeatIntervalMs: number;
   /**
-   * Whether to register the raw-script escape-hatch tool (`cc_eval_script`).
-   * Off by default: it is arbitrary code execution at user privilege.
+   * True when at least one app is enabled for raw scripts; gate decisions use
+   * {@link rawScriptApps}. Kept for existing callers.
    */
   allowRawScripts: boolean;
+  /**
+   * Apps whose raw-script tools (`cc_eval_script`, `ps_batch_play`) may run, from
+   * BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS (`1`/`all` or a comma list). Empty = every raw
+   * call is refused. The tools are always registered; this only opens the gate.
+   * Off by default: it is arbitrary code execution at user privilege.
+   */
+  rawScriptApps: RawScriptApp[];
+  /** Tokens in BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS that name no raw-capable app (reported, never enabled). */
+  rawScriptIgnored: string[];
+  /**
+   * Whether remote (shared HTTP) sessions may run raw scripts too
+   * (BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS=1). Off by default: remote sessions are refused.
+   */
+  allowRemoteRawScripts: boolean;
   /** Where to write the port+token handshake file panels read. */
   handshakeFilePath: string;
   /**
@@ -139,35 +153,82 @@ export interface Config {
 export const INSTALLABLE_APPS = ["photoshop", "after_effects", "premiere", "illustrator", "audition", "media_encoder"] as const;
 export type InstallableApp = (typeof INSTALLABLE_APPS)[number];
 
+/** Every spelling an app may be given as, in BRAINFERNO_MCP_APPS and BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS. */
+const APP_ALIASES: Readonly<Record<string, InstallableApp>> = {
+  ps: "photoshop",
+  photoshop: "photoshop",
+  ae: "after_effects",
+  aftereffects: "after_effects",
+  after_effects: "after_effects",
+  "after-effects": "after_effects",
+  ppro: "premiere",
+  pr: "premiere",
+  premiere: "premiere",
+  premierepro: "premiere",
+  ai: "illustrator",
+  illustrator: "illustrator",
+  au: "audition",
+  audition: "audition",
+  ame: "media_encoder",
+  mediaencoder: "media_encoder",
+  media_encoder: "media_encoder",
+  "media-encoder": "media_encoder",
+};
+
+/** The app a token names (trimmed, case-insensitive, aliases allowed), or undefined. */
+export function resolveAppToken(token: string): InstallableApp | undefined {
+  const key = token.trim().toLowerCase();
+  // Own keys only: "constructor" or "toString" must not resolve through Object.prototype.
+  return Object.prototype.hasOwnProperty.call(APP_ALIASES, key) ? APP_ALIASES[key] : undefined;
+}
+
 export function parseApps(raw: string | undefined, fallback: readonly InstallableApp[] = INSTALLABLE_APPS): InstallableApp[] {
   if (raw === undefined || raw.trim() === "" || raw.trim().toLowerCase() === "all") return [...fallback];
-  const aliases: Record<string, InstallableApp> = {
-    ps: "photoshop",
-    photoshop: "photoshop",
-    ae: "after_effects",
-    aftereffects: "after_effects",
-    after_effects: "after_effects",
-    "after-effects": "after_effects",
-    ppro: "premiere",
-    pr: "premiere",
-    premiere: "premiere",
-    premierepro: "premiere",
-    ai: "illustrator",
-    illustrator: "illustrator",
-    au: "audition",
-    audition: "audition",
-    ame: "media_encoder",
-    mediaencoder: "media_encoder",
-    media_encoder: "media_encoder",
-    "media-encoder": "media_encoder",
-  };
   const out: InstallableApp[] = [];
   for (const part of raw.split(/[,\s]+/)) {
-    const id = aliases[part.trim().toLowerCase()];
+    const id = resolveAppToken(part);
     if (!id) throw new Error(`Unknown app "${part}". Use: ${INSTALLABLE_APPS.join(", ")}`);
     if (!out.includes(id)) out.push(id);
   }
   return out;
+}
+
+/** Apps with a raw-script tool: cc_eval_script (ExtendScript hosts) and ps_batch_play (Photoshop). Canonical order. */
+export const RAW_SCRIPT_APPS = ["after_effects", "photoshop", "illustrator", "audition"] as const;
+export type RawScriptApp = (typeof RAW_SCRIPT_APPS)[number];
+
+export function isRawScriptApp(id: string): id is RawScriptApp {
+  return (RAW_SCRIPT_APPS as readonly string[]).includes(id);
+}
+
+/**
+ * Parses BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS: `1`/`true`/`all`/`*` enables every raw-capable app,
+ * `0`/`false`/`no`/`off` or unset enables none, anything else is a comma/space list of app ids
+ * (aliases allowed). Pure and fail-closed: it never throws, and a token that names no raw-capable
+ * app (Premiere Pro, Media Encoder, a typo) is reported in `ignored`, never enabled.
+ */
+export function parseRawScriptApps(raw: string | undefined): { apps: RawScriptApp[]; ignored: string[] } {
+  if (raw === undefined || raw.trim() === "") return { apps: [], ignored: [] };
+  const whole = raw.trim().toLowerCase();
+  if (whole === "1" || whole === "true" || whole === "all" || whole === "*") return { apps: [...RAW_SCRIPT_APPS], ignored: [] };
+  if (whole === "0" || whole === "false" || whole === "no" || whole === "off") return { apps: [], ignored: [] };
+  const found = new Set<RawScriptApp>();
+  const ignored: string[] = [];
+  for (const part of raw.split(/[,\s]+/)) {
+    const token = part.trim();
+    if (token === "") continue;
+    const id = resolveAppToken(token);
+    if (id !== undefined && isRawScriptApp(id)) found.add(id);
+    else ignored.push(token);
+  }
+  return { apps: RAW_SCRIPT_APPS.filter((a) => found.has(a)), ignored };
+}
+
+/** A strict on/off switch: on only for `1` or `true` (trimmed, any case); anything else is off. */
+export function parseFlag(raw: string | undefined): boolean {
+  if (raw === undefined) return false;
+  const v = raw.trim().toLowerCase();
+  return v === "1" || v === "true";
 }
 
 export interface UserConfigFile {
@@ -253,8 +314,22 @@ function logLevelFromEnv(): LogLevel {
   return raw as LogLevel;
 }
 
+const warnedGate = new Set<string>();
+/** Warn (once per distinct message) about gate tokens that enable nothing. Stderr, like envValue: the logger is not set up yet. */
+function warnIgnoredRawScriptTokens(ignored: readonly string[]): void {
+  if (ignored.length === 0) return;
+  const message =
+    `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS: ignored ${ignored.join(", ")} ` +
+    `(raw scripts exist only for ${RAW_SCRIPT_APPS.join(", ")})`;
+  if (warnedGate.has(message)) return;
+  warnedGate.add(message);
+  console.error(`[brainferno-mcp-bridge] WARN ${message}`);
+}
+
 export function loadConfig(): Config {
   const file = readUserConfig();
+  const gate = parseRawScriptApps(envValue("BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS"));
+  warnIgnoredRawScriptTokens(gate.ignored);
   return {
     // Port 0 is allowed so the OS can assign one (used in tests); the handshake
     // file makes the real port discoverable regardless.
@@ -264,7 +339,10 @@ export function loadConfig(): Config {
     evalTimeoutMs: intFromEnv("BRAINFERNO_MCP_EVAL_TIMEOUT_MS", 30_000),
     // 0 disables the heartbeat.
     heartbeatIntervalMs: intFromEnv("BRAINFERNO_MCP_HEARTBEAT_MS", 15_000, { allowZero: true }),
-    allowRawScripts: boolFromEnv("BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS"),
+    allowRawScripts: gate.apps.length > 0,
+    rawScriptApps: gate.apps,
+    rawScriptIgnored: gate.ignored,
+    allowRemoteRawScripts: parseFlag(envValue("BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS")),
     handshakeFilePath: envValue("BRAINFERNO_MCP_HANDSHAKE_FILE") ?? defaultHandshakePath(),
     allowedOrigins: (envValue("BRAINFERNO_MCP_ALLOWED_ORIGINS") ?? "")
       .split(",")

@@ -18,13 +18,19 @@ Driven entirely from Claude Code through the hub and the Brainferno MCP Bridge p
   When the user clicks OK on that dialog, Photoshop converts to a smart object and the layer gets
   a **new id** — re-list layers after any dialog.
 - **`/mcp` reconnect reuses a healthy server process.** After a rebuild, the old process keeps
-  serving old code. Kill the process (its pid is in `~/.adobe-cc-mcp/bridge.json`) and reconnect;
+  serving old code. Kill the process (its pid is in `~/.brainferno-mcp-bridge/bridge.json`) and reconnect;
   the port-fallback change makes a stale holder harmless either way.
 - The panel's **kill switch** stops retries by design; after it, press Connect.
 - Opacity reads back as 70.196… (Photoshop stores it in 8-bit).
+- batchPlay reports a failed descriptor **in-band**: the call resolves, and the failure is an
+  `{ _obj: "error", message, result }` entry in the results array. `ps_batch_play` used to
+  return that array as a success. Since X-01 it returns `ok: false` naming the first such
+  index, on the reading that the descriptors before it stay applied and the ones after it did
+  not run. Unit-tested only — confirm both halves of that reading on a live run.
 
 ## Tool inventory (18)
 list_documents · list_layers · create_document · open_document · save_document · export ·
 get_preview · create_layer · create_text_layer · set_layer_props · move_layer ·
 duplicate_layer · delete_layer · place_image · fill · apply_filter · resize_image · crop
-(+ `ps_batch_play` when `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS=1`).
+(+ `ps_batch_play`, always registered since X-01; it refuses unless
+`BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS` is `1`/`all` or a list that includes `photoshop`).

@@ -95,9 +95,13 @@ make it talk:
 
 then spawn `/tmp/t/bin/brainferno-mcp-bridge` with **`HOME` pointed at a scratch directory**
 and speak JSON-RPC over stdio: `initialize`, `notifications/initialized`, `tools/list`. Expect
-125 tools as of v0.3.1 (ps 21, ae 32, pp 29, ai 7, au 12, ame 6, audio 9, pipeline 4, cc 5) and
-the version you just shipped. The scratch `HOME` has no key or env set, so `cc_eval_script` and
-the `ai_beta_*` tools stay unregistered and are not in that count.
+the number in `docs/HANDOFF.md`'s "Expect N tools" line, which `tool-counts.test.ts` keeps equal
+to the live registry (at v0.3.1 it was 125: ps 21, ae 32, pp 29, ai 7, au 12, ame 6, audio 9,
+pipeline 4, cc 5), and the version you just shipped. The scratch `HOME` has no key set, so the
+`ai_beta_*` tools stay unregistered and are not in that count. Since X-01 the raw-script tools
+(`cc_eval_script`, `ps_batch_play`) and `cc_get_capabilities` are always registered and *are*
+counted; with no `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS` in the scratch env, the raw tools refuse
+every call.
 
 The isolated `HOME` is not optional on a machine that already runs this server:
 - without it the test instance reads the real `config.json`, tries to bind the shared-mode

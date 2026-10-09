@@ -257,31 +257,35 @@ export class OsScriptBridge implements AppBridge {
     const id = randomUUID();
     const jsx = join(this.workDir, `${id}.jsx`);
     const result = join(this.workDir, `${id}.result.json`);
-    await writeFile(jsx, wrapScript(script, jsxPath(result)), "utf8");
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      await this.runner(jsx, controller.signal);
-    } catch (error) {
-      if (controller.signal.aborted) throw new EvalTimeoutError(this.appId, timeoutMs);
-      if (error instanceof AppNotConnectedError) throw error;
-      throw new AppNotConnectedError(
-        this.appId,
-        `Script runner failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    } finally {
-      clearTimeout(timer);
-    }
 
     let raw: string;
+    // One cleanup for every exit: a runner failure or timeout must not leave the wrapped
+    // script (which holds the caller's script text) on disk.
     try {
-      raw = await readFile(result, "utf8");
-    } catch {
-      throw new ScriptError(this.appId, "The script produced no result — it probably failed to parse (ES3 syntax only).");
+      await writeFile(jsx, wrapScript(script, jsxPath(result)), "utf8");
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        await this.runner(jsx, controller.signal);
+      } catch (error) {
+        if (controller.signal.aborted) throw new EvalTimeoutError(this.appId, timeoutMs);
+        if (error instanceof AppNotConnectedError) throw error;
+        throw new AppNotConnectedError(
+          this.appId,
+          `Script runner failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      } finally {
+        clearTimeout(timer);
+      }
+
+      try {
+        raw = await readFile(result, "utf8");
+      } catch {
+        throw new ScriptError(this.appId, "The script produced no result — it probably failed to parse (ES3 syntax only).");
+      }
     } finally {
-      void rm(jsx, { force: true }).catch(() => {});
-      void rm(result, { force: true }).catch(() => {});
+      await Promise.all([rm(jsx, { force: true }).catch(() => {}), rm(result, { force: true }).catch(() => {})]);
     }
 
     let parsed: ResultFile;

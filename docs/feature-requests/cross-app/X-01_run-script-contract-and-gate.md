@@ -3,7 +3,7 @@ id: X-01
 app: cross-app
 title: One run-script contract and a gate that clients can see
 priority: P1
-status: open
+status: in-review
 evidence: verified
 depends_on: []
 ---

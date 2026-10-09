@@ -44,6 +44,11 @@ interface Pending {
  * result frame can only settle a call that was issued on the *same* socket. */
 interface SocketState {
   appId?: AppId;
+  /** From the hello frame; undefined when the panel sent none (or ""). */
+  panelVersion?: string;
+  hostVersion?: string;
+  /** Command names the panel said it implements, from the hello frame. */
+  capabilities?: string[];
   authed: boolean;
   authTimer: NodeJS.Timeout;
   pending: Map<string, Pending>;
@@ -181,6 +186,21 @@ export class BridgeServer {
 
   connectedApps(): AppId[] {
     return [...this.panels.keys()];
+  }
+
+  /**
+   * What the connected panel for `appId` said in its hello (versions, implemented command
+   * names), or null when no panel is connected for that app. Absent fields are null.
+   */
+  panelInfo(appId: AppId): { panelVersion: string | null; hostVersion: string | null; capabilities: string[] | null } | null {
+    const socket = this.panels.get(appId);
+    const state = socket === undefined ? undefined : this.states.get(socket);
+    if (state === undefined) return null;
+    return {
+      panelVersion: state.panelVersion ?? null,
+      hostVersion: state.hostVersion ?? null,
+      capabilities: state.capabilities === undefined ? null : [...state.capabilities],
+    };
   }
 
   private onListening(): void {
@@ -352,6 +372,9 @@ export class BridgeServer {
     clearTimeout(state.authTimer);
     state.authed = true;
     state.appId = frame.appId;
+    state.panelVersion = frame.panelVersion || undefined;
+    state.hostVersion = frame.hostVersion || undefined;
+    state.capabilities = frame.capabilities === undefined ? undefined : [...frame.capabilities];
 
     // Replace any earlier panel for this app (reconnect after a restart).
     const existing = this.panels.get(frame.appId);

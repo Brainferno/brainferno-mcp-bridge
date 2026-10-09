@@ -7,8 +7,9 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import type { AppBridge, EvalOptions, JsonValue } from "../bridge/types.js";
-import { log } from "../logging.js";
-import { guard, imageResult, jsonResult } from "./result.js";
+import type { RawScriptApp } from "../config.js";
+import { auditRawCall, dispatchedFailure, envelopeResult, makeEnvelope, rawGateState, viaOf } from "./raw-script.js";
+import { errorResult, guard, imageResult, jsonResult } from "./result.js";
 
 /**
  * Photoshop is driven through its UXP panel. UXP cannot evaluate script
@@ -22,8 +23,27 @@ import { guard, imageResult, jsonResult } from "./result.js";
  */
 
 export interface PhotoshopToolOptions {
-  /** Register `ps_batch_play` (raw ActionDescriptors). Off by default. */
-  allowRawScripts: boolean;
+  /** The raw-script gate: `ps_batch_play` runs only when it includes "photoshop". Always registered. */
+  rawScriptApps: readonly RawScriptApp[];
+  /** This McpServer serves a remote (shared HTTP) session. */
+  remote: boolean;
+  /** BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS: whether a remote session may run raw batches. */
+  allowRemoteRawScripts: boolean;
+}
+
+/** Photoshop's tools are registered only when Photoshop is enabled, so the gate's "enabled apps" is just Photoshop. */
+const PHOTOSHOP_ONLY = ["photoshop"] as const;
+
+/** The first in-band `{ _obj: "error" }` entry in batchPlay's results, or -1. */
+function firstErrorEntry(results: JsonValue[]): number {
+  return results.findIndex(
+    (e) =>
+      e !== null &&
+      typeof e === "object" &&
+      !Array.isArray(e) &&
+      typeof e["_obj"] === "string" &&
+      /^error$/i.test(e["_obj"]),
+  );
 }
 
 const hexColor = z
@@ -404,22 +424,80 @@ export function registerPhotoshopTools(server: McpServer, bridge: AppBridge, opt
   );
 
   // ---- escape hatch -------------------------------------------------------
-  if (!options.allowRawScripts) {
-    log.info("ps_batch_play is disabled; set BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS=1 to enable");
-    return;
-  }
+  // Always registered; refuses (touching no bridge) unless the raw-script gate includes Photoshop.
   server.registerTool(
     "ps_batch_play",
     {
       title: "Photoshop: run raw batchPlay descriptors",
       description:
-        "Run an array of Photoshop ActionDescriptors via batchPlay inside executeAsModal and return the results. " +
-        "This reaches anything Photoshop can record; prefer a typed ps_* tool where one exists.",
+        "Run an array of Photoshop ActionDescriptors through batchPlay inside executeAsModal. Reaches anything " +
+        "Photoshop can record; prefer a typed ps_* tool where one exists.\n" +
+        "Returns the envelope { ok, error?: { message, line, bodyLine }, durationMs, value, logs } with batchPlay's " +
+        "results array as value (line/bodyLine are always null here; logs is empty). durationMs is the server round " +
+        "trip, including any wait behind other Photoshop calls.\n" +
+        "Photoshop reports a failed descriptor in-band, as an { _obj: \"error\" } entry in the results: this tool turns " +
+        "that into ok:false naming the failing index. Descriptors before it already ran and are NOT undone; later " +
+        "ones did not run — fix the failing descriptor and resend only it and the ones after it, never the whole array.\n" +
+        "Error shape: an error with plain text means nothing was dispatched (raw scripts disabled, Photoshop not " +
+        "connected); an error whose text is a JSON envelope means the batch was sent and may have partly run.\n" +
+        "Refused unless the operator sets BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS (1, or a comma list including photoshop) in " +
+        "the MCP server env; remote (shared HTTP) sessions are also refused unless " +
+        "BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS=1. cc_get_capabilities shows the gate. Every call, run or refused, " +
+        "writes an audit line to the server log.",
       inputSchema: {
         descriptors: z.array(z.record(z.unknown())).min(1).describe("ActionDescriptor objects (batchPlay 'actionJSON' form)."),
       },
       annotations: { destructiveHint: true, openWorldHint: true },
     },
-    async ({ descriptors }) => run("ps.batch_play", { descriptors }),
+    async ({ descriptors }, extra) => {
+      const via = viaOf(extra);
+      const payload = JSON.stringify(descriptors);
+      const audit = (outcome: "run" | "refused") =>
+        auditRawCall({ tool: "ps_batch_play", app: "photoshop", payload, count: descriptors.length, outcome, via });
+      const gate = rawGateState("photoshop", options.rawScriptApps, PHOTOSHOP_ONLY, {
+        remote: options.remote,
+        allowRemote: options.allowRemoteRawScripts,
+      });
+      if (!gate.open) {
+        audit("refused");
+        return errorResult(gate.reason);
+      }
+      audit("run");
+      return guard(async () => {
+        const t0 = Date.now();
+        let value: JsonValue;
+        try {
+          value = await bridge.execute("ps.batch_play", { descriptors } as unknown as JsonValue, slow);
+        } catch (error) {
+          const env = dispatchedFailure(error, Date.now() - t0, {
+            noun: "the batch",
+            onScriptError: (message) =>
+              `${message} — Photoshop rejected the batch; some descriptors may already have run. ` +
+              "Check ps_list_layers or the History panel before resending.",
+          });
+          if (env !== null) return envelopeResult(env);
+          throw error; // AppNotConnectedError (not dispatched) and anything else: guard() → plain text.
+        }
+        const durationMs = Date.now() - t0;
+        // Only an array of results can carry an in-band error entry; anything else passes through.
+        const idx = Array.isArray(value) ? firstErrorEntry(value) : -1;
+        if (idx < 0) return envelopeResult(makeEnvelope({ ok: true, durationMs, value, logs: [] }));
+
+        const entry = (value as JsonValue[])[idx] as { [key: string]: JsonValue };
+        const name = String(descriptors[idx]?.["_obj"] ?? "?");
+        const failed =
+          `descriptors[${idx}] (${name}) failed: ${String(entry["message"] ?? "no message")} ` +
+          `(code ${String(entry["result"] ?? "?")}).`;
+        const message =
+          idx === 0
+            ? `${failed} Nothing before it ran; later descriptors did not run. Fix descriptors[0] and resend.`
+            : `${failed} descriptors[0..${idx - 1}] already ran and are NOT undone (their results are in value); ` +
+              `later descriptors did not run. Fix descriptors[${idx}] and resend only descriptors[${idx}..] — ` +
+              "do not resend the whole array.";
+        return envelopeResult(
+          makeEnvelope({ ok: false, error: { message, line: null, bodyLine: null }, durationMs, value, logs: [] }),
+        );
+      });
+    },
   );
 }

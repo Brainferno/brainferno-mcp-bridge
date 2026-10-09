@@ -1,5 +1,79 @@
 # Changelog
 
+## Unreleased
+
+One run-script contract and a gate clients can see (X-01).
+
+**Breaking**
+
+- `cc_eval_script` and `ps_batch_play` now return the raw-script envelope
+  `{ ok, error?: { message, line, bodyLine }, durationMs, value, logs, logsDropped? }`, keys in
+  that order. `ps_batch_play`'s results array moved under `value`.
+- A raw-script tool error is now either plain text (nothing was sent: raw scripts disabled, app
+  not enabled, app not connected) or a JSON envelope (the script or batch was sent and may have
+  partly run). A script that throws in the host, a timeout, or a panel that disconnects
+  mid-call now gives the JSON form, where a script error used to come back as plain text.
+- `ps_batch_play`: a batch whose results contain an in-band `{ _obj: "error" }` entry now
+  returns `ok: false` (an `isError` result) naming the failing descriptor, instead of reporting
+  success.
+- `cc_eval_script` runs the script through an ES3 wrapper. The value of its last statement is
+  still the result (an IIFE still works; a top-level `return` is a syntax error), and the new
+  `__log(msg)` collects log lines (up to 200 lines / 20000 characters; `logsDropped` counts the
+  rest). A result that is not plain data — a host object such as a layer, a comp or a `Date` —
+  is now refused with its path instead of being serialized best-effort.
+
+**Changed**
+
+- `cc_eval_script` and `ps_batch_play` are always registered and refuse — touching no app —
+  while their gate is closed. The default tool list grows from 127 to 130 (these two plus
+  `cc_get_capabilities`).
+- `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS` takes `1` (now also `true` in any case, `all` or `*`) for
+  every raw-capable app, or a comma list of app ids (`after_effects`, `photoshop`,
+  `illustrator`, `audition`; the short names `ae`, `ps`, `ai`, `au` work too). Premiere Pro,
+  Media Encoder and unknown names are ignored with a warning, never enabled.
+- `=1` / `all` now actually reaches Illustrator: its raw scripts go through the OS scripting
+  lane, which launches Illustrator if it is closed.
+- Remote (shared HTTP) sessions refuse raw scripts unless the new
+  `BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS=1` is set.
+- `cc_eval_script` refuses an app whose tools are not enabled (`BRAINFERNO_MCP_APPS`).
+  `timeoutMs` is capped at 30 minutes.
+- New audit line for every raw call, run or refused, on both tools (`ps_batch_play` had none):
+  `AUDIT raw-script tool=… app=… sha256=<12 hex> len=… [count=…] via=stdio|http:<8 chars> outcome=run|refused`.
+  It is written at every log level and carries no script text; the first 200 characters of a
+  script that runs moved to the `debug` log (`cc_eval_script` used to put them in a `warn`
+  line). When the gate is open the server writes one `AUDIT raw scripts ENABLED for …` line at
+  startup; the "raw-script tool is disabled" info lines are gone.
+
+**Added**
+
+- `cc_get_capabilities` (read-only, contacts no app): server and protocol versions, whether the
+  session is local or remote, the raw-script gate, one row per gated tool (enabled, how to
+  enable it, app connected, panel supports the command), and each panel's version and host
+  version.
+- The hub now keeps each panel's `panelVersion`, `hostVersion` and `capabilities` from its
+  hello (`BridgeServer.panelInfo`).
+
+**Fixed**
+
+- `cc_eval_script` for Illustrator always failed with "not connected": it was routed to the
+  panel hub, where Illustrator has no panel. It now uses the same OS scripting lane as the
+  `ai_*` tools.
+- `ps_batch_play` reported failed descriptors as success (see Breaking).
+- The OS scripting lane left the temporary script and result files on disk when the runner
+  failed or timed out; it now removes them in every case.
+
+**Docs**
+
+- `CONTRIBUTING.md` (architect review): raw-script tools are always registered and refuse when
+  gated; a new "Raw-script tools — one contract" section (envelope, error-shape rule, gate,
+  audit); corrected two stale claims — UXP panels run named commands and never evaluate script
+  strings, and the CEP panel defines its own `__acmJson` rather than loading `json2.jsx`.
+- `docs/spikes/07-premiere-tools-live.md`: the Premiere Pro raw-script investigation — no eval
+  path today, the `allowCodeGenerationFromStrings` lead, an operator probe, and why no
+  `pp_run_action` was built.
+- README (raw scripts section, configuration, security), `.env.example`, `docs/HANDOFF.md`,
+  `docs/feature-requests/00_PREAMBLE.md` and spikes 05 and 14 updated to match.
+
 ## v0.3.3 — 2026-10-01
 
 - Doc-drift guard (X-03): `tool-counts.test.ts` counts the live tool registry under the

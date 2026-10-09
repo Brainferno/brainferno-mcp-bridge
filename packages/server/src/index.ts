@@ -21,7 +21,8 @@ async function main(): Promise<void> {
 
   let remote: RunningHttpServer | null = null;
   if (config.httpPort > 0) {
-    remote = await startHttpServer(() => createMcpServer(rt), { host: config.httpHost, port: config.httpPort, token: config.httpToken });
+    // Remote sessions are marked so raw-script tools fail closed for them (BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS).
+    remote = await startHttpServer(() => createMcpServer(rt, { remote: true }), { host: config.httpHost, port: config.httpPort, token: config.httpToken });
   }
 
   const shutdown = (signal: string) => {
