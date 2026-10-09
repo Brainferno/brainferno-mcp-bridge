@@ -93,12 +93,23 @@ server.registerTool(
 ## Errors
 
 `guard()` converts typed bridge failures (`AppNotConnectedError`, `ScriptError`,
-timeouts) into readable tool errors. Error text always says what happened **and what
-to do next**; for expected failures `throw new Error("<what happened> — <what to do
-next>")`. (Earlier drafts planned a code prefix such as `SCRIPT_ERROR:`; that was not
-adopted — the actionable message is the contract.) Two kinds of tool errors carry JSON: failed
+timeouts, and `AppDisconnectedError` — a panel that dropped mid-call, which reads as "it may
+have partly run" plus how to reconnect) into readable tool errors. Error text always says
+what happened **and what to do next**; for expected failures
+`throw new Error("<what happened> — <what to do next>")`. (Earlier drafts planned a code
+prefix such as `SCRIPT_ERROR:`; that was not adopted — the actionable message is the contract.) Two kinds of tool errors carry JSON: failed
 or cancelled jobs (the job view from `jobResult` in tools/jobs.ts) and the raw-script tools,
 where JSON-versus-plain-text is the dispatch signal (see the next section).
+
+A `ScriptError` keeps the host's text in `message`, unchanged — raw-script envelopes and the
+`NO_RESULT_MESSAGE` check depend on it. Context goes in its optional `details`: the panel's wire
+`code`, and, where an app enriches it (After Effects, AE-16), where the line falls
+(`body`/`helper`/`outside`), the tool, a capped and redacted echo of its arguments, a code
+excerpt and "did you mean" names. `guard()` and failed job steps render them with
+`scriptErrorText` (tools/result.ts) as one plain-text paragraph; an error no app enriched (no
+`details.where`) reads exactly as before. A panel that answers `UNKNOWN_COMMAND` reads as
+"older than this server — update or reload the panel". Echoed text never carries the server's
+keys or tokens (`tools/echo.ts`).
 
 ## Raw-script tools — one contract
 

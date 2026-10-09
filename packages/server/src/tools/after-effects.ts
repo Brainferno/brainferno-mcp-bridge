@@ -8,11 +8,15 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { jsStringLiteral } from "../bridge/script-escape.js";
-import type { AppBridge, JsonValue } from "../bridge/types.js";
+import { EvalTimeoutError, ScriptError, type AppBridge, type EvalOptions, type JsonValue } from "../bridge/types.js";
 import type { JobRegistry } from "../jobs.js";
 import { log } from "../logging.js";
+import { currentToolCall, withToolContext } from "./call-context.js";
+import { echoArgs, excerptLine } from "./echo.js";
 import { runOrQueue, waitParam, type ProgressExtra } from "./jobs.js";
+import { lineCount } from "./raw-script.js";
 import { guard, imageResult, jsonResult } from "./result.js";
+import { closestNames, fold, rank, stripAeVendor, suggestionThreshold } from "./suggest.js";
 
 /**
  * After Effects is ExtendScript-only (ES3): the scripts below deliberately use
@@ -36,48 +40,186 @@ const rgb = (hex: string): string => {
   return `[${parseInt(m[1]!, 16) / 255}, ${parseInt(m[2]!, 16) / 255}, ${parseInt(m[3]!, 16) / 255}]`;
 };
 
-/** ES3 helpers prepended inside every script's IIFE. */
-const HELPERS = `
-  function __comp(id) {
-    var item = app.project.itemByID(id);
-    if (!item || !(item instanceof CompItem)) { throw new Error("No composition with id " + id + ". Call ae_list_compositions."); }
-    return item;
+/**
+ * ES3 helpers prepended inside every script's IIFE (after the host-line guard, see AE_PRELUDE).
+ *
+ * String.raw, so the ES3 source is exactly what is typed here (`"\\"` is one backslash in ES3,
+ * `\u2014` an em dash). Style rules the helper map (aeHelperRanges) relies on, checked when this
+ * module loads: every helper is a top-level `  function __name(` (two-space indent) closed by a
+ * line that is exactly `  }`; no one-line helpers and no nested function declarations; pure ASCII
+ * (write an em dash as \u2014). Also: no backtick or dollar-brace; no ES6 words (not even in
+ * messages or comments); no ES5 array or string methods; no else-if chain whose condition reads a
+ * host object (After Effects' line attribution there is unverified).
+ *
+ * Every lookup failure says what happened, lists what exists (cut by count and by length, so the
+ * "what to do next" clause after the dash always survives the server's cap) and what to do next.
+ */
+const HELPERS = String.raw`
+  // Length budgets (UTF-16 units) for candidate lists, so every message stays far below the
+  // server's 1500-character cap and keeps its "what to do next" clause.
+  var __BUDGET = 600;
+  var __PATH_BUDGET = 300;
+  function __q(s) {
+    var t = String(s), out = "", i, c;
+    for (i = 0; i < t.length && i < 60; i++) {
+      c = t.charCodeAt(i);
+      if (c === 34 || c === 92) { out += "\\" + t.charAt(i); }
+      else if (c < 32 || c === 8232 || c === 8233) { out += " "; }
+      else { out += t.charAt(i); }
+    }
+    if (t.length > 60) { out += "..."; }
+    return "\"" + out + "\"";
   }
-  function __layer(comp, index) {
-    if (index < 1 || index > comp.numLayers) { throw new Error("Layer index " + index + " is out of range (1.." + comp.numLayers + ")."); }
-    return comp.layer(index);
+  function __list(names, total, budget) {
+    var out = "", shown = 0, i, s;
+    for (i = 0; i < names.length; i++) {
+      s = __q(names[i]);
+      if (shown > 0 && out.length + 2 + s.length > budget) { break; }
+      out += (shown > 0 ? ", " : "") + s;
+      shown++;
+    }
+    return "[" + out + "]" + (total > shown ? " (+" + (total - shown) + " more)" : "");
+  }
+  function __kind(l) {
+    // instanceof against the layer classes is unreliable in AE ExtendScript; matchName is not.
+    var mn = l.matchName;
+    if (mn === "ADBE Text Layer") { return "text"; }
+    if (mn === "ADBE Camera Layer") { return "camera"; }
+    if (mn === "ADBE Light Layer") { return "light"; }
+    if (mn === "ADBE Vector Layer") { return "shape"; }
+    if (l.nullLayer) { return "null"; }
+    if (l.adjustmentLayer) { return "adjustment"; }
+    if (l.source && l.source instanceof CompItem) { return "precomp"; }
+    if (l.source && l.source.mainSource && l.source.mainSource instanceof SolidSource) { return "solid"; }
+    return "footage";
+  }
+  function __layerLabel(l) {
+    var k = "unknown kind";
+    try { k = __kind(l); } catch (e) {}
+    return l.index + " " + __q(l.name) + " (" + k + ")";
+  }
+  function __layerList(comp, max) {
+    var out = "", shown = 0, i, s;
+    for (i = 1; i <= comp.numLayers && i <= max; i++) {
+      try { s = __layerLabel(comp.layer(i)); } catch (e) { s = i + " (unreadable)"; }
+      if (shown > 0 && out.length + 2 + s.length > __BUDGET) { break; }
+      out += (shown > 0 ? ", " : "") + s;
+      shown++;
+    }
+    return out + (comp.numLayers > shown ? " ... and " + (comp.numLayers - shown) + " more" : "");
+  }
+  function __compList(max) {
+    // "" when the project has no compositions: callers then say how to make one.
+    var out = "", shown = 0, n = 0, full = false, i, it, s;
+    for (i = 1; i <= app.project.numItems; i++) {
+      it = app.project.item(i);
+      if (it instanceof CompItem) {
+        n++;
+        if (!full) {
+          try { s = it.id + " " + __q(it.name); } catch (e) { s = String(it.id); }
+          if (shown >= max || (shown > 0 && out.length + 2 + s.length > __BUDGET)) { full = true; }
+          else { out += (shown > 0 ? ", " : "") + s; shown++; }
+        }
+      }
+    }
+    if (n === 0) { return ""; }
+    return "the project has " + n + ": " + out + (n > shown ? " ... and " + (n - shown) + " more" : "");
+  }
+  function __comp(id) {
+    var item = null, list, what;
+    // itemByID throws (it does not return null) for an id no item has; verified live on 26.3.
+    try { item = app.project.itemByID(id); } catch (e) { item = null; }
+    if (item && item instanceof CompItem) { return item; }
+    list = __compList(20);
+    if (!item) {
+      if (list === "") { throw new Error("No composition with id " + id + "; the project has no compositions \u2014 create one with ae_create_comp and pass its id."); }
+      throw new Error("No composition with id " + id + "; " + list + " \u2014 pass one of these compIds (ae_list_compositions lists them all).");
+    }
+    what = "Item " + id + " " + __q(item.name) + " is " + (item instanceof FolderItem ? "a folder" : "a footage item") + ", not a composition";
+    if (list === "") { throw new Error(what + ", and the project has no compositions \u2014 create one with ae_create_comp and pass its id."); }
+    throw new Error(what + "; " + list + " \u2014 pass one of these compIds (ae_list_compositions lists them all).");
+  }
+  function __layer(comp, index, role) {
+    if (index >= 1 && index <= comp.numLayers) { return comp.layer(index); }
+    var what = (role ? role + " layer" : "Layer") + " index " + index + " is out of range";
+    if (comp.numLayers === 0) { throw new Error(what + ": " + __q(comp.name) + " (id " + comp.id + ") has no layers \u2014 add one first (ae_add_layer)."); }
+    throw new Error(what + " (1.." + comp.numLayers + ") in " + __q(comp.name) + " (id " + comp.id + "): " + __layerList(comp, 20) + " \u2014 pass one of these indexes (ae_get_comp lists every layer).");
   }
   function __undo(name, fn) {
     app.beginUndoGroup(name);
     try { return fn(); } finally { app.endUndoGroup(); }
   }
   var __TRANSFORM = { position: "ADBE Position", scale: "ADBE Scale", rotation: "ADBE Rotate Z", opacity: "ADBE Opacity", anchorPoint: "ADBE Anchor Point" };
+  // Top-level groups that exist on one kind of layer only: a miss there is explained by the kind.
+  var __KIND_ROOTS = { "ADBE Text Properties": "text", "ADBE Root Vectors Group": "shape", "ADBE Camera Options Group": "camera", "ADBE Light Options Group": "light" };
+  // Groups whose children the user names, or whose children all share one match name (every shape
+  // group is "ADBE Vector Group", every mask "ADBE Mask Atom"): listed by name whatever the caller passed.
+  var __BY_NAME = { "ADBE Effect Parade": true, "ADBE Mask Parade": true, "ADBE Root Vectors Group": true, "ADBE Vectors Group": true, "ADBE Text Animators": true, "ADBE Text Selectors": true };
+  function __byName(g, segment) {
+    var mn = "", indexed = false;
+    try { mn = String(g.matchName); } catch (e) { mn = ""; }
+    if (Object.prototype.hasOwnProperty.call(__BY_NAME, mn)) { return true; }
+    try { indexed = g.propertyType === PropertyType.INDEXED_GROUP; } catch (e) { indexed = false; }
+    if (indexed) { return true; }
+    // Otherwise answer in the caller's vocabulary: a match-name segment gets match names.
+    return String(segment).substring(0, 5) !== "ADBE ";
+  }
+  function __kids(g, max, byName) {
+    var names = [], n = 0, dup = false, i, j, s;
+    try { n = g.numProperties; } catch (e) { n = 0; }
+    if (!(n > 0)) { n = 0; }
+    for (i = 1; i <= n && names.length < max; i++) {
+      s = null;
+      try { s = String(byName ? g.property(i).name : g.property(i).matchName); } catch (e) { s = null; }
+      if (s !== null) {
+        for (j = 0; j < names.length; j++) { if (names[j] === s) { dup = true; } }
+        names.push(s);
+      }
+    }
+    return { n: n, dup: dup, text: __list(names, n, __BUDGET) };
+  }
+  function __pick(k) {
+    if (k.dup) { return " \u2014 some of these names repeat, so a path cannot tell those apart; rename them in After Effects so each is unique, then pass one."; }
+    return " \u2014 use one of these names.";
+  }
+  function __isLeaf(p) {
+    try { return p.propertyType === PropertyType.PROPERTY; } catch (e) { return false; }
+  }
   function __prop(layer, name, path) {
-    var p;
+    var p, q, i, only, at, mn, k, pmn, head;
     if (path !== null) {
       p = layer;
-      for (var i = 0; i < path.length; i++) { p = p.property(path[i]); if (!p) { throw new Error("Property path not found at " + path[i]); } }
+      for (i = 0; i < path.length; i++) {
+        head = "Property path not found on layer " + __layerLabel(layer) + ": ";
+        if (i > 0 && __isLeaf(p)) { throw new Error(head + __q(path[i - 1]) + " is a property, not a group, so nothing named " + __q(path[i]) + " is under it \u2014 end the path at " + __q(path[i - 1]) + "."); }
+        q = null;
+        try { q = p.property(path[i]); } catch (e) { q = null; }
+        if (!q) {
+          only = (i === 0 && Object.prototype.hasOwnProperty.call(__KIND_ROOTS, path[0])) ? __KIND_ROOTS[path[0]] : null;
+          if (only !== null && only !== __kind(layer)) { throw new Error(head + __q(path[0]) + " exists only on " + only + " layers \u2014 address a " + only + " layer (ae_get_comp lists each layer's kind)."); }
+          at = i === 0 ? "at the top of the layer" : "under " + __list(path.slice(0, i), i, __PATH_BUDGET);
+          k = __kids(p, i === 0 ? 20 : 10, __byName(p, path[i]));
+          if (k.n === 0) {
+            pmn = "";
+            try { pmn = String(p.matchName); } catch (e) { pmn = ""; }
+            if (pmn === "ADBE Effect Parade") { throw new Error(head + "segment " + __q(path[i]) + " not found " + at + ", which is empty \u2014 the layer has no effects; apply one first (ae_apply_effect), or check the path."); }
+            if (pmn === "ADBE Mask Parade") { throw new Error(head + "segment " + __q(path[i]) + " not found " + at + ", which is empty \u2014 the layer has no masks; add one first (ae_add_mask), or check the path."); }
+            throw new Error(head + "segment " + __q(path[i]) + " not found " + at + ", which has nothing under it \u2014 " + (i > 0 ? "if " + __q(path[i - 1]) + " is the property you want, end the path there; otherwise " : "") + "check the path (ae_get_layer lists the layer's effects).");
+          }
+          throw new Error(head + "segment " + __q(path[i]) + " not found " + at + "; children here: " + k.text + __pick(k));
+        }
+        p = q;
+      }
       return p;
     }
-    var mn = __TRANSFORM[name];
-    if (!mn) { throw new Error("Unknown property " + name); }
+    mn = __TRANSFORM[name];
+    if (!mn) { throw new Error("Unknown transform property " + __q(name) + " \u2014 use position, scale, rotation, opacity or anchorPoint, or pass propertyPath."); }
     p = layer.property("ADBE Transform Group").property(mn);
-    if (!p) { throw new Error("Layer has no " + name); }
+    if (!p) { throw new Error("Layer " + __layerLabel(layer) + " has no " + name + " \u2014 pass propertyPath for this layer."); }
     return p;
   }
   function __layerInfo(l) {
-    // instanceof against the layer classes is unreliable in AE ExtendScript; matchName is not.
-    var mn = l.matchName, kind;
-    if (mn === "ADBE Text Layer") { kind = "text"; }
-    else if (mn === "ADBE Camera Layer") { kind = "camera"; }
-    else if (mn === "ADBE Light Layer") { kind = "light"; }
-    else if (mn === "ADBE Vector Layer") { kind = "shape"; }
-    else if (l.nullLayer) { kind = "null"; }
-    else if (l.adjustmentLayer) { kind = "adjustment"; }
-    else if (l.source && l.source instanceof CompItem) { kind = "precomp"; }
-    else if (l.source && l.source.mainSource && l.source.mainSource instanceof SolidSource) { kind = "solid"; }
-    else { kind = "footage"; }
-    return { index: l.index, name: l.name, kind: kind, enabled: l.enabled, inPoint: l.inPoint, outPoint: l.outPoint, startTime: l.startTime, parentIndex: l.parent ? l.parent.index : null, sourceId: l.source ? l.source.id : null };
+    return { index: l.index, name: l.name, kind: __kind(l), enabled: l.enabled, inPoint: l.inPoint, outPoint: l.outPoint, startTime: l.startTime, parentIndex: l.parent ? l.parent.index : null, sourceId: l.source ? l.source.id : null };
   }
   function __centerAnchor(l) {
     var r = l.sourceRectAtTime(0, false);
@@ -95,7 +237,7 @@ const HELPERS = `
   }
   function __styles(l) {
     var g = l.property("ADBE Layer Styles");
-    if (!g) { throw new Error("Layer " + l.index + " has no layer styles group (cameras and lights cannot take styles)."); }
+    if (!g) { throw new Error("Layer " + __layerLabel(l) + " has no layer styles \u2014 cameras and lights cannot take styles; address another layer."); }
     return g;
   }
   // A style's group is fetched by its match name "<key>/enabled" (the short key
@@ -119,8 +261,241 @@ const HELPERS = `
   }
 `;
 
-const wrap = (body: string): string => `(function () {${HELPERS}${body}
-})()`;
+/**
+ * Blank lines between "(function () {" and HELPERS. The CEP panel's host.jsx (62 lines) reports an
+ * error it raises while serializing a result with ITS OWN line number (the observed "line 40" was
+ * host.jsx:40, a host object in the result). With this guard such a line can never land on a
+ * helper or body line, so locateAeError() reports it as outside the tool's code instead of blaming
+ * a helper. Keep it above host.jsx's line count (after-effects-errors.test.ts checks the tracked
+ * packages/panel-cep/host.jsx).
+ */
+export const HOST_LINE_GUARD = 100;
+
+/** Any character outside ASCII (built from a string so the source holds no raw control characters). */
+const NON_ASCII_CLASS = "[^\\x00-\\x7f]";
+const NON_ASCII = new RegExp(NON_ASCII_CLASS, "g");
+
+/**
+ * Every non-ASCII code unit as \uXXXX: After Effects scripts travel as pure ASCII. Valid for this
+ * file's scripts because builder text holds non-ASCII only inside string literals (where \uXXXX is
+ * the same character) and // comments (where it is inert); no identifier, regex or whitespace
+ * outside a literal is non-ASCII. A surrogate pair becomes two escapes, as ES3 expects. The line
+ * count is unchanged (lit() already escapes U+2028/U+2029).
+ */
+function asciiSource(source: string): string {
+  return source.replace(NON_ASCII, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+}
+
+const AE_PRELUDE = asciiSource("(function () {" + "\n".repeat(HOST_LINE_GUARD) + HELPERS);
+const AE_SUFFIX = "\n})()";
+const wrap = (body: string): string => AE_PRELUDE + asciiSource(body) + AE_SUFFIX;
+
+/** wrap() for callers that assemble After Effects scripts outside this file (AE-03's ae_batch, tests). */
+export const wrapAe = wrap;
+
+/**
+ * Script lines wholly taken by the prelude ("(function () {", the guard, HELPERS). Body-string
+ * line k is script line AE_PRELUDE_LINES + k. Derived, never typed.
+ */
+export const AE_PRELUDE_LINES = lineCount(AE_PRELUDE) - 1;
+
+/** A helper's script lines, inclusive. */
+export interface AeHelperRange {
+  readonly name: string;
+  readonly first: number;
+  readonly last: number;
+}
+
+function scanHelpers(prelude: string): AeHelperRange[] {
+  const out: AeHelperRange[] = [];
+  const lines = prelude.split("\n"); // template literals normalize CRLF, so the prelude holds LF only
+  let open: { name: string; first: number } | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const n = i + 1; // script line
+    const start = /^ {2}function (__\w+)\(/.exec(line);
+    if (start !== null) {
+      if (open !== null) throw new Error(`HELPERS: ${start[1]} starts before ${open.name} closes`);
+      open = { name: start[1]!, first: n };
+    }
+    if (open !== null && line === "  }") {
+      out.push({ name: open.name, first: open.first, last: n });
+      open = null;
+    }
+  }
+  if (open !== null) throw new Error(`HELPERS: ${open.name} has no closing "  }" line`);
+  return out;
+}
+
+// Module-load checks: a broken prelude fails the first import, so every test run.
+if (!AE_PRELUDE.endsWith("\n")) throw new Error("HELPERS must end with a newline (no prelude line may be shared with the body)");
+if (new RegExp(NON_ASCII_CLASS).test(HELPERS)) throw new Error("HELPERS must be pure ASCII (write an em dash as \\u2014)");
+
+/** Built once at module load from the prelude; throws if a helper breaks the style rules. */
+const AE_HELPERS: readonly AeHelperRange[] = scanHelpers(AE_PRELUDE);
+
+/** The shared helpers' script-line ranges (tests, AE-03). */
+export function aeHelperRanges(): readonly AeHelperRange[] {
+  return AE_HELPERS;
+}
+
+export type AeErrorLocation =
+  | { readonly kind: "body"; readonly bodyLine: number }
+  | { readonly kind: "helper"; readonly helper: string }
+  | { readonly kind: "outside" }
+  | { readonly kind: "unknown" };
+
+/** The body of a wrap()ped script, or null for any other script (a future ae_batch, a raw wrapper). */
+function aeBody(script: string): string | null {
+  return script.length >= AE_PRELUDE.length + AE_SUFFIX.length && script.startsWith(AE_PRELUDE) && script.endsWith(AE_SUFFIX)
+    ? script.slice(AE_PRELUDE.length, script.length - AE_SUFFIX.length)
+    : null;
+}
+
+/**
+ * Where a host-reported line falls in a wrap()ped script: a body line (the first body statement
+ * is 1), a shared helper, outside the tool's code (the guard, line 1, a top-level helper var, the
+ * empty first body line, the closing line, or past the end: host.jsx's serializer), or unknown.
+ */
+export function locateAeError(script: string, scriptLine: number | undefined): AeErrorLocation {
+  if (scriptLine === undefined || !Number.isInteger(scriptLine) || scriptLine < 1) return { kind: "unknown" };
+  const body = aeBody(script);
+  if (body === null) return { kind: "unknown" };
+  if (scriptLine <= AE_PRELUDE_LINES) {
+    const h = AE_HELPERS.find((r) => scriptLine >= r.first && scriptLine <= r.last);
+    return h === undefined ? { kind: "outside" } : { kind: "helper", helper: h.name };
+  }
+  const lead = body.startsWith("\n") ? 1 : 0; // every body today starts with "\n"
+  const k = scriptLine - AE_PRELUDE_LINES; // 1-based line of the body string
+  if (k <= lead || k > lineCount(body)) return { kind: "outside" };
+  return { kind: "body", bodyLine: k - lead };
+}
+
+/** The line terminators lineCount() counts. */
+const LINE_SPLIT = new RegExp("\\r\\n|[\\n\\r\\u2028\\u2029]");
+
+/** Up to 3 lines around bodyLine, as "N: code" with ">>> " on the failing one; blank neighbours dropped; redacted and capped. */
+export function aeExcerpt(script: string, bodyLine: number): string[] {
+  const body = aeBody(script);
+  if (body === null) return [];
+  const lines = body.split(LINE_SPLIT);
+  const lead = body.startsWith("\n") ? 1 : 0;
+  const last = lines.length - lead;
+  const out: string[] = [];
+  for (let n = Math.max(1, bodyLine - 1); n <= Math.min(last, bodyLine + 1); n++) {
+    const code = lines[n - 1 + lead]!.trim();
+    if (code === "" && n !== bodyLine) continue;
+    out.push(`${n === bodyLine ? ">>> " : ""}${n}: ${excerptLine(code)}`);
+  }
+  return out;
+}
+
+/** Tools whose arguments are never echoed (raw script text). AE-01's ae_run_script goes here. */
+const AE_NO_ARG_ECHO: ReadonlySet<string> = new Set(["ae_run_script"]);
+
+/** What to say next when the host message does not (it has no " — "). */
+const AE_NEXT_STEP = {
+  body: "check the values the line marked >>> uses (ae_get_comp and ae_get_layer show what exists), then retry",
+  helper: "check the ids, layer indexes and property path you passed (ae_list_compositions and ae_get_comp show what exists), then retry",
+  outside: "the result held a value After Effects could not read; read it another way (for example ae_get_layer) or report the tool and its arguments",
+  unknown: "check the arguments and retry; if it keeps failing, close and reopen the brainferno-mcp-bridge panel in After Effects",
+} as const;
+
+/**
+ * Adds AE-16's details to an After Effects ScriptError raised by `script`: where the line falls,
+ * the code around a body line, the tool and its arguments (from the tool-call context), "did you
+ * mean" names from a list the host message carries, and a next step when the message has none.
+ * Anything else is returned unchanged; message, appId and scriptLine never change.
+ */
+export function enrichAeError(error: unknown, script: string): unknown {
+  if (!(error instanceof ScriptError) || error.appId !== "after_effects" || error.details.where !== undefined) return error;
+  const at = locateAeError(script, error.scriptLine);
+  const call = currentToolCall();
+  const names = aeListSuggestions(error.message);
+  return error.withDetails({
+    where: at.kind,
+    ...(at.kind === "body" ? { bodyLine: at.bodyLine, excerpt: aeExcerpt(script, at.bodyLine) } : {}),
+    ...(at.kind === "helper" ? { helper: at.helper } : {}),
+    ...(call !== undefined ? { tool: call.tool, ...(call.args !== undefined ? { args: echoArgs(call.args) } : {}) } : {}),
+    ...(names.length > 0 ? { suggestions: names.map((name) => ({ name })) } : {}),
+    ...(error.message.includes(" — ") ? {} : { next: AE_NEXT_STEP[at.kind] }),
+  });
+}
+
+/** bridge.evaluate for wrap()ped After Effects scripts: a ScriptError comes back enriched. Use it at every AE evaluate site. */
+export async function evaluateAe(bridge: AppBridge, script: string, options?: EvalOptions): Promise<JsonValue> {
+  try {
+    return await bridge.evaluate(script, options);
+  } catch (error) {
+    throw enrichAeError(error, script);
+  }
+}
+
+// ---- "did you mean" from a list the host message carries -------------------------
+
+const JSON_STRING = '("(?:[^"\\\\]|\\\\.)*")';
+const LIST_MISSES: readonly RegExp[] = [
+  // __prop (non-greedy: a ";" in a path name does not break it)
+  new RegExp(`segment ${JSON_STRING} not found .*?; children here: (?=\\[)`),
+  // setEffectParamScript: an effect, then a parameter, that is not there
+  new RegExp(`: ${JSON_STRING}; effects on this layer: (?=\\[)`),
+  new RegExp(`: ${JSON_STRING}; parameters: (?=\\[)`),
+];
+
+/** __q cuts names at 60 UTF-16 units and appends "...": such a name can never resolve. */
+const isCutName = (s: string): boolean => s.length === 63 && s.endsWith("...");
+
+function parseJsonString(literal: string): string | null {
+  try {
+    const v: unknown = JSON.parse(literal);
+    return typeof v === "string" ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The JSON array of strings starting at text[start] (a "[" ), or null when there is none. */
+function readJsonStringArray(text: string, start: number): string[] | null {
+  if (text[start] !== "[") return null;
+  let inString = false;
+  let escaped = false;
+  let depth = 0;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+    } else if (ch === '"') inString = true;
+    else if (ch === "[") depth++;
+    else if (ch === "]" && --depth === 0) {
+      try {
+        const v: unknown = JSON.parse(text.slice(start, i + 1));
+        return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : null;
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
+/** Ranks the names a host message lists against the name it could not find; [] when the message is not one of these misses or does not parse. */
+export function aeListSuggestions(message: string): string[] {
+  for (const re of LIST_MISSES) {
+    const m = re.exec(message);
+    if (m === null) continue;
+    const query = parseJsonString(m[1]!);
+    const names = readJsonStringArray(message, m.index + m[0].length);
+    if (query === null || names === null || /^\d+$/.test(query) || isCutName(query)) return [];
+    return closestNames(
+      query,
+      names.filter((n) => !isCutName(n)),
+      { limit: 3, normalize: stripAeVendor },
+    );
+  }
+  return [];
+}
 
 // ---- script builders (exported for tests) -----------------------------------
 
@@ -174,7 +549,7 @@ export function getLayerScript(compId: number, layerIndex: number): string {
 export function openProjectScript(path: string): string {
   return wrap(`
   var f = new File(${lit(path)});
-  if (!f.exists) { throw new Error("No file at " + f.fsName); }
+  if (!f.exists) { throw new Error("No file at " + f.fsName + " — pass the absolute path of an existing .aep file."); }
   var proj = app.open(f);
   return { path: proj.file ? proj.file.fsName : null, numItems: proj.numItems };`);
 }
@@ -195,7 +570,7 @@ export function saveProjectScript(path: string | undefined): string {
 export function importFootageScript(path: string): string {
   return wrap(`
   var f = new File(${lit(path)});
-  if (!f.exists) { throw new Error("No file at " + f.fsName); }
+  if (!f.exists) { throw new Error("No file at " + f.fsName + " — pass the absolute path of an existing media file."); }
   return __undo("Import footage", function () {
     var item = app.project.importFile(new ImportOptions(f));
     return { id: item.id, name: item.name, width: item.width, height: item.height, duration: item.duration, hasVideo: item.hasVideo, hasAudio: item.hasAudio };
@@ -223,7 +598,7 @@ export function importAsCompScript(path: string, cropped: boolean, opts: ImportA
     (opts.duration !== undefined ? `    item.duration = ${num(opts.duration)}; __trimLayers(item, ${num(opts.duration)});\n` : "");
   return wrap(`
   var f = new File(${lit(path)});
-  if (!f.exists) { throw new Error("No file at " + f.fsName); }
+  if (!f.exists) { throw new Error("No file at " + f.fsName + " — pass the absolute path of an existing .psd or .ai file."); }
   return __undo("Import as composition", function () {
     var io = new ImportOptions(f);
     if (io.canImportAs(${want})) { io.importAs = ${want}; }
@@ -295,14 +670,28 @@ export type TextAnchor = "center" | "origin";
 
 export function addLayerScript(p: AddLayerParams): string {
   const color = p.color ? rgb(p.color) : "[1, 1, 1]";
+  // Footage: look the item up before the undo group opens, so a bad id changes nothing. itemByID
+  // throws for an unknown id (verified live on 26.3) and is never called with null.
+  const pass = "pass a footage item id (ae_list_footage) or a composition id (ae_list_compositions).";
+  const lookup =
+    p.itemId === undefined
+      ? ""
+      : `
+  try { item = app.project.itemByID(${num(p.itemId)}); } catch (e) { item = null; }
+  if (!item) { throw new Error("No project item with id " + itemId + " — ${pass}"); }
+  // AVItem is not a global in AE 26.3's ExtendScript; test the concrete classes.
+  if (!(item instanceof FootageItem || item instanceof CompItem)) { throw new Error("Item " + itemId + " " + __q(item.name) + " is a folder, not footage or a composition — ${pass}"); }`;
+  const footage =
+    p.kind !== "footage"
+      ? ""
+      : `
+  var item = null, itemId = ${optNum(p.itemId)};
+  if (itemId === null) { throw new Error("kind 'footage' needs itemId — ${pass}"); }${lookup}`;
   return wrap(`
-  var c = __comp(${num(p.compId)});
+  var c = __comp(${num(p.compId)});${footage}
   return __undo("Add layer", function () {
     var kind = ${lit(p.kind)}, l;
     if (kind === "footage") {
-      var item = app.project.itemByID(${optNum(p.itemId)});
-      // AVItem is not a global in AE 26.3's ExtendScript; test the concrete classes.
-      if (!item || !(item instanceof FootageItem || item instanceof CompItem)) { throw new Error("footage needs itemId of a footage item or comp (ae_list_footage / ae_list_compositions)."); }
       l = c.layers.add(item);
     } else if (kind === "solid" || kind === "adjustment") {
       l = c.layers.addSolid(${color}, ${opt(p.name) === "null" ? lit(p.kind === "adjustment" ? "Adjustment" : "Solid") : lit(p.name as string)}, ${optNum(p.width) === "null" ? "c.width" : num(p.width as number)}, ${optNum(p.height) === "null" ? "c.height" : num(p.height as number)}, 1.0);
@@ -424,7 +813,7 @@ export function addMaskScript(p: AddMaskParams): string {
   var c = __comp(${num(p.compId)}); var l = __layer(c, ${num(p.layerIndex)});
   return __undo("Add mask", function () {
     var parade = l.property("ADBE Mask Parade");
-    if (!parade) { throw new Error("Layer " + ${num(p.layerIndex)} + " cannot take masks."); }
+    if (!parade) { throw new Error("Layer " + __layerLabel(l) + " cannot take masks — cameras and lights have none; address another layer."); }
     var mask = parade.addProperty("ADBE Mask Atom");
     var name = ${opt(p.name)}; if (name !== null) { mask.name = name; }
     var L = ${L}, T = ${T}, R = ${R}, B = ${B};
@@ -455,8 +844,10 @@ export interface LayerProps {
 
 export function setLayerPropsScript(compId: number, layerIndex: number, p: LayerProps): string {
   const arr = (v: number[] | undefined): string => (v === undefined ? "null" : `[${v.map(num).join(", ")}]`);
+  // A numeric parent is resolved before the undo group: an out-of-range index then changes nothing.
+  const parent = typeof p.parentIndex === "number" ? `\n  var parentLayer = __layer(c, ${num(p.parentIndex)}, "Parent");` : "";
   return wrap(`
-  var c = __comp(${num(compId)}); var l = __layer(c, ${num(layerIndex)});
+  var c = __comp(${num(compId)}); var l = __layer(c, ${num(layerIndex)});${parent}
   return __undo("Set layer properties", function () {
     var v;
     v = ${opt(p.name)}; if (v !== null) { l.name = v; }
@@ -470,7 +861,7 @@ export function setLayerPropsScript(compId: number, layerIndex: number, p: Layer
     v = ${optNum(p.rotation)}; if (v !== null) { t.property("ADBE Rotate Z").setValue(v); }
     v = ${optNum(p.opacity)}; if (v !== null) { t.property("ADBE Opacity").setValue(v); }
     v = ${arr(p.anchorPoint)}; if (v !== null) { t.property("ADBE Anchor Point").setValue(v); }
-    ${p.parentIndex === undefined ? "" : p.parentIndex === null ? "l.parent = null;" : `l.parent = __layer(c, ${num(p.parentIndex)});`}
+    ${p.parentIndex === undefined ? "" : p.parentIndex === null ? "l.parent = null;" : "l.parent = parentLayer;"}
     return __layerInfo(l);
   });`);
 }
@@ -561,18 +952,26 @@ export function setExpressionScript(compId: number, layerIndex: number, property
     if (prop.expressionError) {
       var err = prop.expressionError;
       prop.expression = prev;
-      throw new Error("Expression error: " + err);
+      throw new Error("Expression error: " + err + " — fix the expression; the property keeps its previous one.");
     }
     return { property: prop.name, expression: prop.expression, enabled: prop.expressionEnabled };
   });`);
 }
 
+/** The marker both the ES3 throw in applyEffectScript and the server's "did you mean" check use. */
+export const EFFECT_MISS = "Effect not available: ";
+
+/** The Effect Parade lookup both effect builders open with (two lines at `indent`): a camera or light has none. */
+const effectParade = (indent: string): string =>
+  `${indent}var fx = l.property("ADBE Effect Parade");\n` +
+  `${indent}if (!fx) { throw new Error("Layer " + __layerLabel(l) + " cannot have effects — address a footage, solid, text, shape, adjustment or precomp layer."); }`;
+
 export function applyEffectScript(compId: number, layerIndex: number, matchName: string, name?: string): string {
   return wrap(`
   var c = __comp(${num(compId)}); var l = __layer(c, ${num(layerIndex)});
   return __undo("Apply effect", function () {
-    var fx = l.property("ADBE Effect Parade");
-    if (!fx.canAddProperty(${lit(matchName)})) { throw new Error("Effect not available: " + ${lit(matchName)} + " (use a match name like 'ADBE Gaussian Blur 2' or a display name)."); }
+${effectParade("    ")}
+    if (!fx.canAddProperty(${lit(matchName)})) { throw new Error(${lit(EFFECT_MISS)} + ${lit(matchName)} + " (layer " + __layerLabel(l) + ") — use an installed effect's match name, e.g. 'ADBE Gaussian Blur 2', or its display name."); }
     var e = fx.addProperty(${lit(matchName)});
 ${name !== undefined ? `    e.name = ${lit(name)};\n` : ""}
     var params = [];
@@ -583,14 +982,212 @@ ${name !== undefined ? `    e.name = ${lit(name)};\n` : ""}
 
 export function setEffectParamScript(compId: number, layerIndex: number, effect: number | string, param: string, value: number | number[] | string): string {
   const v = typeof value === "string" ? lit(value) : Array.isArray(value) ? `[${value.map(num).join(", ")}]` : num(value);
+  const eff = typeof effect === "number" ? num(effect) : lit(effect);
+  // The parameter list answers in the caller's vocabulary (the same rule as __byName).
+  const byName = !param.startsWith("ADBE ");
   return wrap(`
   var c = __comp(${num(compId)}); var l = __layer(c, ${num(layerIndex)});
-  var fx = l.property("ADBE Effect Parade");
-  var e = fx.property(${typeof effect === "number" ? num(effect) : lit(effect)});
-  if (!e) { throw new Error("Effect not found on layer: " + ${typeof effect === "number" ? num(effect) : lit(effect)}); }
-  var pp = e.property(${lit(param)});
-  if (!pp) { throw new Error("Parameter not found: " + ${lit(param)}); }
+${effectParade("  ")}
+  if (!(fx.numProperties > 0)) { throw new Error("Layer " + __layerLabel(l) + " has no effects — apply one first (ae_apply_effect)."); }
+  var e = null;
+  try { e = fx.property(${eff}); } catch (x) { e = null; }
+  if (!e) { var ek = __kids(fx, 20, true); throw new Error("Effect not found on layer " + __layerLabel(l) + ": " + __q(${eff}) + "; effects on this layer: " + ek.text + (ek.dup ? " — some names repeat; pass the effect's index (1 = first) instead." : " — pass one of these names, or the effect's index (1 = first).")); }
+  var pp = null;
+  try { pp = e.property(${lit(param)}); } catch (x) { pp = null; }
+  if (!pp) { var pk = __kids(e, 20, ${byName ? "true" : "false"}); throw new Error("Parameter not found on effect " + __q(e.name) + ": " + __q(${lit(param)}) + "; parameters: " + pk.text + __pick(pk)); }
   return __undo("Set effect parameter", function () { pp.setValue(${v}); return { effect: e.name, param: pp.name, value: pp.value }; });`);
+}
+
+// ---- installed effects and effect "did you mean" ------------------------------
+
+/**
+ * Host facts the live probes decide (AE-16 spec §13, probe 13). The defaults state the unverified
+ * assumption; a probe result flips the constant, and the messages follow from it.
+ *  - EFFECT_NAMES_CASE_SENSITIVE: canAddProperty rejects a case-folded match name.
+ *  - EFFECT_DISPLAY_NAMES_ACCEPTED: canAddProperty/addProperty accept a display name.
+ */
+export const EFFECT_NAMES_CASE_SENSITIVE = true;
+export const EFFECT_DISPLAY_NAMES_ACCEPTED = false;
+
+/** A full app.effects read slower than this switches the catalog to the filtered read for later connections. */
+export const SLOW_EFFECTS_READ_MS = 3000;
+
+/** Every installed effect as [matchName, displayName] tuples (compact on purpose: __acmStr serializes per character). */
+export const LIST_INSTALLED_EFFECTS = wrap(`
+  var out = [];
+  var all = app.effects;
+  for (var i = 0; i < all.length; i++) {
+    try { out.push([String(all[i].matchName), String(all[i].displayName)]); } catch (e) {}
+  }
+  return out;`);
+
+/**
+ * Installed effects whose names are about as long as `query` (the catalog's filtered read). Read-only.
+ * `query` is the requested name folded and without its vendor tag, `threshold` its rank threshold;
+ * the window is the threshold plus 2, so UTF-16 vs code-point lengths can only add entries, never
+ * drop one the server would keep. The server ranks the subset with the same code as a full list.
+ */
+export function filteredEffectsScript(query: string, threshold: number): string {
+  return wrap(`
+  var q = ${lit(query)}, w = ${num(threshold + 2)}, out = [], all = app.effects, i, mn, dn;
+  var V = ["adbe", "cc", "apc", "visinf", "bcc"];
+  function strip(s) {
+    var k, c;
+    for (k = 0; k < V.length; k++) {
+      c = s.charAt(V[k].length);
+      if (s.substring(0, V[k].length) === V[k] && (c === " " || c === "_")) { return s.substring(V[k].length + 1); }
+    }
+    return s;
+  }
+  function near(s) { return Math.abs(s.length - q.length) <= w; }
+  for (i = 0; i < all.length; i++) {
+    try {
+      mn = String(all[i].matchName); dn = String(all[i].displayName);
+      if (near(strip(mn.toLowerCase())) || near(dn.toLowerCase()) || near(strip(dn.toLowerCase()))) { out.push([mn, dn]); }
+    } catch (e) {}
+  }
+  return out;`);
+}
+
+export interface InstalledEffect {
+  readonly matchName: string;
+  readonly displayName: string;
+}
+
+/** Keeps the [matchName, displayName] string pairs of a list read; anything else is dropped. */
+function parseEffects(raw: JsonValue): InstalledEffect[] {
+  if (!Array.isArray(raw)) return [];
+  const out: InstalledEffect[] = [];
+  for (const e of raw) {
+    if (Array.isArray(e) && e.length === 2 && typeof e[0] === "string" && typeof e[1] === "string") out.push({ matchName: e[0], displayName: e[1] });
+  }
+  return out;
+}
+
+/**
+ * The installed effects, for one MCP session (built in registerAfterEffectsTools), read only on an
+ * effect miss. Cached per panel connection (the bridge's connectionEpoch): restarting After
+ * Effects, installing a plugin or reloading the panel reconnects, so the next miss re-reads.
+ *
+ * Failures are not cached and are retried on the next miss, except a timeout: the server cannot
+ * cancel the host, so a timed-out read stops reads for the rest of that connection, and every
+ * later connection uses the filtered read. A full read that succeeds but takes more than
+ * SLOW_EFFECTS_READ_MS is kept for this connection and also switches later connections to the
+ * filtered read. Concurrent misses share one read.
+ */
+export class EffectCatalog {
+  private list: { readonly epoch: number; readonly effects: readonly InstalledEffect[] } | null = null;
+  private inflight: { readonly epoch: number; readonly promise: Promise<readonly InstalledEffect[]> } | null = null;
+  /** The full read proved slow or timed out: later reads send filteredEffectsScript. */
+  private filtered = false;
+  /** A read timed out on this connection: no more reads until the panel reconnects (the host may still be busy with it). */
+  private timedOutEpoch: number | null = null;
+
+  constructor(
+    private readonly bridge: AppBridge,
+    private readonly clock: () => number = Date.now,
+  ) {}
+
+  private epoch(): number {
+    return this.bridge.connectionEpoch?.() ?? 0;
+  }
+
+  /** Effects worth ranking against `requested`: the cached full list, or a filtered subset. Rejects when no read is possible now. */
+  async candidates(requested: string): Promise<readonly InstalledEffect[]> {
+    const epoch = this.epoch();
+    if (this.timedOutEpoch === epoch) throw new Error("the installed-effects read timed out on this connection");
+    if (this.list !== null && this.list.epoch === epoch) return this.list.effects;
+    if (this.filtered) return this.readFiltered(requested, epoch);
+    if (this.inflight === null || this.inflight.epoch !== epoch) {
+      const promise = this.readAll(epoch);
+      this.inflight = { epoch, promise };
+      // A failure is retried on the next miss.
+      promise.catch(() => {
+        if (this.inflight?.promise === promise) this.inflight = null;
+      });
+    }
+    return this.inflight.promise;
+  }
+
+  private async readAll(epoch: number): Promise<readonly InstalledEffect[]> {
+    const t0 = this.clock();
+    let raw: JsonValue;
+    try {
+      raw = await this.bridge.evaluate(LIST_INSTALLED_EFFECTS, { timeoutClass: "fast" });
+    } catch (error) {
+      if (error instanceof EvalTimeoutError) {
+        this.filtered = true;
+        this.timedOutEpoch = epoch;
+      }
+      throw error;
+    }
+    const ms = this.clock() - t0;
+    const effects = parseEffects(raw);
+    log.debug(`app.effects: ${effects.length} effects read in ${ms} ms`);
+    if (effects.length === 0) throw new Error("the installed-effects read came back empty"); // a failure, never a cached success
+    if (ms > SLOW_EFFECTS_READ_MS && !this.filtered) {
+      this.filtered = true;
+      log.info(`reading the installed After Effects effects took ${ms} ms; later reads ask only for names of a similar length`);
+    }
+    this.list = { epoch, effects };
+    return effects;
+  }
+
+  private async readFiltered(requested: string, epoch: number): Promise<readonly InstalledEffect[]> {
+    const q = stripAeVendor(fold(requested));
+    try {
+      return parseEffects(await this.bridge.evaluate(filteredEffectsScript(q, suggestionThreshold(q)), { timeoutClass: "fast" }));
+    } catch (error) {
+      if (error instanceof EvalTimeoutError) this.timedOutEpoch = epoch;
+      throw error;
+    }
+  }
+}
+
+/** The two probe-decided facts, as a parameter so tests cover both branches without mutating exports. */
+export interface EffectNameRules {
+  readonly caseSensitive: boolean;
+  readonly displayNamesAccepted: boolean;
+}
+const EFFECT_NAME_RULES: EffectNameRules = { caseSensitive: EFFECT_NAMES_CASE_SENSITIVE, displayNamesAccepted: EFFECT_DISPLAY_NAMES_ACCEPTED };
+
+/**
+ * ae_apply_effect's miss path: an installed effect After Effects refused gets a note; a display
+ * name or a case slip gets the exact match name; a typo gets up to 3 close installed names.
+ * Returns `error` unchanged for anything else, or when the installed list cannot be read now.
+ */
+export async function withEffectSuggestions(catalog: EffectCatalog, error: unknown, requested: string, rules: EffectNameRules = EFFECT_NAME_RULES): Promise<unknown> {
+  if (!(error instanceof ScriptError) || !error.message.startsWith(EFFECT_MISS)) return error;
+  let effects: readonly InstalledEffect[];
+  try {
+    effects = await catalog.candidates(requested);
+  } catch {
+    return error;
+  }
+  const refused = "That effect is installed, but After Effects would not add it to this layer.";
+  const byMatch = effects.find((e) => e.matchName === requested);
+  if (byMatch !== undefined) {
+    return error.withDetails({ note: `"${byMatch.matchName}" (${byMatch.displayName}) is installed, but After Effects would not add it to this layer.` });
+  }
+  const byDisplay = effects.find((e) => e.displayName === requested);
+  if (byDisplay !== undefined) {
+    return rules.displayNamesAccepted
+      ? error.withDetails({ note: refused })
+      : error.withDetails({
+          suggestions: [{ name: byDisplay.matchName, label: byDisplay.displayName }],
+          note: "That effect is installed; pass its match name — if that also fails, this layer cannot take it.",
+        });
+  }
+  const folded = fold(requested);
+  const caseHit = effects.find((e) => fold(e.matchName) === folded || fold(e.displayName) === folded);
+  if (caseHit !== undefined) {
+    return rules.caseSensitive
+      ? error.withDetails({ suggestions: [{ name: caseHit.matchName, label: caseHit.displayName }], note: "Names must match exactly, case included." })
+      : error.withDetails({ note: refused });
+  }
+  const ranked = rank(requested, effects, (e) => [e.matchName, e.displayName], { limit: 3, normalize: stripAeVendor });
+  if (ranked.length === 0) return error;
+  return error.withDetails({ suggestions: ranked.map((r) => ({ name: r.item.matchName, label: r.item.displayName })) });
 }
 
 /**
@@ -797,7 +1394,7 @@ export interface SetTextParams {
 export function setTextScript(p: SetTextParams): string {
   return wrap(`
   var c = __comp(${num(p.compId)}); var l = __layer(c, ${num(p.layerIndex)});
-  if (l.matchName !== "ADBE Text Layer") { throw new Error("Layer " + l.index + " is not a text layer."); }
+  if (l.matchName !== "ADBE Text Layer") { throw new Error("Layer " + __layerLabel(l) + " is not a text layer — address a text layer (ae_get_comp lists each layer's kind)."); }
   return __undo("Set text", function () {
     var st = l.property("ADBE Text Properties").property("ADBE Text Document");
     var td = st.value;
@@ -951,8 +1548,8 @@ export interface RenderCompOptions {
  * ae_render_comp tool and the pipelines; throws with an actionable message.
  */
 export async function renderCompHeadless(bridge: AppBridge, o: RenderCompOptions, ctx: { signal?: AbortSignal; log?: (line: string) => void } = {}): Promise<{ outputPath: string; compName: string; log: string }> {
-  const info = (await bridge.evaluate(saveProjectScript(undefined), { timeoutClass: "slow" })) as { path?: string };
-  const meta = (await bridge.evaluate(AERENDER_INFO, { timeoutClass: "fast" })) as { projectPath: string | null; appFolder: string; isWindows: boolean };
+  const info = (await evaluateAe(bridge, saveProjectScript(undefined), { timeoutClass: "slow" })) as { path?: string };
+  const meta = (await evaluateAe(bridge, AERENDER_INFO, { timeoutClass: "fast" })) as { projectPath: string | null; appFolder: string; isWindows: boolean };
   if (!info.path || !meta.projectPath) throw new Error("Project has no file. Save it first with ae_save_project.");
   const exe = aerenderExecutable(meta.appFolder, meta.isWindows);
   try {
@@ -991,9 +1588,13 @@ export interface AfterEffectsToolOptions {
   defaultWait?: boolean;
 }
 
-export function registerAfterEffectsTools(server: McpServer, bridge: AppBridge, options: AfterEffectsToolOptions = {}): void {
-  const run = (script: string, opts?: { timeoutClass?: "fast" | "slow" | "render"; timeoutMs?: number }) =>
-    guard(async () => jsonResult(await bridge.evaluate(script, opts)));
+export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, options: AfterEffectsToolOptions = {}): void {
+  // Every callback runs inside a tool-call context (tool name + validated arguments) that an
+  // error raised deep inside a bridge call can name. The registerTool calls below are unchanged.
+  const server = withToolContext(mcp, { noArgs: AE_NO_ARG_ECHO });
+  // One per MCP session; refreshed when the panel reconnects. Read only on an effect miss.
+  const effects = new EffectCatalog(bridge);
+  const run = (script: string, opts?: EvalOptions) => guard(async () => jsonResult(await evaluateAe(bridge, script, opts)));
 
   // ---- read ---------------------------------------------------------------
   server.registerTool(
@@ -1417,11 +2018,21 @@ export function registerAfterEffectsTools(server: McpServer, bridge: AppBridge, 
       inputSchema: {
         compId,
         layerIndex,
-        matchName: z.string().min(1),
+        matchName: z
+          .string()
+          .min(1)
+          .describe("Effect match name (e.g. 'ADBE Gaussian Blur 2') or display name (e.g. 'Gaussian Blur'). An unknown name fails with up to 3 close installed names."),
         name: z.string().min(1).optional().describe("Rename the effect once applied (e.g. a Slider Control named 'Speed'). Essential Graphics shows a control under this name."),
       },
     },
-    async ({ compId: id, layerIndex: li, matchName, name }) => run(applyEffectScript(id, li, matchName, name)),
+    async ({ compId: id, layerIndex: li, matchName, name }) =>
+      guard(async () => {
+        try {
+          return jsonResult(await evaluateAe(bridge, applyEffectScript(id, li, matchName, name)));
+        } catch (error) {
+          throw await withEffectSuggestions(effects, error, matchName);
+        }
+      }),
   );
 
   server.registerTool(
@@ -1547,7 +2158,7 @@ export function registerAfterEffectsTools(server: McpServer, bridge: AppBridge, 
         const dir = join(tmpdir(), "brainferno-mcp-bridge", "previews");
         await mkdir(dir, { recursive: true });
         const path = join(dir, `${randomUUID()}.png`).replace(/\\/g, "/");
-        await bridge.evaluate(renderFrameScript(id, time ?? 0, path, maxDimension ?? 1024), { timeoutClass: "slow" });
+        await evaluateAe(bridge, renderFrameScript(id, time ?? 0, path, maxDimension ?? 1024), { timeoutClass: "slow" });
         await waitForFile(path, 20_000);
         return imageResult(path, "image/png", `Frame at ${time ?? 0}s`);
       }),

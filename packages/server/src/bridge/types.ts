@@ -27,6 +27,46 @@ export interface AppBridge {
   /** Convenience wrapper for the generic `eval` command (params `{script}`). */
   evaluate(script: string, options?: EvalOptions): Promise<JsonValue>;
   close(): Promise<void>;
+  /**
+   * Increments each time a panel for this app completes its hello (0 before the first). Lets callers
+   * drop host facts cached under an earlier connection — the operator may have restarted the app,
+   * installed a plugin or switched versions. Optional: lanes without panels omit it.
+   */
+  connectionEpoch?(): number;
+}
+
+/** A "did you mean" candidate: the name to pass, and an optional human label (e.g. the display name). */
+export interface ScriptSuggestion {
+  readonly name: string;
+  readonly label?: string;
+}
+
+/**
+ * Facts about a ScriptError beyond the host's text. All optional. Never derived from, and never
+ * written into, `message` (raw-script envelopes and NO_RESULT_MESSAGE checks depend on it).
+ * guard() renders the enriched form only when `where` is set (AE-16: After Effects tools).
+ */
+export interface ScriptErrorDetails {
+  /** The panel's wire error code (protocol `error.code`: "HOST_ERROR", "UNKNOWN_COMMAND"). Socket lane only. */
+  readonly code?: string;
+  /** Where the reported line falls in the script the tool generated. Its presence marks the error as enriched. */
+  readonly where?: "body" | "helper" | "outside" | "unknown";
+  /** where === "body": the failing line of the tool's body; the first body statement is 1. */
+  readonly bodyLine?: number;
+  /** where === "helper": the shared helper the line falls in, e.g. "__prop". */
+  readonly helper?: string;
+  /** where === "body": up to 3 rendered lines around bodyLine, the failing one prefixed ">>> "; already redacted and capped. */
+  readonly excerpt?: readonly string[];
+  /** The MCP tool that issued the script. */
+  readonly tool?: string;
+  /** One-line echo of the tool's validated arguments, already redacted and capped (tools/echo.ts). Never set for raw-script tools. */
+  readonly args?: string;
+  /** "Did you mean" candidates, best first, at most 3. */
+  readonly suggestions?: readonly ScriptSuggestion[];
+  /** One sentence added after the suggestions (e.g. "That effect is installed, but …"). */
+  readonly note?: string;
+  /** What to do next, set only when the host message does not already say (it contains no " — "). No trailing period. */
+  readonly next?: string;
 }
 
 /** Raised when no host is reachable for the requested application. */
@@ -72,13 +112,28 @@ export class AppDisconnectedError extends Error {
 
 /** Raised when the host received the command but the script itself threw. */
 export class ScriptError extends Error {
+  readonly details: ScriptErrorDetails;
   constructor(
     public readonly appId: AppId,
     message: string,
     public readonly scriptLine?: number,
+    details: ScriptErrorDetails = {},
   ) {
     super(message);
     this.name = "ScriptError";
+    this.details = details;
+  }
+
+  /** The failing body line, or null (not enriched, or the line is not in the tool's body). */
+  get bodyLine(): number | null {
+    return this.details.bodyLine ?? null;
+  }
+
+  /** A copy with `more` merged into `details`; appId, message, scriptLine and stack are kept. */
+  withDetails(more: ScriptErrorDetails): ScriptError {
+    const copy = new ScriptError(this.appId, this.message, this.scriptLine, { ...this.details, ...more });
+    copy.stack = this.stack;
+    return copy;
   }
 }
 

@@ -94,6 +94,8 @@ export class BridgeServer {
   private readonly states = new Map<WebSocket, SocketState>();
   /** Serializes commands per app: one script/modal scope per host at a time. */
   private readonly appQueues = new Map<AppId, Promise<unknown>>();
+  /** Per app: how many panels completed a hello (connectionEpoch). Never decremented. */
+  private readonly epochs = new Map<AppId, number>();
   private readonly token: string;
   private readonly insecure: boolean;
   private readonly heartbeatIntervalMs: number;
@@ -181,7 +183,14 @@ export class BridgeServer {
         this.panels.get(appId)?.close();
         this.panels.delete(appId);
       },
+      // Reads `this` on every call, so every bridgeFor() object for an app sees the same count.
+      connectionEpoch: () => this.epochs.get(appId) ?? 0,
     };
+  }
+
+  /** The effective panel token, for redacting error text in this process only ([] in insecure mode). Never log or send it. */
+  redactionSecrets(): string[] {
+    return this.token === "" ? [] : [this.token];
   }
 
   connectedApps(): AppId[] {
@@ -382,6 +391,8 @@ export class BridgeServer {
       existing.close(4004, "replaced by newer connection");
     }
     this.panels.set(frame.appId, socket);
+    // A new connection: host facts cached under the previous one may be stale (AE-16's effect catalog).
+    this.epochs.set(frame.appId, (this.epochs.get(frame.appId) ?? 0) + 1);
 
     this.send(socket, {
       type: "welcome",
@@ -407,7 +418,7 @@ export class BridgeServer {
     id: string,
     ok: boolean,
     value: unknown,
-    error: { message: string; line?: number } | undefined,
+    error: { code: string; message: string; line?: number } | undefined,
   ): void {
     const waiting = state.pending.get(id);
     if (waiting === undefined) {
@@ -420,7 +431,10 @@ export class BridgeServer {
       waiting.resolve((value ?? null) as JsonValue);
     } else {
       const appId = state.appId ?? "after_effects";
-      waiting.reject(new ScriptError(appId, error?.message ?? "script failed without a message", error?.line));
+      // The wire code travels in details (UNKNOWN_COMMAND reads differently in guard()); message stays the host's text.
+      waiting.reject(
+        new ScriptError(appId, error?.message ?? "script failed without a message", error?.line, error === undefined ? {} : { code: error.code }),
+      );
     }
   }
 

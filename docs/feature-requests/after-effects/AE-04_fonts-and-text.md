@@ -31,6 +31,7 @@ depends_on: []
 - `TextDocument`: `font`, `fontObject`, `fontSize`, `fillColor`, `applyFill`, `strokeColor`, `strokeWidth`, `applyStroke`, `tracking`, `leading`, `autoLeading`, `fauxBold`, `fauxItalic`, `allCaps`, `smallCaps`, `baselineShift`, `horizontalScale`, `verticalScale`, `justification`, `boxText`, `boxTextSize`, `boxTextPos`.
 - Set a `TextDocument` back with `prop.setValue(td)`. Read `td.fontObject` after setting to learn what was actually applied.
 - Reading `boxTextSize` / `boxTextPos` on **point** text throws `Text document not of Box document type` — guard with `td.boxText` first (see `AE-05`).
+- Font "did you mean" is AE-04's (AE-16 deferred it: an unknown font does not fail). Rank with `rank(query, fonts, (f) => [f.postScriptName, f.familyName + " " + f.styleName, f.familyName])` from `tools/suggest.ts` (no `normalize`: font names have no vendor tag to strip); do not add another edit-distance helper.
 
 ## Acceptance tests
 1. `ae_list_fonts({ query: "mono" })` returns PostScript names; one of them works in `ae_set_text`.

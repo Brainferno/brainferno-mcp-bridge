@@ -362,6 +362,12 @@ app returns an actionable "not connected" error rather than vanishing mid-sessio
 raw-script tools follow the same rule: listed, and refusing until they are enabled. Only the
 `ai_beta_*` tools stay out of the list until an Illustrator key is configured.
 
+A panel that drops mid-call returns an error saying the call may have partly run and how to
+reconnect; a panel older than the server says to update or reload it. After Effects tool
+errors also name the tool and its arguments (cut short, keys and tokens removed), say where
+the tool's script failed (quoting the failing line and its neighbours when it is the tool's own
+code), and suggest close names for an unknown effect, property or effect parameter.
+
 ### Raw scripts (opt-in)
 
 `cc_eval_script` runs your own ExtendScript in After Effects, Illustrator or Audition;

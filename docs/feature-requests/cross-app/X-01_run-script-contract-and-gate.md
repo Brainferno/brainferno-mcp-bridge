@@ -24,7 +24,7 @@ Raw-script escape hatches exist but are invisible and inconsistent.
 1. **Register all raw-script tools unconditionally.** When the gate is off, a call returns: `Raw scripts are disabled. Set BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS=1 (or a comma list of app ids, e.g. after_effects,photoshop) in the MCP server env and restart.` Keep `destructiveHint: true`.
 2. **Finer gate.** Accept `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS` as `1` (all apps) **or** a comma list of app ids (`after_effects`, `photoshop`, `illustrator`, `audition`). Parse in `config.ts`; keep `allowRawScripts: boolean` for existing callers and add `rawScriptApps: string[]`.
 3. **`cc_get_capabilities`** (new, `readOnlyHint: true`): returns per-tool gate state — `[{ tool, app, enabled, enableWith }]` — plus server and panel versions (see `X-02`).
-4. **Shared result contract** for every raw-script tool: `{ ok, value, logs: string[], durationMs, error?: { message, line, bodyLine } }` (line correction: `AE-16`).
+4. **Shared result contract** for every raw-script tool: `{ ok, value, logs: string[], durationMs, error?: { message, line, bodyLine } }` (`bodyLine` from the wrapper's own lineBase calibration in `raw-script.ts`; AE-16's typed-tool `bodyLine` is a separate thing).
 5. **Audit line** for every raw call (script hash, app, length), as `diagnostics.ts:92` already does — apply it to `ps_batch_play` too.
 6. **Premiere (investigate, do not build blindly).** Find out whether the `premierepro` UXP API permits a gated script-eval or a generic action runner. If yes, add `pp_run_action` behind the same gate. If not, write the finding into `docs/spikes/07-premiere-tools-live.md` and add the missing **named** commands instead (see `PP-01` to `PP-05`).
 7. Fix the env var name in `docs/spikes/05-…:30`.

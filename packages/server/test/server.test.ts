@@ -31,6 +31,8 @@ import {
   rawScriptWrapper,
 } from "../src/tools/raw-script.js";
 import { SERVER_VERSION } from "../src/version.js";
+import { AE_PRELUDE_LINES, LIST_INSTALLED_EFFECTS, applyEffectScript, getCompScript, getLayerScript, wrapAe } from "../src/tools/after-effects.js";
+import { aeHost, panelReply, type AeHost } from "./ae-host.js";
 import { hostEval, runJsxFile } from "./host-vm.js";
 
 // Port 0 lets the OS pick a free one; insecure mode skips auth and the handshake
@@ -348,6 +350,8 @@ describe("brainferno-mcp-bridge server", () => {
 
     expect(result.isError).toBe(true);
     expect((result.content as { text: string }[])[0]!.text).toMatch(/No open document/);
+    // AE-16 changes After Effects' text only: other apps' script errors read exactly as before.
+    expect((result.content as { text: string }[])[0]!.text).toBe("Script failed in photoshop (line 3): No open document");
     panel.close();
   });
 });
@@ -862,5 +866,208 @@ describe("per-client defaults (BRAINFERNO_MCP_DEFAULT_WAIT, BRAINFERNO_MCP_JOB_W
       await built.server.close();
       await built.bridge.close();
     }
+  });
+});
+
+describe("After Effects error context (AE-16)", () => {
+  const NEXT_BODY = "check the values the line marked >>> uses (ae_get_comp and ae_get_layer show what exists), then retry";
+  const PRELUDE_LENGTH = wrapAe("").length - "\n})()".length;
+
+  /** The 1-based body line (first statement = 1) of the first body line containing `needle`. */
+  const bodyLineOf = (script: string, needle: string) => script.slice(PRELUDE_LENGTH).split("\n").slice(1).findIndex((l) => l.includes(needle)) + 1;
+  /** The script line of the first line containing `needle`. */
+  const scriptLineOf = (script: string, needle: string) => script.split("\n").findIndex((l) => l.includes(needle)) + 1;
+
+  /** A fake panel that runs every eval cmd in `host`, the way host.jsx's __acmEval does. */
+  function vmPanel(panel: WebSocket, host: AeHost, delayMs = 0): CmdFrame[] {
+    return recordCmds(panel, (f) => {
+      const answer = () => {
+        const r = host.eval(f.params.script!);
+        if (r.ok) reply(panel, f.id, r.value);
+        else reply(panel, f.id, panelReply(r), false);
+      };
+      if (delayMs > 0) setTimeout(answer, delayMs);
+      else answer();
+    });
+  }
+
+  it("a canned body-failure frame reads as body line 3 with the code around it (acceptance 6)", async () => {
+    const s = await startSession({});
+    const panel = await connectPanel(s.bridge.port(), "after_effects");
+    const line = AE_PRELUDE_LINES + 4;
+    recordCmds(panel, (f) => reply(panel, f.id, { code: "HOST_ERROR", message: "boom", line }, false));
+    const r = await s.c.callTool({ name: "ae_list_compositions", arguments: {} });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toBe(
+      `Script failed in After Effects (ae_list_compositions) at body line 3 (script line ${line}): boom — ${NEXT_BODY}. ` +
+        "Code: 2: for (var i = 1; i <= app.project.numItems; i++) { | >>> 3: var item = app.project.item(i); | 4: if (item instanceof CompItem) { comps.push(__compInfo(item)); }",
+    );
+    panel.close();
+    await s.close();
+  });
+
+  it("a real body failure, through a vm-backed panel, is body line 3, not +prelude (acceptance 1)", async () => {
+    const s = await startSession({});
+    const panel = await connectPanel(s.bridge.port(), "after_effects");
+    const host = aeHost();
+    host.app.project.item = () => {
+      throw new host.VmError("boom");
+    };
+    vmPanel(panel, host);
+    const text = textOf(await s.c.callTool({ name: "ae_list_compositions", arguments: {} }));
+    expect(text).toContain(`(ae_list_compositions) at body line 3 (script line ${AE_PRELUDE_LINES + 4}): boom — `);
+    expect(text).toContain(">>> 3: var item = app.project.item(i);");
+    panel.close();
+    await s.close();
+  });
+
+  it("an out-of-range layer names the tool, its arguments, the helper and every layer (acceptance 3)", async () => {
+    const s = await startSession({});
+    const panel = await connectPanel(s.bridge.port(), "after_effects");
+    vmPanel(panel, aeHost());
+    const r = await s.c.callTool({ name: "ae_get_layer", arguments: { compId: 12, layerIndex: 9 } });
+    const line = scriptLineOf(getLayerScript(12, 9), 'throw new Error(what + " (1.."');
+    expect(textOf(r)).toBe(
+      `Script failed in After Effects (ae_get_layer, args {compId: 12, layerIndex: 9}) in helper __layer (script line ${line}): ` +
+        `Layer index 9 is out of range (1..3) in "Main" (id 12): 1 "Title" (text), 2 "Logo" (shape), 3 "BG" (solid) — pass one of these indexes (ae_get_comp lists every layer).`,
+    );
+    panel.close();
+    await s.close();
+  });
+
+  it("ae_apply_effect suggests close installed effects, reading the list once per panel connection (acceptance 4)", async () => {
+    const s = await startSession({});
+    const host = aeHost();
+    let panel = await connectPanel(s.bridge.port(), "after_effects");
+    let cmds = vmPanel(panel, host);
+    const listReads = () => cmds.filter((c) => c.params.script === LIST_INSTALLED_EFFECTS).length;
+    const apply = () => s.c.callTool({ name: "ae_apply_effect", arguments: { compId: 12, layerIndex: 3, matchName: "ADBE Gausian Blur 2" } });
+
+    const first = textOf(await apply());
+    const n = bodyLineOf(applyEffectScript(12, 3, "ADBE Gausian Blur 2"), "canAddProperty");
+    expect(first).toContain(`(ae_apply_effect, args {compId: 12, layerIndex: 3, matchName: "ADBE Gausian Blur 2"}) at body line ${n} `);
+    expect(first).toContain('Did you mean "ADBE Gaussian Blur 2" (Gaussian Blur)');
+    expect(first).toContain(`Code: `);
+    expect(listReads()).toBe(1);
+
+    await apply();
+    expect(listReads()).toBe(1);
+
+    // The panel reconnects (a new hello): the next miss reads the list again.
+    panel.close();
+    await vi.waitFor(() => expect(s.bridge.connectedApps()).not.toContain("after_effects"));
+    panel = await connectPanel(s.bridge.port(), "after_effects");
+    cmds = vmPanel(panel, host);
+    const third = textOf(await apply());
+    expect(third).toContain('Did you mean "ADBE Gaussian Blur 2" (Gaussian Blur)');
+    expect(listReads()).toBe(1);
+    panel.close();
+    await s.close();
+  });
+
+  it("a helper line and a host.jsx serializer line read as helper and outside", async () => {
+    const s = await startSession({});
+    const panel = await connectPanel(s.bridge.port(), "after_effects");
+    const helperLine = scriptLineOf(getCompScript(12), "No composition with id");
+    const empty = `No composition with id 12; the project has no compositions — create one with ae_create_comp and pass its id.`;
+    const serializer = "After Effects error: Text document not of Box document type";
+    recordCmds(panel, (f) => {
+      const outside = f.params.script!.includes("var keys = [];");
+      reply(panel, f.id, outside ? { code: "HOST_ERROR", message: serializer, line: 40 } : { code: "HOST_ERROR", message: empty, line: helperLine }, false);
+    });
+    const comp = await s.c.callTool({ name: "ae_get_comp", arguments: { compId: 12 } });
+    expect(textOf(comp)).toBe(`Script failed in After Effects (ae_get_comp, args {compId: 12}) in helper __comp (script line ${helperLine}): ${empty}`);
+    const keys = await s.c.callTool({
+      name: "ae_get_keyframes",
+      arguments: { compId: 32, layerIndex: 4, property: "position", propertyPath: ["ADBE Text Properties", "ADBE Text Document"] },
+    });
+    expect(textOf(keys)).toBe(
+      'Script failed in After Effects (ae_get_keyframes, args {compId: 32, layerIndex: 4, property: "position", propertyPath: ["ADBE Text Properties", "ADBE Text Document"]}) ' +
+        `at script line 40, outside this tool's own code (most likely while the panel converted the result to JSON): ${serializer} — ` +
+        "the result held a value After Effects could not read; read it another way (for example ae_get_layer) or report the tool and its arguments.",
+    );
+    panel.close();
+    await s.close();
+  });
+
+  it("a property path on the wrong kind of layer is explained by the kind, with no suggestions", async () => {
+    const s = await startSession({});
+    const panel = await connectPanel(s.bridge.port(), "after_effects");
+    vmPanel(panel, aeHost());
+    const r = await s.c.callTool({
+      name: "ae_set_expression",
+      arguments: { compId: 12, layerIndex: 2, property: "position", propertyPath: ["ADBE Text Properties", "ADBE Text Document"], expression: "time*2" },
+    });
+    const text = textOf(r);
+    expect(text).toMatch(/^Script failed in After Effects \(ae_set_expression, args \{compId: 12, layerIndex: 2, property: "position", propertyPath: \[.*\], expression: "time\*2"\}\) in helper __prop /);
+    expect(text).toContain(`Property path not found on layer 2 "Logo" (shape): "ADBE Text Properties" exists only on text layers — address a text layer`);
+    expect(text).not.toContain("Did you mean");
+    expect(text).not.toContain("children here");
+    panel.close();
+    await s.close();
+  });
+
+  it("never echoes the server's own secrets: arguments and host messages are redacted", async () => {
+    // No digit and under 32 characters, so only the configured-secret rule (R1) can catch it.
+    const secret = "SuperSecretHttpTokenValue";
+    const s = await startSession({ httpToken: secret });
+    const panel = await connectPanel(s.bridge.port(), "after_effects");
+    const host = aeHost();
+    recordCmds(panel, (f) => {
+      const r = host.eval(f.params.script!);
+      // Stand in for a host message that quotes the value back.
+      reply(panel, f.id, r.ok ? r.value : { ...panelReply(r), message: `${r.error.message} (${secret})` }, r.ok);
+    });
+    const r = await s.c.callTool({
+      name: "ae_set_expression",
+      arguments: { compId: 12, layerIndex: 9, property: "position", expression: `"${secret}"` },
+    });
+    const text = textOf(r);
+    expect(text).toContain('expression: "\\"[redacted]\\""');
+    expect(text).toContain("([redacted])");
+    expect(text).not.toContain(secret);
+    panel.close();
+    await s.close();
+  });
+
+  it("labels each of two concurrent failures with its own tool", async () => {
+    const s = await startSession({});
+    const panel = await connectPanel(s.bridge.port(), "after_effects");
+    vmPanel(panel, aeHost(), 30);
+    const [comp, layer] = await Promise.all([
+      s.c.callTool({ name: "ae_get_comp", arguments: { compId: 99 } }),
+      s.c.callTool({ name: "ae_get_layer", arguments: { compId: 12, layerIndex: 9 } }),
+    ]);
+    expect(textOf(comp)).toMatch(/^Script failed in After Effects \(ae_get_comp, args \{compId: 99\}\) in helper __comp .*No composition with id 99;/);
+    expect(textOf(layer)).toMatch(/^Script failed in After Effects \(ae_get_layer, args \{compId: 12, layerIndex: 9\}\) in helper __layer .*Layer index 9 is out of range/);
+    panel.close();
+    await s.close();
+  });
+
+  it("a panel older than the server (UNKNOWN_COMMAND) says to update it, for any app (D1)", async () => {
+    const s = await startSession({});
+    const panel = await connectPanel(s.bridge.port(), "photoshop");
+    recordCmds(panel, (f) => reply(panel, f.id, { code: "UNKNOWN_COMMAND", message: "panel does not implement ps.list_documents" }, false));
+    const r = await s.c.callTool({ name: "ps_list_documents", arguments: {} });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toBe(
+      "The Photoshop panel does not support this command (panel does not implement ps.list_documents) — it is older than this server; " +
+        "update the brainferno-mcp-bridge panel (or reload it after updating), then retry.",
+    );
+    panel.close();
+    await s.close();
+  });
+
+  it("a panel that drops mid-call says the call may have partly run and how to reconnect (D12)", async () => {
+    const s = await startSession({});
+    const panel = await connectPanel(s.bridge.port(), "after_effects");
+    recordCmds(panel, () => panel.terminate());
+    const r = await s.c.callTool({ name: "ae_list_compositions", arguments: {} });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toBe(
+      'The "after_effects" panel disconnected before the command completed (socket closed) — it may have partly run; check After Effects, ' +
+        "reconnect the brainferno-mcp-bridge panel (cc_connected_apps shows when it is back), then retry.",
+    );
+    await s.close();
   });
 });
