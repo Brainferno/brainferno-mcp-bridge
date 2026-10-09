@@ -22,21 +22,30 @@ acting as architect, never through a per-app branch. The full design lives in
 | Host | Engine | Script style |
 | --- | --- | --- |
 | Photoshop | UXP | Modern JS. Mutations must run inside `executeAsModal`. |
-| Premiere Pro (≥ 25.6) | UXP | Modern JS via `require("premierepro")`; promise-based — scripts may return a Promise, the panel awaits it. |
+| Premiere Pro (≥ 25.6) | UXP | Modern JS via `require("premierepro")`; promise-based — a command may return a Promise, the panel awaits it. Mutations run inside `lockedAccess` + `executeTransaction`, whose callbacks are synchronous. |
 | After Effects | ExtendScript | ES3. Wrap mutations in `app.beginUndoGroup`/`app.endUndoGroup`. |
 | Illustrator | ExtendScript | ES3, via the os-script lane (COM / AppleScript — no panel). Scripts are one IIFE expression; put helper functions *inside* it. Coordinates are artboard-relative, y-down. |
 | Audition | ExtendScript | ES3, undocumented API reached via CEP `evalScript`. |
 
+**UXP panels never evaluate script strings.** The server sends Photoshop and Premiere Pro
+*named commands*; each panel implements them as functions in its `commands.js`
+(`packages/panel-uxp`, `packages/panel-uxp-ppro`) and advertises the names in its hello
+`capabilities`. Only the ExtendScript hosts run script source the server builds.
+
 **ES3 means:** `var` only — no `const`/`let`, no arrow functions, no template
-literals, no `JSON` global (the CEP panel loads `json2.jsx`), no
+literals, no `JSON` global (ExtendScript has none, and nothing loads a polyfill: the CEP
+panel's `host.jsx` and the os-script lane's wrapper each define their own small
+`__acmJson` serializer), no
 `Array.prototype.map`/`filter`/`forEach`. Reviewers grep ExtendScript strings
 for `const `, `let `, `=>`, `` ` `` and `JSON.` — any hit is a rejection.
 
 ## Script conventions
 
-- Every script is a single IIFE whose final expression is the JSON-serializable
-  return value: `(function () { ... return value; })()` in ExtendScript,
-  `(() => { ... })()` or `(async () => { ... })()` in UXP.
+- Every ExtendScript script is a single IIFE whose final expression is the
+  JSON-serializable return value: `(function () { ... return value; })()`. UXP has no
+  script to build: a Photoshop or Premiere Pro tool sends a named command
+  (`bridge.execute("ps.fill", params)`), and the panel function behind it (modern JS, may be
+  `async`) returns a JSON-serializable value.
 - Interpolate dynamic values into scripts **only** through `jsStringLiteral`
   (`packages/server/src/bridge/script-escape.ts`), which also escapes the line- and
   paragraph-separator characters U+2028 and U+2029 that a raw `JSON.stringify` would leave to
@@ -65,11 +74,14 @@ server.registerTool(
 - Zod schemas: every parameter carries `.describe()`. Optional params state
   their default in the description.
 - Tools are registered unconditionally — a closed app returns the actionable
-  `AppNotConnectedError` message, it does not vanish from the tool list. The two
-  exceptions are deliberate gates: the raw-script escape hatches `cc_eval_script`
-  (After Effects, Illustrator, Audition) and `ps_batch_play` (Photoshop) register
-  only when `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS=1` is set in the server env, and the
-  Illustrator-delegate tools register only with a configured key.
+  `AppNotConnectedError` message, it does not vanish from the tool list. The raw-script
+  escape hatches follow the same rule: `cc_eval_script` (After Effects, Illustrator,
+  Audition) and `ps_batch_play` (Photoshop) are always registered and *refuse* — before
+  touching any bridge — unless `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS` names the app (`1`/`all`,
+  or a comma list of app ids) and, for a remote (shared HTTP) session,
+  `BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS=1`. `cc_get_capabilities` reports that gate per
+  tool. The one remaining registration gate is deliberate: the Illustrator-delegate tools
+  register only with a configured key.
 
 ## Annotations — set honestly
 
@@ -84,7 +96,44 @@ server.registerTool(
 timeouts) into readable tool errors. Error text always says what happened **and what
 to do next**; for expected failures `throw new Error("<what happened> — <what to do
 next>")`. (Earlier drafts planned a code prefix such as `SCRIPT_ERROR:`; that was not
-adopted — the actionable message is the contract.)
+adopted — the actionable message is the contract.) The raw-script tools are the one place a
+tool error carries JSON; see the next section.
+
+## Raw-script tools — one contract
+
+Every raw-script tool (today `cc_eval_script` and `ps_batch_play`) builds on
+`packages/server/src/tools/raw-script.ts` — the envelope, the ES3 wrapper, the gate, the
+refusal texts and the audit line live there once. A new raw tool imports them; it
+re-implements none of them.
+
+- **Envelope.** Results are `{ ok, error?: { message, line, bodyLine }, durationMs, value,
+  logs, logsDropped? }`, built with `makeEnvelope` so the keys keep that order and the verdict
+  survives a client truncating a long result. `error` is present only when `ok` is false and
+  `logsDropped` only when it is above 0. `bodyLine` is the line in the caller's script when
+  the host's numbering could be calibrated, else `null`; `durationMs` is the server round
+  trip. `envelopeResult` returns an `ok` envelope as a normal JSON result and any other as
+  `isError` with the envelope as its text.
+- **Error-shape rule.** `isError` with **plain text** = nothing was dispatched (raw scripts
+  disabled, app not enabled, app not connected). `isError` with a **JSON envelope** = the
+  script or batch was dispatched and may have partly run. After dispatch, map `ScriptError`,
+  `EvalTimeoutError` and `AppDisconnectedError` through `dispatchedFailure`; rethrow
+  `AppNotConnectedError` (not dispatched) so `guard()` returns plain text. Say this rule in
+  the tool's description.
+- **Gate first.** Check `rawGateState(app, rawScriptApps, enabledApps, { remote,
+  allowRemote })` before any bridge call; a refusal returns `errorResult(reason)` and calls no
+  bridge at all. Refusals, in precedence order: the app's tools are not enabled on this
+  server; the raw-script gate does not include the app; the session is remote and remote raw
+  scripts are not allowed.
+- **Audit every call.** Exactly one `auditRawCall` per call, run or refused. It writes
+  through `log.audit`, which no log level silences, and records a hash and the length of the
+  payload — never the payload itself.
+- **ExtendScript enters only through `rawScriptWrapper`.** The caller's script becomes a
+  pure-ASCII string literal (built on `jsStringLiteral`) that the ES3 wrapper runs with a
+  direct `eval` inside its own inner function; the wrapper collects `__log` output and refuses
+  a result that is not plain data.
+- **Illustrator goes through the os-script lane** — the same `OsScriptBridge` instance the
+  `ai_*` tools use, so its queue serializes them — never through the socket hub, where
+  Illustrator has no panel.
 
 ## Timeouts
 
@@ -100,7 +149,7 @@ parameter — `wait: false` returns a jobId at once and the client polls it with
   `packages/server/src/logging.ts` (stderr).
 - Per-app work touches only `packages/server/src/tools/<app>.ts`, that app's panel glue, and
   `test/` — shared core (`packages/protocol/`, `packages/server/src/bridge/`, `server.ts`,
-  `tools/result.ts`) changes go through the architect.
+  `tools/result.ts`, `tools/raw-script.ts`) changes go through the architect.
 - `npm run typecheck && npm test` must pass before every commit. Tests use the
   in-memory MCP transport plus a fake panel over a real WebSocket
   (`packages/server/test/server.test.ts`) — new tools get at least a not-connected-path test,

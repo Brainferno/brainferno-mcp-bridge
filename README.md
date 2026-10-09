@@ -16,7 +16,7 @@ software for use with those Adobe products; it is not made or endorsed by Adobe 
 comp, cuts the sequence, normalizes the audio, renders the file, and shows you previews along
 the way. Every action is one undo step in the app, so you can always step back.
 
-- **127 tools** across six applications, plus an ffmpeg audio lane that works with every
+- **130 tools** across six applications, plus an ffmpeg audio lane that works with every
   Adobe app closed.
 - **Cross-app pipelines**: one request runs Photoshop → After Effects → aerender → Premiere
   → ffmpeg → back onto the timeline, with progress and a clear report if a step fails.
@@ -78,12 +78,13 @@ Ideas people build with it:
 Counts are the tools registered per app. Each family has a live-run write-up in
 `docs/spikes/` with the quirks found on real installs.
 
-### Photoshop — 21 tools
+### Photoshop — 22 tools
 Documents (list, create, open, save, export PNG/JPEG, preview image), layers (create,
 text layers with font/size/color, properties, move, duplicate, delete), layer styles
 (drop shadow, glows, bevel, satin, color and gradient overlay, stroke… — add, adjust, read,
 remove), place an image as a smart object, fill, filters (Gaussian/motion/unsharp…),
-resize, crop.
+resize, crop. Plus a raw batchPlay escape hatch (`ps_batch_play`) that is always listed but
+refuses until you enable raw scripts for Photoshop — see [Raw scripts](#raw-scripts-opt-in).
 
 ### After Effects — 34 tools
 Project info and file, compositions and footage (list, create, import), import a layered
@@ -342,8 +343,9 @@ The wire protocol is documented in [`docs/protocol.md`](docs/protocol.md).
 | Tools | Application | Purpose |
 | --- | --- | --- |
 | `cc_connected_apps` | all | Each app's lane, panel, engine, and connection state |
+| `cc_get_capabilities` | all | What the server can do for *this* session, without contacting any app: server and protocol versions, local or remote session, the raw-script gate, one row per gated tool (enabled or not, how to enable it, app connected, panel supports it), and each panel's version and host version |
 | `cc_job_status` · `cc_list_jobs` · `cc_job_wait` · `cc_job_cancel` | jobs | Background jobs; `wait` streams progress; long renders/exports take `wait:false` and return a jobId |
-| `ps_*` (21) | Photoshop | Documents (list/create/open/save/export/preview), layers (create/text/props/move/duplicate/delete), layer styles, place image, fill, filters, resize, crop — [live run](docs/spikes/05-photoshop-tools-live.md) |
+| `ps_*` (22) | Photoshop | Documents (list/create/open/save/export/preview), layers (create/text/props/move/duplicate/delete), layer styles, place image, fill, filters, resize, crop, and the gated `ps_batch_play` (below) — [live run](docs/spikes/05-photoshop-tools-live.md) |
 | `ae_*` (34) | After Effects | Project/comps/footage, PSD/AI import as comp, layers of every kind, shapes and masks, keyframes + easing, expressions, effects + params, layer styles, text, markers, Essential Graphics, frame preview, render queue, headless aerender — [live run](docs/spikes/06-aftereffects-tools-live.md) |
 | `pp_*` (29) | Premiere Pro | Project/sequences/items, get_sequence (tracks + clips), import, create sequence from media, insert/overwrite, ripple remove, move/trim/props, transitions, effects + keyframes, markers, frame preview, export presets, export in-app or to Media Encoder — [live run](docs/spikes/07-premiere-tools-live.md) |
 | `ai_*` (7) | Illustrator | Documents, shapes, text, save, export artboard, preview (panel-less) |
@@ -352,10 +354,46 @@ The wire protocol is documented in [`docs/protocol.md`](docs/protocol.md).
 | `ame_*` (6) | Media Encoder (headless) | Encode media / `.prproj` sequence / FCP XML with an `.epr` preset; status, history, cancel, service start/stop — [live run](docs/spikes/10-media-encoder-live.md), [macOS](docs/spikes/13-macos-live.md) |
 | `audio_*` (9) | ffmpeg | Probe, R128 measure + two-pass normalize, convert/extract, trim, trim silence, denoise, mix, waveform image |
 | `pipeline_*` (4) | cross-app | `ps_to_ae`, `render_and_import`, `audio_roundtrip`, `ai_to_ps` — one call, one job, failure names the step + recovery tool — [live run](docs/spikes/09-pipelines-live.md) |
-| `cc_eval_script` | After Effects, Illustrator, Audition | Raw ExtendScript escape hatch — **opt-in** (`BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS=1`) |
+| `cc_eval_script` | After Effects, Illustrator, Audition | Raw ExtendScript escape hatch — always listed; refuses unless enabled (**opt-in**, `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS`) — see `cc_get_capabilities` |
+| `ps_batch_play` | Photoshop | Raw batchPlay descriptors — always listed; refuses unless enabled for Photoshop (**opt-in**, same switch) |
 
 Tools are always advertised for the apps you chose, even when an app is closed — a closed
-app returns an actionable "not connected" error rather than vanishing mid-session.
+app returns an actionable "not connected" error rather than vanishing mid-session. The
+raw-script tools follow the same rule: listed, and refusing until they are enabled. Only the
+`ai_beta_*` tools stay out of the list until an Illustrator key is configured.
+
+### Raw scripts (opt-in)
+
+`cc_eval_script` runs your own ExtendScript in After Effects, Illustrator or Audition;
+`ps_batch_play` runs raw batchPlay descriptors in Photoshop. Both are for work the typed tools
+do not cover yet, and both refuse every call until the operator sets
+`BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS` in the server env — `1` (or `all`) for every app with a
+raw-script tool, or a comma list such as `after_effects,photoshop` — and restarts. Remote (*shared*)
+sessions are refused even then unless `BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS=1` is also set.
+`cc_get_capabilities` shows the calling session which tools are enabled and how to enable the
+rest.
+
+Both return the same envelope, keys in this order:
+
+```json
+{ "ok": false, "error": { "message": "…", "line": 3, "bodyLine": 3 }, "durationMs": 41, "value": null, "logs": [] }
+```
+
+`error` is present only when `ok` is false, and a `logsDropped` count follows `logs` only when
+log lines were dropped. `bodyLine` is the line in your script when the host's line numbers
+could be calibrated, else `null`; `durationMs` is the server's round trip, including any wait
+behind other calls to the same app. In `cc_eval_script` the value of the script's last
+statement is the result (a top-level `return` is a syntax error — wrap such code in an IIFE),
+`__log(msg)` collects up to 200 lines / 20000 characters, and the result must be plain data
+(strings, numbers, booleans, `null`, arrays, plain objects) — a host object such as a layer is
+refused with its path. In `ps_batch_play` the value is batchPlay's results array, and a
+descriptor that Photoshop reports as failed (an `{ "_obj": "error" }` entry) makes the call
+fail, naming the index: the descriptors before it already ran and are not undone.
+
+**Reading a raw-script error:** a tool error in plain text means nothing was sent to the app
+(raw scripts disabled, app not enabled, app not connected). A tool error whose text is a JSON
+envelope means the script or batch *was* sent and may have partly run — check the document
+before re-running it.
 
 ---
 
@@ -374,7 +412,8 @@ override it:
 | `BRAINFERNO_MCP_HANDSHAKE_FILE` | `~/.brainferno-mcp-bridge/bridge.json` | Where the `{port, token}` file panels read is written |
 | `BRAINFERNO_MCP_EVAL_TIMEOUT_MS` | `30000` | How long to wait for a "slow" script result |
 | `BRAINFERNO_MCP_HEARTBEAT_MS` | `15000` | Ping cadence for detecting a dead panel |
-| `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS` | *(off)* | `1` registers the `cc_eval_script` escape hatch |
+| `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS` | *(off)* | Lets the raw-script tools run ([Raw scripts](#raw-scripts-opt-in)): `1` (also `true`, `all`, `*`) for After Effects, Photoshop, Illustrator and Audition, or a comma list of app ids — `after_effects`, `photoshop`, `illustrator`, `audition` (`ae`, `ps`, `ai`, `au` work too). Empty, `0`, `false`, `no`, `off` = off. Other names (Premiere Pro, Media Encoder, typos) are ignored with a warning, never enabled |
+| `BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS` | *(off)* | `1` (or `true`) also lets remote (*shared*) sessions run raw scripts; anything else refuses them |
 | `BRAINFERNO_MCP_ILLUSTRATOR_KEY` / `_URL` | *(config.json)* / `http://localhost:18412/v1/mcp` | Adobe's Illustrator MCP key and endpoint |
 | `BRAINFERNO_MCP_ILLUSTRATOR_APP` | *(config.json, else the app's name)* | Which Illustrator the `ai_*` tools drive — AppleScript name, bundle id (`com.adobe.illustrator`, `com.adobe.illustratorBeta`) or `.app` path on macOS; COM ProgID on Windows |
 | `BRAINFERNO_MCP_FFMPEG` / `_FFPROBE` | `ffmpeg` / `ffprobe` | Executables for the `audio_*` lane |
@@ -403,7 +442,22 @@ override it:
   the hidden renderer it started — never one that was already running.
 - Keys and tokens are stored in `~/.brainferno-mcp-bridge/config.json`, never logged, never put in
   error messages.
-- `cc_eval_script` (raw script) is opt-in and off by default.
+- Raw scripts (`cc_eval_script`, `ps_batch_play`) run arbitrary code inside your Adobe
+  applications with your user's rights, so they are opt-in and off by default: the tools are
+  listed but refuse every call, touching no app, until `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS`
+  names the app. `1`/`all` opens After Effects, Photoshop, Illustrator and Audition —
+  **Illustrator included**: its raw scripts go through the OS scripting lane, which launches
+  Illustrator if it is closed. Remote (*shared*)
+  sessions stay refused unless `BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS=1`.
+- Every raw-script call, run or refused, writes one audit line to the server's stderr log,
+  at every `BRAINFERNO_MCP_LOG_LEVEL` (the level cannot silence it):
+  `[brainferno-mcp-bridge] AUDIT raw-script tool=<tool> app=<app> sha256=<12 hex> len=<n> [count=<n>] via=<via> outcome=<run|refused>`.
+  It records the first 12 hex digits of a SHA-256 and the length of the script (for
+  `ps_batch_play`, of the descriptors' JSON, plus their `count`) — never the script itself; on
+  a run its first 200 characters go to the `debug` log only. `via` is `stdio` for a local
+  session or `http:` plus the first 8 characters of a remote session's id (the same prefix the
+  "remote session … opened" log line shows). When the gate is open the server also writes one
+  `AUDIT raw scripts ENABLED for …` line at startup, saying whether remote sessions are allowed.
 
 ---
 
@@ -412,7 +466,7 @@ override it:
 ```bash
 npm run dev        # watch mode
 npm run typecheck  # tsc --noEmit
-npm test           # vitest (172 tests; the audio lane test runs a real ffmpeg if present)
+npm test           # vitest (the audio lane test runs a real ffmpeg if present)
 npm run panels:sync  # copy the shared bridge client into each panel folder
 ```
 

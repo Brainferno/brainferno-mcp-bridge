@@ -10,7 +10,7 @@ import { SERVER_VERSION } from "./version.js";
 import { IllustratorDelegate } from "./drivers/illustrator-delegate.js";
 import { OsScriptBridge } from "./drivers/osscript.js";
 import { JobRegistry } from "./jobs.js";
-import { setLogLevel } from "./logging.js";
+import { log, setLogLevel } from "./logging.js";
 import { registerAfterEffectsTools } from "./tools/after-effects.js";
 import { registerAudioTools, type AudioToolOptions } from "./tools/audio.js";
 import { registerAuditionTools } from "./tools/audition.js";
@@ -49,6 +49,13 @@ export interface BuiltServer extends Runtime {
 export function buildRuntime(config: Config): Runtime {
   setLogLevel(config.logLevel);
   setPreviewMode(config.preview);
+  // Once per process (not per session), at every log level: the raw-script gate is open.
+  if (config.rawScriptApps.length > 0) {
+    log.audit(
+      `raw scripts ENABLED for ${config.rawScriptApps.join(",")} via BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS` +
+        (config.allowRemoteRawScripts ? "; remote sessions allowed" : "; remote sessions refused"),
+    );
+  }
 
   const bridge = new BridgeServer({
     port: config.bridgePort,
@@ -73,9 +80,14 @@ export function buildRuntime(config: Config): Runtime {
  * Tools are registered unconditionally: an application that has no panel
  * connected still advertises its tools, and those tools return an actionable
  * "not connected" error rather than vanishing from the tool list mid-session.
+ * The raw-script tools follow the same rule and refuse when their gate is closed.
+ *
+ * `remote: true` marks a remote (shared HTTP) session: raw-script tools refuse it
+ * unless BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS=1.
  */
-export function createMcpServer(rt: Runtime): McpServer {
+export function createMcpServer(rt: Runtime, opts: { remote?: boolean } = {}): McpServer {
   const { config, bridge, jobs } = rt;
+  const remote = opts.remote === true;
   const server = new McpServer(
     { name: "brainferno-mcp-bridge", version: SERVER_VERSION },
     {
@@ -91,10 +103,25 @@ export function createMcpServer(rt: Runtime): McpServer {
   const on = new Set(config.enabledApps);
   const appIds = (["after_effects", "premiere", "photoshop", "illustrator", "audition"] as const).filter((id) => on.has(id));
 
-  registerDiagnosticTools(server, bridge, { allowRawScripts: config.allowRawScripts, enabledApps: appIds });
+  registerDiagnosticTools(server, bridge, {
+    enabledApps: appIds,
+    rawScriptApps: config.rawScriptApps,
+    rawScriptIgnored: config.rawScriptIgnored,
+    allowRemoteRawScripts: config.allowRemoteRawScripts,
+    remote,
+    // The same instance the ai_* tools use: its per-host queue serializes raw calls with them.
+    illustratorBridge: rt.illustratorBridge,
+    illustratorDelegateEnabled: config.illustratorMcpKey !== "",
+  });
   if (on.has("after_effects")) registerAfterEffectsTools(server, bridge.bridgeFor("after_effects"), { jobs, defaultWait: config.defaultWait });
   if (on.has("premiere")) registerPremiereTools(server, bridge.bridgeFor("premiere"), { jobs, defaultWait: config.defaultWait });
-  if (on.has("photoshop")) registerPhotoshopTools(server, bridge.bridgeFor("photoshop"), { allowRawScripts: config.allowRawScripts });
+  if (on.has("photoshop")) {
+    registerPhotoshopTools(server, bridge.bridgeFor("photoshop"), {
+      rawScriptApps: config.rawScriptApps,
+      remote,
+      allowRemoteRawScripts: config.allowRemoteRawScripts,
+    });
+  }
   if (on.has("illustrator")) {
     registerIllustratorTools(server, rt.illustratorBridge);
     registerIllustratorDelegateTools(server, rt.illustratorDelegate, config.illustratorMcpKey !== "");

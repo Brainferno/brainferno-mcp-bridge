@@ -12,10 +12,18 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
   `v0.2.2` is the current release; npm packages `brainferno-mcp-bridge` and
   `@brainferno/mcp-bridge-protocol` published with trusted publishing — a `vX.Y.Z` tag
   publishes and creates the GitHub release by itself. See **Releasing** below.
-- Everything is verified live on **Windows 11** with the Adobe 2026 apps: Photoshop 21,
+- Everything is verified live on **Windows 11** with the Adobe 2026 apps: Photoshop 22,
   After Effects 34, Premiere Pro 29, Illustrator 7 (+ Adobe's 46 via `ai_beta_call`),
-  Audition 12, Media Encoder 6, audio/ffmpeg 9, pipelines 4, jobs 4. (The "Expect N tools"
-  line below and these per-app numbers are checked by `tool-counts.test.ts`.)
+  Audition 12, Media Encoder 6, audio/ffmpeg 9, pipelines 4, jobs 4. (`tool-counts.test.ts`
+  checks the "Expect N tools" line below and the README's per-app headers; it does not check
+  this line, so update it by hand from the numbers the test reports.)
+- **X-01 (raw-script contract and gate) is unit-tested only.** `cc_eval_script`,
+  `ps_batch_play` and the new `cc_get_capabilities` are always registered; the raw tools refuse
+  unless `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS` names the app, and return one envelope
+  (`packages/server/src/tools/raw-script.ts`). Not yet run against a real host: the ES3 wrapper
+  (direct eval inside an inner function, the `e.line` calibration that yields `bodyLine`, the
+  plain-data check on host objects) in After Effects, Illustrator and Audition, and the in-band
+  `_obj: "error"` detection in `ps_batch_play`.
 - **macOS run on 2026-08-28** (macOS 26, Adobe 2026 apps, Node 26): panels, Illustrator via
   osascript, previews, ffmpeg all fine as written. Two real bugs fixed — the aerender path
   (`Folder.appPackage` is the `.app` itself on macOS) and Media Encoder (nested console bundle,
@@ -92,7 +100,9 @@ Install it somewhere isolated and make it talk, rather than trusting the workflo
 then spawn `/tmp/t/bin/brainferno-mcp-bridge` with `HOME` pointed at a scratch directory (a
 fresh-machine simulation — no user config, no remote-mode port to collide with the running
 server) and speak JSON-RPC over stdio: `initialize`, `notifications/initialized`, `tools/list`.
-Expect 127 tools (125 as of v0.3.1, before the `ae_add_shape`/`ae_add_mask` tools; 124 in
+Expect 130 tools (127 in v0.3.3, before `cc_get_capabilities` and the always-registered
+raw-script tools `cc_eval_script`/`ps_batch_play`; 125 as of v0.3.1, before the
+`ae_add_shape`/`ae_add_mask` tools; 124 in
 v0.3.0, before `ae_set_comp_props`; 113 in v0.2.2, before the mogrt, layer-style, Essential
 Graphics, and PSD/AI-import tools) and the right `serverInfo` version. Two false alarms this
 catches: without an isolated `HOME`, the test instance reads the real `config.json`, tries to

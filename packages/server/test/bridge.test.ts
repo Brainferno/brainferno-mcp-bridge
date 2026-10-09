@@ -247,6 +247,55 @@ describe("BridgeServer command routing", () => {
   });
 });
 
+describe("BridgeServer panelInfo", () => {
+  /** Authenticate a panel with extra hello fields and wait for the welcome. */
+  async function helloWith(port: number, appId: AppId, fields: Record<string, unknown>): Promise<WebSocket> {
+    const ws = await open(port);
+    const welcomed = new Promise<void>((resolve) =>
+      ws.on("message", (raw) => {
+        if (JSON.parse(raw.toString()).type === "welcome") resolve();
+      }),
+    );
+    ws.send(JSON.stringify({ type: "hello", protocolVersion: PROTOCOL_VERSION, appId, token: "s3cret", ...fields }));
+    await welcomed;
+    return ws;
+  }
+
+  it("stores the hello's versions and capabilities, and clears them when the panel closes", async () => {
+    const b = makeBridge();
+    await b.ready();
+    expect(b.panelInfo("after_effects")).toBeNull();
+
+    const ae = await helloWith(b.port(), "after_effects", { panelVersion: "1.2.3", hostVersion: "26.0", capabilities: ["eval", "ae.host_info"] });
+    expect(b.panelInfo("after_effects")).toEqual({ panelVersion: "1.2.3", hostVersion: "26.0", capabilities: ["eval", "ae.host_info"] });
+    expect(b.panelInfo("photoshop")).toBeNull();
+
+    // Empty strings and missing fields read as null.
+    const ps = await helloWith(b.port(), "photoshop", { panelVersion: "", hostVersion: "" });
+    expect(b.panelInfo("photoshop")).toEqual({ panelVersion: null, hostVersion: null, capabilities: null });
+
+    const closed = awaitClose(ae);
+    ae.close();
+    await closed;
+    await new Promise((r) => setTimeout(r, 50)); // the server's close handler runs a tick later
+    expect(b.panelInfo("after_effects")).toBeNull();
+    expect(b.panelInfo("photoshop")).not.toBeNull();
+    ps.close();
+  });
+
+  it("follows the newest panel when a reconnect replaces the old one", async () => {
+    const b = makeBridge();
+    await b.ready();
+    const first = await helloWith(b.port(), "after_effects", { panelVersion: "0.2.0" });
+    const replaced = awaitClose(first);
+    const second = await helloWith(b.port(), "after_effects", { panelVersion: "0.3.4" });
+    expect(await replaced).toBe(4004);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(b.panelInfo("after_effects")?.panelVersion).toBe("0.3.4");
+    second.close();
+  });
+});
+
 describe("BridgeServer port fallback", () => {
   it("falls back to an OS-assigned port when the preferred port is taken", async () => {
     const first = makeBridge();

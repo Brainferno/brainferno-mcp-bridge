@@ -13,9 +13,12 @@ import type { Config } from "../src/config.js";
  * The tool counts written into README.md and docs/HANDOFF.md must equal what the
  * server actually advertises. Nothing enforced these before, so they drifted
  * (README said After Effects had 33 tools; the registry has 34). This test is the
- * guard: it counts the LIVE registry under the default config — what a user sees,
- * so raw-script and Illustrator-delegate tools (off by default) are excluded — and
- * fails, printing the right number, when a doc disagrees. Prompt X-03.
+ * guard: it counts the LIVE registry under the default config — what a user sees.
+ * The raw-script tools (cc_eval_script, ps_batch_play) and cc_get_capabilities are
+ * part of that default registry: since X-01 they are always listed and refuse while
+ * their gate is closed. Only the Illustrator-delegate tools stay out (they register
+ * only with a configured key). It fails, printing the right number, when a doc
+ * disagrees. Prompt X-03.
  */
 const config: Config = {
   bridgePort: 0,
@@ -24,6 +27,9 @@ const config: Config = {
   evalTimeoutMs: 2_000,
   heartbeatIntervalMs: 0,
   allowRawScripts: false,
+  rawScriptApps: [],
+  rawScriptIgnored: [],
+  allowRemoteRawScripts: false,
   handshakeFilePath: "",
   allowedOrigins: [],
   illustratorMcpUrl: "http://localhost:18412/v1/mcp",

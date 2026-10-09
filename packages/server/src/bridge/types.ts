@@ -62,7 +62,11 @@ export class ScriptError extends Error {
 
 /** Raised when the host never answered within the timeout. */
 export class EvalTimeoutError extends Error {
-  constructor(appId: AppId, timeoutMs: number) {
+  constructor(
+    appId: AppId,
+    /** The deadline that expired, in ms. */
+    public readonly timeoutMs: number,
+  ) {
     super(
       `"${appId}" did not return a result within ${timeoutMs}ms. ` +
         `A modal dialog open in the application will block scripting until dismissed.`,
