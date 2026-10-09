@@ -14,7 +14,7 @@ import {
   setPlayheadScript,
   transportScript,
 } from "../src/tools/audition.js";
-import { es3Violations } from "./osscript.test.js";
+import { es3Violations } from "./es3.js";
 
 const SAMPLES: Record<string, string> = {
   APP_STATE,

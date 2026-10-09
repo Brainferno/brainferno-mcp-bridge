@@ -96,8 +96,9 @@ server.registerTool(
 timeouts) into readable tool errors. Error text always says what happened **and what
 to do next**; for expected failures `throw new Error("<what happened> — <what to do
 next>")`. (Earlier drafts planned a code prefix such as `SCRIPT_ERROR:`; that was not
-adopted — the actionable message is the contract.) The raw-script tools are the one place a
-tool error carries JSON; see the next section.
+adopted — the actionable message is the contract.) Two kinds of tool errors carry JSON: failed
+or cancelled jobs (the job view from `jobResult` in tools/jobs.ts) and the raw-script tools,
+where JSON-versus-plain-text is the dispatch signal (see the next section).
 
 ## Raw-script tools — one contract
 
@@ -109,16 +110,20 @@ re-implements none of them.
 - **Envelope.** Results are `{ ok, error?: { message, line, bodyLine }, durationMs, value,
   logs, logsDropped? }`, built with `makeEnvelope` so the keys keep that order and the verdict
   survives a client truncating a long result. `error` is present only when `ok` is false and
-  `logsDropped` only when it is above 0. `bodyLine` is the line in the caller's script when
-  the host's numbering could be calibrated, else `null`; `durationMs` is the server round
-  trip. `envelopeResult` returns an `ok` envelope as a normal JSON result and any other as
-  `isError` with the envelope as its text.
+  `logsDropped` only when it is above 0. `bodyLine` is the line in the caller's script that
+  failed; it is `null` when the error was raised outside the caller's own text (a
+  `$.evalFile`'d library, a helper an earlier call left as a global) or when the host's
+  numbering cannot be calibrated. `durationMs` is the server round trip. `envelopeResult`
+  returns an `ok` envelope as a normal JSON result and any other as `isError` with the
+  envelope as its text.
 - **Error-shape rule.** `isError` with **plain text** = nothing was dispatched (raw scripts
   disabled, app not enabled, app not connected). `isError` with a **JSON envelope** = the
   script or batch was dispatched and may have partly run. After dispatch, map `ScriptError`,
-  `EvalTimeoutError` and `AppDisconnectedError` through `dispatchedFailure`; rethrow
-  `AppNotConnectedError` (not dispatched) so `guard()` returns plain text. Say this rule in
-  the tool's description.
+  `EvalTimeoutError`, `AppDisconnectedError` and the os-script lane's `RunnerExitedError`
+  (an `AppNotConnectedError` marked `dispatched`: the runner failed after the script may have
+  reached Illustrator) through `dispatchedFailure`; rethrow a plain `AppNotConnectedError`
+  (not dispatched) so `guard()` returns plain text. When it cannot tell, a lane treats a
+  failure as dispatched. Say this rule in the tool's description.
 - **Gate first.** Check `rawGateState(app, rawScriptApps, enabledApps, { remote,
   allowRemote })` before any bridge call; a refusal returns `errorResult(reason)` and calls no
   bridge at all. Refusals, in precedence order: the app's tools are not enabled on this

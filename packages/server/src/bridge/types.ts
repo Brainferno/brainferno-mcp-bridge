@@ -37,6 +37,28 @@ export class AppNotConnectedError extends Error {
   }
 }
 
+/**
+ * The os-script lane's runner (PowerShell/COM, osascript) failed AFTER the script may have
+ * reached the host: anything but a failure that provably happened before dispatch (runner
+ * missing, COM class not registered, app not running / not found / Automation refused).
+ *
+ * It extends AppNotConnectedError on purpose: guard() and the typed ai_* tools keep treating
+ * it exactly as before, with the same message. Raw-script tools check `dispatched` and answer
+ * with the "the script was sent; it may have partly run" envelope instead of plain text.
+ */
+export class RunnerExitedError extends AppNotConnectedError {
+  readonly dispatched = true as const;
+  constructor(
+    appId: AppId,
+    hint: string,
+    /** What the runner said (its first stderr line, or "exit <code>"), without the hint. */
+    public readonly runnerOutput: string,
+  ) {
+    super(appId, hint);
+    this.name = "RunnerExitedError";
+  }
+}
+
 /** Raised when a panel disconnected while a command was in flight. */
 export class AppDisconnectedError extends Error {
   constructor(

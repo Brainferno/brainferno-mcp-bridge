@@ -37,7 +37,7 @@ Illustrator tools can make only simple primitives.
 2. Two overlapping rectangles → `ai_pathfinder({ operation: "unite" })` returns one path whose bounds equal the union.
 3. `ai_outline_text` turns a text frame into paths (no text frame left).
 4. `ai_offset_path({ offset: 5 })` grows the bounds by 5 pt on each side.
-5. ES3 check (the repo's `es3Violations` runs on os-script builders in `osscript.test.ts`); not-connected-path test.
+5. ES3 check (the Illustrator builders' `SAMPLES` in `illustrator-tools.test.ts` pass `es3Violations` from `packages/server/test/es3.ts`); not-connected-path test.
 
 ## Definition of done
 See `00_PREAMBLE.md`.

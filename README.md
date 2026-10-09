@@ -380,8 +380,9 @@ Both return the same envelope, keys in this order:
 ```
 
 `error` is present only when `ok` is false, and a `logsDropped` count follows `logs` only when
-log lines were dropped. `bodyLine` is the line in your script when the host's line numbers
-could be calibrated, else `null`; `durationMs` is the server's round trip, including any wait
+log lines were dropped. `bodyLine` is the line in your script that failed; it is `null` when
+the error was raised outside your script's own text or the host's line numbering cannot be
+calibrated. `durationMs` is the server's round trip, including any wait
 behind other calls to the same app. In `cc_eval_script` the value of the script's last
 statement is the result (a top-level `return` is a syntax error — wrap such code in an IIFE),
 `__log(msg)` collects up to 200 lines / 20000 characters, and the result must be plain data

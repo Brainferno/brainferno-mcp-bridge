@@ -18,7 +18,7 @@ You are working in the `brainferno-mcp-bridge` repo: a TypeScript MCP server for
 - **ExtendScript is ES3** (After Effects, Illustrator, Audition): `var` only. No `const`, `let`, arrow functions, template literals, `JSON.` global, or `Array.prototype.map/filter/forEach`. Reviewers grep for `const `, `let `, `=>`, `` ` `` and `JSON.`. UXP (Photoshop, Premiere) uses modern JS; Photoshop mutations run inside `executeAsModal`.
 - **One IIFE per script**; its final expression is the JSON-serializable result. Helper functions go *inside* it.
 - **Mutations are wrapped in `__undo("Name", fn)`** so one tool call is one Ctrl-Z.
-- **Dynamic values go into scripts only through `jsStringLiteral`** (`packages/server/src/bridge/script-escape.ts`). It also escapes U+2028 and U+2029. (CONTRIBUTING still says `JSON.stringify`; that text is stale — see `00_GLOBAL_PLAN.md`.) Never concatenate raw input into script source.
+- **Dynamic values go into scripts only through `jsStringLiteral`** (`packages/server/src/bridge/script-escape.ts`). It also escapes U+2028 and U+2029, which a raw `JSON.stringify` would leave in place (CONTRIBUTING says the same since `G2`). Use the `lit`/`opt`/`num` helpers built on it. Never concatenate raw input into script source.
 - **zod raw shapes**: every parameter has `.describe()`, and optional ones state their default. Reuse the shared schemas (`compId`, `layerIndex`, near `after-effects.ts:958-959`).
 - **Annotations, set honestly**: `readOnlyHint` on anything that cannot change host state; `destructiveHint` on delete / overwrite / save / flatten / raw-script tools; `idempotentHint` only when a repeat call is a no-op.
 - **Errors**: expected failures `throw new Error("<what happened> — <what to do next>")`. Host lookups by id or name fail loudly; never act on a guessed default.
@@ -40,16 +40,16 @@ server.registerTool(
 
 ## Test pattern (After Effects; copy it for other apps)
 File: `packages/server/test/after-effects-tools.test.ts`.
-- `SAMPLES` map (about lines 41-96): one entry per exported script builder, called with sample arguments (include a string with quotes so escaping is exercised). Every sample must pass `es3Violations(src)` (helper at `packages/server/test/osscript.test.ts:36`).
-- **The `__undo(` list is hard-coded** (about lines 103-107): add your tool's sample name to it if the tool mutates. The escape check covers only 3 samples (about lines 109-113). Both gaps are fixed by prompt `X-03`.
+- `SAMPLES` map: one entry per exported script builder, called with sample arguments (include a string with quotes so escaping is exercised). Every sample must pass `es3Violations(src)` (exported from `packages/server/test/es3.ts`).
+- **Classify every exported `xxxScript` builder** (an exported function whose name ends in `Script`) in one set: `MUST_UNDO` (it mutates, so its script must contain `__undo(`; also add a sample call for it in the "every MUST_UNDO builder wraps its mutation in an undo group" test, which fails without one), `NO_UNDO_OK` (it changes state but legitimately has no undo group, such as an app-level open/save, a self-cleaning preview or an export; say why in the comment), or `READ_ONLY_BUILDERS` (it only reads). Read-only script constants such as `LIST_COMPOSITIONS` go in `READ_ONLY_CONSTS`. The "classifies every exported script builder" test finds the builders by that name pattern and fails for one in no set, and for a `MUST_UNDO` / `NO_UNDO_OK` / `READ_ONLY_BUILDERS` entry that is not an exported builder. That is all it checks: it does not discover constants (keep `READ_ONLY_CONSTS` by hand), it does not check that a name is in only one set, and helpers not named `...Script` are not classified — `aerenderExecutable` sits in `READ_ONLY_BUILDERS` as the one hard-coded exemption from the stale-entry check.
+- The escaping test ("escape strings as JS literals") checks only a few samples: add a `toContain` assertion that your builder's string arguments come out escaped.
 - Add targeted `toContain` assertions for the new behavior.
 - Add a not-connected-path test, and a round-trip test with the fake panel in `packages/server/test/server.test.ts` where behavior warrants it.
-- Known hole: `ae_queue_render` builds its script inline (`after-effects.ts` about lines 1553-1565), so no test covers it.
 
 ## Definition of done (every prompt)
 1. `npm run typecheck && npm test` pass.
 2. `CHANGELOG.md` has an entry under `## Unreleased`.
-3. Tool counts: **do not hand-write them.** Until prompt `X-03` lands, update the README per-app counts and the "Expect N tools" line in `docs/HANDOFF.md` by recounting `registerTool("` in the source.
+3. Tool counts: **never hand-write them.** Since `X-03`, `packages/server/test/tool-counts.test.ts` counts the live registry and fails, printing the right number, when the README's per-app headers or total, or the "Expect N tools" line in `docs/HANDOFF.md`, disagree — copy the number it prints.
 4. The matching spike doc gains a line for any new quirk you hit.
 5. Live-verify on a real Adobe app when the prompt says so:
    - Server change: `npm run build`, kill the server pid in `~/.brainferno-mcp-bridge/bridge.json` (`taskkill /PID <pid> /F`), then `/mcp` → `brainferno` → reconnect. A plain reconnect reuses the old process.

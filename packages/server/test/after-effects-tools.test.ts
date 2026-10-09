@@ -38,7 +38,7 @@ import {
   setLayerStyleParamScript,
   setTextScript,
 } from "../src/tools/after-effects.js";
-import { es3Violations } from "./osscript.test.js";
+import { es3Violations } from "./es3.js";
 
 const SAMPLES: Record<string, string> = {
   LIST_COMPOSITIONS,
@@ -98,10 +98,14 @@ const SAMPLES: Record<string, string> = {
   queueRender: queueRenderScript("Main", "C:/renders/main.mov", "H.264 - Match Render Settings"),
 };
 
-// The exported script builders whose output does NOT mutate the project (reads
-// and constants). Everything else must wrap its mutation in __undo(). A new
-// builder absent from both this set and SAMPLES fails the coverage test below,
-// so a new mutating tool can't silently skip the undo and ES3 checks.
+// Exported builders whose script only reads the project. The "classifies every
+// exported script builder" test below collects every exported function whose name
+// ends in "Script" and fails if one is in none of READ_ONLY_BUILDERS, MUST_UNDO and
+// NO_UNDO_OK, or if one of those three sets names something that is not such a
+// builder - so a new mutating builder can't silently skip the __undo check. It does
+// not look at SAMPLES (the ES3 test covers only what SAMPLES lists) and does not
+// discover constants (READ_ONLY_CONSTS is kept by hand). aerenderExecutable is a
+// pure path helper, not a script builder; the stale check exempts it by name.
 const READ_ONLY_BUILDERS = new Set([
   "getCompScript",
   "getLayerScript",
