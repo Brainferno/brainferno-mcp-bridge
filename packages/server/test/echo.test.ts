@@ -123,11 +123,68 @@ describe("redact (R1-R4: echoed arguments and code excerpts)", () => {
     expect(redactKnown(plain)).toBe(plain);
   });
 
+  it("R1 with a cut length: a quoted name as long as a cut one that does not end in the mark is the project's own text (F1, G4)", () => {
+    setRedactionSecrets([HEX64], { cut: 60 });
+    // 63 units, like a cut name, and the first 60 end with 8 characters of the secret, but no "..." follows.
+    const uncut = `12 "${"n".repeat(52)}${HEX64.slice(0, 8)}abc", 13 "Main"`;
+    expect(redactKnown(uncut)).toBe(uncut);
+    // The same name with the mark is a cut name: its tail goes.
+    expect(redactKnown(`12 "${"n".repeat(52)}${HEX64.slice(0, 8)}...", 13 "Main"`)).toBe(`12 "${"n".repeat(52)}[redacted]...", 13 "Main"`);
+  });
+
+  it("R1 with a cut length: finds the same quoted names as before in an ordinary host message, escapes and all (G1)", () => {
+    setRedactionSecrets([HEX64], { cut: 60 });
+    // __q's quoting: a quote and a backslash escaped inside the name; nothing escaped outside one.
+    const message =
+      `No composition with id 99; the project has 4: 11 "say \\"hi\\"", 12 "C:\\\\out\\\\", 13 "tok ${HEX64.slice(0, 56)}...", ` +
+      `14 "a \\"q\\" ${HEX64.slice(0, 54)}..." — pass one of these compIds.`;
+    expect(redactKnown(message)).toBe(
+      'No composition with id 99; the project has 4: 11 "say \\"hi\\"", 12 "C:\\\\out\\\\", 13 "tok [redacted]...", ' +
+        '14 "a \\"q\\" [redacted]..." — pass one of these compIds.',
+    );
+    // A quote that is never closed starts no name, and nothing after it is read as one.
+    const open = `13 "tok ${HEX64.slice(0, 56)}..." and "never closed 14 \\"tok ${HEX64.slice(0, 56)}...\\"`;
+    expect(redactKnown(open)).toBe(`13 "tok [redacted]..." and "never closed 14 \\"tok ${HEX64.slice(0, 56)}...\\"`);
+  });
+
   it("R2: redacts only a credential-shaped Bearer value (M14)", () => {
     expect(redact("The ring bearer walks in")).toBe("The ring bearer walks in");
     expect(redact("Bearer abc")).toBe("Bearer abc");
     expect(redactKnown(`Authorization: Bearer ${TOKEN40}`)).toBe("Authorization: Bearer [redacted]");
     expect(redactKnown(`"Bearer ${TOKEN40}"`)).toBe('"Bearer [redacted]"');
+  });
+});
+
+describe("redaction cost (G1)", () => {
+  /** Milliseconds one call may take on about 200 KB; a quadratic scan takes seconds (10 s at 180 KB). */
+  const LINEAR_MS = 500;
+  // An unescaped quote that is never closed, then escaped quotes: every escaped quote looks like
+  // the start of a quoted name.
+  const escapedQuotes = `x"${'a\\"'.repeat(66_000)}`;
+  // A text layer showing JSON that was itself escaped: no unescaped quote at all.
+  const escapedJson = JSON.stringify(JSON.stringify({ items: Array.from({ length: 9_000 }, (_, i) => ({ id: i, name: `item ${i}` })) })).slice(1, -1);
+
+  const within = (label: string, f: () => unknown): void => {
+    const started = performance.now();
+    f();
+    expect(performance.now() - started, label).toBeLessThan(LINEAR_MS);
+  };
+
+  it("redacts, echoes and quotes about 200 KB of escaped quotes in time linear in its length, with the cut set as buildRuntime sets it", () => {
+    setRedactionSecrets([HEX64], { cut: 60, mark: "..." });
+    for (const [name, text] of [["escaped quotes", escapedQuotes], ["escaped JSON", escapedJson]] as const) {
+      expect(text.length, name).toBeGreaterThan(190_000);
+      within(`${name}: redact`, () => redact(text));
+      within(`${name}: redactKnown`, () => redactKnown(text));
+      within(`${name}: echoArgs`, () => echoArgs({ compId: 99, layerIndex: 1, text }));
+      within(`${name}: excerptLine`, () => excerptLine(`var t = ${jsStringLiteral(text)};`));
+    }
+  });
+
+  it("keeps a long run of spaces on one line in linear time, and collapses only a run that holds a control character", () => {
+    const spaces = `x${" ".repeat(200_000)}y`;
+    within("oneLine: spaces", () => expect(oneLine(spaces)).toBe(spaces));
+    within("oneLine: spaces and a tab", () => expect(oneLine(`x${" ".repeat(200_000)}\ty`)).toBe("x y"));
   });
 });
 
@@ -260,6 +317,21 @@ describe("oneLine and capCodePoints", () => {
     expect(oneLine("a\u001b[2Jb")).toBe("a [2Jb");
     expect(oneLine("x\u202ey\u2066z\u2069")).toBe("xyz");
     expect(oneLine("Caf\u00e9 \u2014 \u00a0ok")).toBe("Caf\u00e9 \u2014 \u00a0ok");
+  });
+
+  it("gives the text the single control-run rule gave, run for run (G1)", () => {
+    // The rule as one regex: quadratic on a long run of spaces, so oneLine applies it per run.
+    const reference = (text: string): string => stripBidi(text.replace(/\s*[\u0000-\u001f\u007f-\u009f\u2028\u2029]+\s*/g, " "));
+    const alphabet = [" ", "\t", "\n", "\r", "\u0000", "\u001b", "\u0085", "\u00a0", "\u2028", "\u3000", "\ufeff", "\u202e", "a", "b"];
+    let seed = 7;
+    const next = (n: number): number => {
+      seed = (seed * 48271) % 2147483647; // MINSTD: exact in a double, so the cases never change
+      return seed % n;
+    };
+    for (let i = 0; i < 5000; i++) {
+      const text = Array.from({ length: 1 + next(12) }, () => alphabet[next(alphabet.length)]).join("");
+      expect(oneLine(text), JSON.stringify(text)).toBe(reference(text));
+    }
   });
 
   it("cuts by code points and says how many were dropped", () => {

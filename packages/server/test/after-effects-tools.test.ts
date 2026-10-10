@@ -148,13 +148,13 @@ describe("After Effects tool scripts", () => {
     for (const [name, src] of Object.entries(SAMPLES)) expect(es5Calls(src), name).toEqual([]);
   });
 
-  it("give every throw its own next step: an em dash clause, or __pick's (AE-16, R17)", () => {
+  it("give every throw its own next step: an em dash clause, or __pick's (directly, or as __miss's when it is given none) (AE-16, R17, G3)", () => {
     // A throw with no " — " would get enrichAeError's generic step, which cannot fit every message.
     let throws = 0;
     for (const [name, src] of Object.entries(SAMPLES)) {
       for (const line of src.split("\n").filter((l) => l.includes("throw new Error("))) {
         throws++;
-        expect(line.includes("\\u2014") || line.includes("__pick("), `${name}: ${line.trim()}`).toBe(true);
+        expect(line.includes("\\u2014") || line.includes("__pick(") || /__miss\(.*, null\)\);/.test(line), `${name}: ${line.trim()}`).toBe(true);
       }
     }
     expect(throws).toBeGreaterThan(40);
