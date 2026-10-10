@@ -450,9 +450,12 @@ override it:
 - Keys and tokens are stored in `~/.brainferno-mcp-bridge/config.json`, never logged, and never
   written into an error message by the server itself. Script errors from the typed After
   Effects tools (`ae_*`, and the After Effects steps of jobs and pipelines) also remove them
-  from the host's message, the echoed arguments and the quoted code. Elsewhere — other apps,
-  the raw-script envelopes, a render's log tail — the host's own text is passed on unchanged,
-  so a project, document or layer name that contains a key shows as written.
+  from the host's message, the echoed arguments and the quoted code; where After Effects cut a
+  long name less than 8 characters into a key, those few characters stay. In every app, the
+  text of a panel older than the server (`UNKNOWN_COMMAND`) loses them too and is put on one
+  line. Elsewhere — other apps' script errors, the raw-script envelopes, a render's log tail —
+  the host's own text is passed on unchanged, so a project, document or layer name that
+  contains a key shows as written.
 - Raw scripts (`cc_eval_script`, `ps_batch_play`) run arbitrary code inside your Adobe
   applications with your user's rights, so they are opt-in and off by default: the tools are
   listed but refuse every call, touching no app, until `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS`

@@ -106,12 +106,27 @@ export const MAIN: CompSpec = {
 
 const PropertyType = { PROPERTY: 6212, INDEXED_GROUP: 6214, NAMED_GROUP: 6213 } as const;
 
+/**
+ * Card Dance's parameters as After Effects lists them (63; the match name of parameter i is
+ * "ADBE Card Dance-" and i in 4 digits): eight transformations (X/Y/Z Position, X/Y/Z Rotation,
+ * X/Y Scale), each a header then Source, Multiplier and Offset, and later the camera's X/Y/Z
+ * Rotation, Z Position and Focal Length again. So 8 names repeat: Source, Multiplier and Offset 8
+ * times each (Offset is 12, 16, ... 40), the other five twice.
+ */
+export const CARD_DANCE: readonly string[] = [
+  "Rows & Columns", "Rows", "Columns", "Back Layer", "Gradient Layer 1", "Gradient Layer 2", "Rotation Order", "Transformation Order",
+  ...["X Position", "Y Position", "Z Position", "X Rotation", "Y Rotation", "Z Rotation", "X Scale", "Y Scale"].flatMap((axis) => [axis, "Source", "Multiplier", "Offset"]),
+  "Camera System", "X Rotation", "Y Rotation", "Z Rotation", "X, Y Position", "Z Position", "Focal Length", "Transform Order",
+  "Upper Left Corner", "Upper Right Corner", "Lower Left Corner", "Lower Right Corner", "Auto Focal Length", "Focal Length",
+  "Light Type", "Light Intensity", "Light Color", "Light Position", "Light Depth", "Ambient Light",
+  "Diffuse Reflection", "Specular Reflection", "Highlight Sharpness",
+];
+
 /** Parameters (display names) of the effects the tests address; any other effect has one "Amount". */
-const EFFECT_PARAMS: Record<string, string[]> = {
+const EFFECT_PARAMS: Record<string, readonly string[]> = {
   "ADBE Gaussian Blur 2": ["Blurriness", "Blur Dimensions", "Repeat Edge Pixels"],
   "ADBE Glo2": ["Glow Based On", "Glow Threshold", "Glow Radius", "Glow Intensity"],
-  // A cut-down stand-in: the real Card Dance also repeats Source / Multiplier / Offset per axis.
-  "ADBE Card Dance": ["Rows", "Columns", "X Position", "Source", "Multiplier", "Offset", "Y Position", "Source", "Multiplier", "Offset"],
+  "ADBE Card Dance": CARD_DANCE,
   // A cut-down stand-in for Particle Playground (Cannon, Grid): each name that repeats has one copy
   // among the first 10 and the other past the 20th, so a repeat check that saw only a listed window
   // (10 in a path, 20 in ae_set_effect_param) would miss it.

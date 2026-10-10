@@ -59,7 +59,7 @@ import { lineCount } from "../src/tools/raw-script.js";
 import { scriptErrorText } from "../src/tools/result.js";
 import { closestNames, rank, stripAeVendor, suggestionThreshold, fold } from "../src/tools/suggest.js";
 import { AE_EFFECTS, AE_EFFECT_ITEMS } from "./ae-effects-fixture.js";
-import { HOST_JSX_PATH, MAIN, aeHost, type AeHost, type CompSpec, type EvalReply, type HostOptions, type ProjectSpec } from "./ae-host.js";
+import { CARD_DANCE, HOST_JSX_PATH, MAIN, aeHost, type AeHost, type CompSpec, type EvalReply, type HostOptions, type ProjectSpec } from "./ae-host.js";
 import { ES5_CALLS, es5Calls } from "./es3.js";
 
 const SUFFIX = "\n})()";
@@ -99,6 +99,30 @@ function scriptError(r: { message: string; line: number | null }): ScriptError {
 
 /** Names as __list writes them (no name here needs escaping). */
 const list = (names: readonly string[]): string => JSON.stringify(names).replace(/","/g, '", "');
+
+/** Match names as __repMatch writes them when each is the effect's match name, "-" and a number: [0010, 0014]. */
+const numbers = (...indexes: number[]): string => `[${indexes.map((i) => String(i).padStart(4, "0")).join(", ")}]`;
+/** Card Dance's repeated names, in the order __kids finds them (by their second copy). */
+const CARD_REPEATED = ["Source", "Multiplier", "Offset", "X Rotation", "Y Rotation", "Z Rotation", "Z Position", "Focal Length"];
+/** Where each repeats (CARD_DANCE): Source, Multiplier and Offset once per transformation, 4 apart. */
+const CARD_COPIES: Readonly<Record<string, string>> = {
+  Source: numbers(10, 14, 18, 22, 26, 30, 34, 38),
+  Multiplier: numbers(11, 15, 19, 23, 27, 31, 35, 39),
+  Offset: numbers(12, 16, 20, 24, 28, 32, 36, 40),
+  "X Rotation": numbers(21, 42),
+  "Y Rotation": numbers(25, 43),
+  "Z Rotation": numbers(29, 44),
+  "Z Position": numbers(17, 46),
+  "Focal Length": numbers(47, 54),
+};
+/** The advice after a Card Dance list: every repeated name with every copy's number, in `order`. */
+const cardAdvice = (order: readonly string[]): string =>
+  `${DASH} a repeated name reaches only the first of them; pass the match name instead (by match name, "ADBE Card Dance-" + the number: ` +
+  `${order.map((n) => `"${n}": ${CARD_COPIES[n]}`).join("; ")}).`;
+/** CARD_REPEATED with `first` moved to the front. */
+const nameFirst = (first: string): string[] => [first, ...CARD_REPEATED.filter((n) => n !== first)];
+/** Comp 12 with one layer, "Cards", carrying Card Dance. */
+const CARDS: ProjectSpec = { comps: [{ id: 12, name: "Main", layers: [{ kind: "solid", name: "Cards", effects: ["ADBE Card Dance"] }] }] };
 
 
 describe("prelude contract (U1, A1, A5)", () => {
@@ -414,16 +438,12 @@ describe("__prop (property paths, acceptance 2)", () => {
     expect(scriptErrorText(enriched)).not.toContain("Did you mean");
   });
 
-  it("repeated names in a group users cannot rename point to each repeated name's match names, in order (R18, F5)", () => {
-    const display = ["Rows", "Columns", "X Position", "Source", "Multiplier", "Offset", "Y Position", "Source", "Multiplier", "Offset"];
-    const mn = (i: number) => `ADBE Card Dance-${String(i).padStart(4, "0")}`;
-    const clause =
-      `${DASH} a repeated name reaches only the first of them; pass the match name instead (by match name: ` +
-      `"Source": ${list([mn(4), mn(8)])}; "Multiplier": ${list([mn(5), mn(9)])}; "Offset": ${list([mn(6), mn(10)])}).`;
+  it("repeated names in a group users cannot rename point to every copy's match name, the name asked about first (R18, F5, G2)", () => {
     const r = path(10, ["ADBE Effect Parade", "Card Dance", "Sorce"]);
+    // Each match name is "ADBE Card Dance-" and a number, so only the numbers are written.
     expect(r.message).toBe(
       'Property path not found on layer 10 "Cards" (solid): segment "Sorce" not found under ["ADBE Effect Parade", "Card Dance"]; ' +
-        `children here: ${list(display)}; repeated: ["Source", "Multiplier", "Offset"] ${clause}`,
+        `children here: ${list(CARD_DANCE.slice(0, 10))} (+53 more); repeated: ${list(CARD_REPEATED)} ${cardAdvice(nameFirst("Source"))}`,
     );
     expect(r.message).not.toContain("rename");
     // "Source" is close, but it names two parameters: no suggestion (R6).
@@ -434,12 +454,12 @@ describe("__prop (property paths, acceptance 2)", () => {
     const shown = ["Cannon", "Position", "Barrel Radius", "Particles Per Second", "Direction", "Direction Random Spread", "Velocity", "Velocity Random Spread", "Color", "Particle Radius"];
     const r = path(11, ["ADBE Effect Parade", "Particle Playground", "Positon"]);
     // Only the first 10 children are listed; the second "Position", "Color" and "Particle Radius" are 21-23.
+    // "Position" shares the most leading characters with "Positon", then "Particle Radius" (one).
     expect(r.message).toBe(
       'Property path not found on layer 11 "Particles" (solid): segment "Positon" not found under ["ADBE Effect Parade", "Particle Playground"]; ' +
         `children here: ${list(shown)} (+13 more); repeated: ["Position", "Color", "Particle Radius"] ` +
-        `${DASH} a repeated name reaches only the first of them; pass the match name instead (by match name: ` +
-        '"Position": ["ADBE Playgnd-0002", "ADBE Playgnd-0021"]; "Color": ["ADBE Playgnd-0009", "ADBE Playgnd-0022"]; ' +
-        '"Particle Radius": ["ADBE Playgnd-0010", "ADBE Playgnd-0023"]).',
+        `${DASH} a repeated name reaches only the first of them; pass the match name instead (by match name, "ADBE Playgnd-" + the number: ` +
+        '"Position": [0002, 0021]; "Particle Radius": [0010, 0023]; "Color": [0009, 0022]).',
     );
     // "Position" is one edit away and listed once, but it names two parameters: no suggestion.
     expect(aeListSuggestions(r.message)).toEqual([]);
@@ -550,6 +570,117 @@ describe("list budgets (M8)", () => {
   });
 });
 
+describe("message length: a miss that lists children fits under the server's cap (G3)", () => {
+  /** What __miss keeps a message within (__MSG in HELPERS): the server's cap less room for redaction. */
+  const MSG = 1400;
+  /** __q in TypeScript: a name as a host message quotes it. */
+  const quoted = (name: string): string => `"${name.slice(0, AE_NAME_CUT).replace(/["\\]/g, "\\$&")}${name.length > AE_NAME_CUT ? "..." : ""}"`;
+  /** 64 quote characters: the longest a name gets once quoted (124 units: 60 escaped, the mark, the quotes). */
+  const Q = '"'.repeat(64);
+  /** 15 names of 64 units, each 124 once quoted (58 quotes, a letter, backslashes), 3 copies of each. */
+  const NAMES = Array.from({ length: 15 }, (_, d) => `${'"'.repeat(58)}${String.fromCharCode(65 + d)}\\\\\\\\x`);
+  const ASKED = `${NAMES[2]}?`; // nearest to the third name, which must come first
+
+  /** A named group the fake host can hold anywhere. */
+  const group = (matchName: string, name: string, kids: unknown[]): Record<string, unknown> => ({
+    matchName,
+    name,
+    propertyType: 6213, // PropertyType.NAMED_GROUP in the fake host
+    kids,
+    get numProperties() {
+      return kids.length;
+    },
+    property(k: number | string) {
+      return typeof k === "number" ? (kids[k - 1] ?? null) : (kids.find((c) => (c as { name: string }).name === k) ?? null);
+    },
+  });
+
+  type Form = "numbers" | "long prefix" | "whole match names";
+  /**
+   * Layer 1 (named Q) of comp 12 carries an effect named Q; `depth` groups named Q0, Q1... sit
+   * between the effect and the repeated parameters, whose match names take `form`.
+   */
+  function extreme(form: Form, depth: number): { host: AeHost; path: string[] } {
+    const host = aeHost({ comps: [{ id: 12, name: "Main", layers: [{ kind: "solid", name: Q, effects: ["ADBE Card Dance"] }] }] });
+    const fx = host.comp(12).layer(1).property("ADBE Effect Parade").property(1);
+    fx.name = Q;
+    const leafProto = fx.kids[0];
+    let parent = fx;
+    const path = ["ADBE Effect Parade", Q];
+    for (let i = 0; i < depth; i++) {
+      const g = group(`VEND Deep ${i}`, `${Q}${i}`, []);
+      parent.kids.splice(0, parent.kids.length, g);
+      parent = g;
+      path.push(`${Q}${i}`);
+    }
+    if (form === "long prefix") parent.matchName = '"'.repeat(59); // the longest prefix still written whole
+    const prefix = `${String(parent.matchName)}-`;
+    const kids = [0, 1, 2].flatMap(() => NAMES).map((name, i) => ({
+      ...leafProto,
+      name,
+      matchName: form === "whole match names" ? `${Q}${i}` : `${prefix}${String(i + 1).padStart(4, "0")}`,
+    }));
+    parent.kids.splice(0, parent.kids.length, ...kids);
+    return { host, path: [...path, ASKED] };
+  }
+
+  /** The bound, the advice, and the asked-for name's entry first, all inside what the paragraph shows. */
+  function checkMiss(host: AeHost, script: string, label: string, entryFirst: boolean): void {
+    const r = failIn(host, script);
+    expect(r.message.length, label).toBeLessThanOrEqual(MSG);
+    expect(scriptErrorText(enrichAeError(scriptError(r), script) as ScriptError), label).toContain(r.message);
+    if (entryFirst) {
+      expect(r.message, label).toContain("a repeated name reaches only the first of them; pass the match name instead (by match name");
+      expect(r.message, label).toMatch(new RegExp(`(?:the number|by match name): ${escapeRegExp(quoted(NAMES[2]!))}: \\[`));
+    }
+  }
+
+  const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  it("__repMatch keeps to the room __pick gives it when that is under __BUDGET, and always shows the first name", () => {
+    // 40 children, "Name 0" to "Name 9" four times each; match names "ADBE X-1000" to "ADBE X-1039".
+    const run = (room: number): string =>
+      (
+        aeHost().eval(
+          wrapAe(
+            "\n  var kids = [], i;" +
+              '\n  for (i = 0; i < 40; i++) { kids.push({ name: "Name " + (i % 10), matchName: "ADBE X-" + (1000 + i) }); }' +
+              '\n  var g = { matchName: "ADBE X", numProperties: 40, property: function (k) { return kids[k - 1]; } };' +
+              `\n  return __repMatch(g, ["Name 3", "Name 0", "Name 1", "Name 2"], ${room});`,
+          ),
+        ) as { ok: true; value: string }
+      ).value;
+    const first = ', "ADBE X-" + the number: "Name 3": [1003, 1013, 1023, 1033]';
+    expect(run(70)).toBe(`${first} (+3 more)`); // the second name would need 36 more, and the count 10
+    expect(run(70).length).toBeLessThanOrEqual(70);
+    expect(run(10)).toBe(`${first} (+3 more)`); // the first name even without room for it
+    expect(run(5000)).toBe(`${first}; "Name 0": [1000, 1010, 1020, 1030]; "Name 1": [1001, 1011, 1021, 1031]; "Name 2": [1002, 1012, 1022, 1032]`);
+  });
+
+  it("a property path or a parameter, with names full of quotes, a long path, and match names in every form", () => {
+    for (const form of ["numbers", "long prefix", "whole match names"] as const) {
+      for (const depth of [0, 4]) {
+        const { host, path } = extreme(form, depth);
+        checkMiss(host, getKeyframesScript(12, 1, "position", path), `${form}, path depth ${depth}`, true);
+      }
+      const { host } = extreme(form, 0);
+      checkMiss(host, setEffectParamScript(12, 1, 1, ASKED, 5), `${form}, ae_set_effect_param`, true);
+    }
+  });
+
+  it("an effect or a layer-style parameter, with names full of quotes that repeat", () => {
+    const effects = aeHost({ comps: [{ id: 12, name: "Main", layers: [{ kind: "solid", name: Q, effects: Array.from({ length: 45 }, () => "ADBE Glo2") }] }] });
+    effects.comp(12).layer(1).property("ADBE Effect Parade").kids.forEach((e: { name: string }, i: number) => (e.name = NAMES[i % 15]!));
+    checkMiss(effects, setEffectParamScript(12, 1, ASKED, "Glow Radius", 5), "effect", false);
+
+    const styled = aeHost({ comps: [{ id: 12, name: "Main", layers: [{ kind: "solid", name: Q, styles: ["dropShadow"] }] }] });
+    const shadow = styled.comp(12).layer(1).property("ADBE Layer Styles").property("dropShadow/enabled");
+    const proto = shadow.kids[0];
+    shadow.kids.splice(0, shadow.kids.length, ...[0, 1, 2].flatMap(() => NAMES).map((name, i) => ({ ...proto, name, matchName: `dropShadow/${Q}${i}` })));
+    checkMiss(styled, setLayerStyleParamScript(12, 1, "dropShadow", ASKED, 5), "layer style", false);
+  });
+});
+
 describe("builders that resolve before the undo group", () => {
   it("setLayerPropsScript checks the parent before changing anything (M9)", () => {
     const r = fail(setLayerPropsScript(12, 2, { opacity: 10, parentIndex: 9 }));
@@ -632,18 +763,62 @@ describe("effects and parameters", () => {
   });
 
   it("setEffectParamScript: repeated parameter names point to the match names, never to renaming (R18)", () => {
-    const cards: ProjectSpec = { comps: [{ id: 12, name: "Main", layers: [{ kind: "solid", name: "Cards", effects: ["ADBE Card Dance"] }] }] };
-    const r = fail(setEffectParamScript(12, 1, 1, "Sorce", 5), cards);
-    expect(r.message).toMatch(
-      new RegExp(
-        `^Parameter not found on effect "Card Dance": "Sorce"; parameters: \\["Rows", .*"Source", .*"Source", .*\\]; repeated: \\["Source", "Multiplier", "Offset"\\] ` +
-          `${DASH} a repeated name reaches only the first of them; pass the match name instead \\(by match name: "Source": \\["ADBE Card Dance-0004", "ADBE Card Dance-0008"\\]; .*\\)\\.$`,
-      ),
+    const r = fail(setEffectParamScript(12, 1, 1, "Sorce", 5), CARDS);
+    expect(r.message).toBe(
+      `Parameter not found on effect "Card Dance": "Sorce"; parameters: ${list(CARD_DANCE.slice(0, 20))} (+43 more); ` +
+        `repeated: ${list(CARD_REPEATED)} ${cardAdvice(nameFirst("Source"))}`,
     );
     expect(r.message).not.toContain("rename");
     expect(aeListSuggestions(r.message)).toEqual([]);
-    // The match name the message offers resolves.
-    expect(aeHost(cards).eval(setEffectParamScript(12, 1, 1, "ADBE Card Dance-0008", 5)).ok).toBe(true);
+    // The match name the message offers for the second Source resolves to it, not to the first.
+    const host = aeHost(CARDS);
+    expect(host.eval(setEffectParamScript(12, 1, 1, "ADBE Card Dance-0014", 5)).ok).toBe(true);
+    const fx = host.comp(12).layer(1).property("ADBE Effect Parade").property(1);
+    expect([fx.property(10).value, fx.property(14).value]).toEqual([0, 5]);
+  });
+
+  it("the full Card Dance: the name asked about comes first and every repeated name keeps every copy, so the eighth Offset can be passed (G2)", () => {
+    const scripts = [setEffectParamScript(12, 1, 1, "Ofset", 5), getKeyframesScript(12, 1, "position", ["ADBE Effect Parade", "Card Dance", "Ofset"])];
+    for (const script of scripts) {
+      const r = fail(script, CARDS);
+      expect(r.message.endsWith(`; repeated: ${list(CARD_REPEATED)} ${cardAdvice(nameFirst("Offset"))}`), r.message).toBe(true);
+      expect(r.message).toContain('"Offset": [0012, 0016, 0020, 0024, 0028, 0032, 0036, 0040]; "Source": ');
+      // None of it is cut: the paragraph carries the whole host message.
+      expect(scriptErrorText(enrichAeError(scriptError(r), script) as ScriptError)).toContain(r.message);
+    }
+    const host = aeHost(CARDS);
+    expect(host.eval(setEffectParamScript(12, 1, 1, "ADBE Card Dance-0040", 7)).ok).toBe(true);
+    const fx = host.comp(12).layer(1).property("ADBE Effect Parade").property(1);
+    expect([fx.property(12).value, fx.property(40).value]).toEqual([0, 7]);
+  });
+
+  it("a near miss of a repeated name lists that name first: equal but for case, then by the leading characters it shares (G2)", () => {
+    const zpos = fail(setEffectParamScript(12, 1, 1, "Z Positon", 5), CARDS);
+    // "Z Position" shares 7, "Z Rotation" 2, the rest none (they keep their order).
+    expect(zpos.message).toContain(`${cardAdvice(["Z Position", "Z Rotation", ...CARD_REPEATED.filter((n) => n !== "Z Position" && n !== "Z Rotation")])}`);
+    // It repeats, so it is never a suggestion; the near names that do not repeat still are.
+    expect(aeListSuggestions(zpos.message)).not.toContain("Z Position");
+    const lower = fail(getKeyframesScript(12, 1, "position", ["ADBE Effect Parade", "Card Dance", "offset"]), CARDS);
+    expect(lower.message).toContain(cardAdvice(nameFirst("Offset")));
+    // A longer repeated name that starts with the same characters, found earlier, still comes after it.
+    const host = aeHost(CARDS);
+    const fx = host.comp(12).layer(1).property("ADBE Effect Parade").property(1);
+    fx.property(2).name = "Offset Random";
+    fx.property(3).name = "Offset Random";
+    expect(failIn(host, setEffectParamScript(12, 1, 1, "offset", 5)).message).toContain(
+      `+ the number: "Offset": ${CARD_COPIES.Offset}; "Offset Random": [0002, 0003]; "Source": `,
+    );
+  });
+
+  it("writes whole match names when a copy's is not the effect's match name and a number, still the name asked about first (G2)", () => {
+    const host = aeHost(CARDS);
+    host.comp(12).layer(1).property("ADBE Effect Parade").property(1).property(40).matchName = "VEND Card Offset";
+    const r = failIn(host, setEffectParamScript(12, 1, 1, "Ofset", 5));
+    const matchNames = (name: string): string[] => CARD_DANCE.flatMap((n, i) => (n === name ? [`ADBE Card Dance-${String(i + 1).padStart(4, "0")}`] : []));
+    const offsets = [...matchNames("Offset").slice(0, 7), "VEND Card Offset"];
+    // Whole match names take more room: the names that do not fit are counted.
+    expect(r.message.endsWith(`pass the match name instead (by match name: "Offset": ${list(offsets)}; "Source": ${list(matchNames("Source"))} (+6 more)).`), r.message).toBe(true);
+    expect(r.message.length).toBeLessThanOrEqual(MESSAGE_LIMIT);
   });
 
   it("setEffectParamScript: a parameter that repeats past the 20 listed still counts, and every copy's match name is given (F5)", () => {
@@ -652,11 +827,11 @@ describe("effects and parameters", () => {
     expect(r.message).toMatch(
       new RegExp(
         `; parameters: \\["Cannon", .*"Gravity"\\] \\(\\+3 more\\); repeated: \\["Position", "Color", "Particle Radius"\\] ${DASH} ` +
-          'a repeated name reaches only the first of them; pass the match name instead \\(by match name: "Position": \\["ADBE Playgnd-0002", "ADBE Playgnd-0021"\\]; ',
+          'a repeated name reaches only the first of them; pass the match name instead \\(by match name, "ADBE Playgnd-" \\+ the number: "Position": \\[0002, 0021\\]; ',
       ),
     );
     // A positional list of match names cut at 300 characters stopped before the 21st; these never do.
-    expect(r.message).toContain('"Particle Radius": ["ADBE Playgnd-0010", "ADBE Playgnd-0023"]).');
+    expect(r.message).toContain('"Particle Radius": [0010, 0023]; "Color": [0009, 0022]).');
     expect(aeListSuggestions(r.message)).toEqual([]);
     // A close name that does not repeat is still suggested.
     expect(aeListSuggestions(fail(setEffectParamScript(12, 1, 1, "Gravty", 5), particles).message)).toEqual(["Gravity"]);
@@ -1104,6 +1279,21 @@ describe("enrichAeError", () => {
     expect(next(`Unable to find "say \\"a ${DASH} b\\" twice"`)).toBe(NEXT_BODY);
     expect(next(`Unable to find "Intro ${DASH} Final" ${DASH} pass another name.`)).toBeUndefined();
     expect(next(`Intro ${DASH} Final`)).toBeUndefined(); // unquoted: read as the message's own clause
+  });
+
+  it("reads a long host message for its next step, and writes the paragraph, in time linear in its length (G1)", () => {
+    const at = AE_PRELUDE_LINES + 4;
+    // An expression that throws a long string: After Effects' own message carries it whole.
+    for (const thrown of [`x"${'a\\"'.repeat(66_000)}`, `x${" ".repeat(200_000)}y`]) {
+      const message = `Expression error: Error: ${thrown} ${DASH} fix the expression; the property keeps its previous one.`;
+      const started = performance.now();
+      const e = enrichAeError(new ScriptError("after_effects", message, at), LIST_COMPOSITIONS) as ScriptError;
+      const text = scriptErrorText(e);
+      expect(performance.now() - started).toBeLessThan(500); // a quadratic scan takes seconds here
+      // The dash after a quote that is never closed is the message's own next step.
+      expect(e.details.next).toBeUndefined();
+      expect(text).toMatch(/…\(\+\d+ chars\)/);
+    }
   });
 
   it("a host failure inside a helper gets a next step that fits the helper, never one that blames the arguments (R20)", () => {

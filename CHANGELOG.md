@@ -82,7 +82,9 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   counts as a next step. Echoed arguments are cut (80 characters per string, 5 items per
   array, 300 overall), lose any bidi override, and never show the server's keys or tokens;
   neither does the host's message, even where After Effects cut a listed name part-way
-  through one. No error-code prefix. Other apps' script errors read exactly as before.
+  through one, except where that cut falls less than 8 characters into a key: those (at most
+  7) characters stay, too few to recognise as a key. No error-code prefix. Other apps' script
+  errors read exactly as before.
 - After Effects lookups explain themselves (AE-16): a bad `compId` lists the compositions (or
   says how to make one), and so does an unknown `compName` in `ae_queue_render`; an
   out-of-range `layerIndex` lists the range and each layer's name and kind; a property path
@@ -93,10 +95,13 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   fills it); `ae_set_effect_param` lists the layer's effects or the effect's parameters. When
   names repeat among the children, listed or not, the message names them and the advice fits
   what can be done: rename them where After Effects allows it, otherwise pass the effect's
-  index or the match name (listed for every copy of a repeated parameter). `ae_set_text`,
-  `ae_add_mask` and the layer-style tools name the layer and kind, and the layer-style tools
-  say which tool adds a style or lists the ones there. Lists are cut by length so the advice at
-  the end is never lost.
+  index or the match name. Each repeated parameter is listed with the match names of its
+  copies (just the numbers when, as on an effect, each is the effect's match name and a
+  number: Card Dance's eight Offsets read `"ADBE Card Dance-" + the number: "Offset": [0012,
+  0016, …]`), the one nearest the name asked for first; any that do not fit are counted.
+  `ae_set_text`, `ae_add_mask` and the layer-style tools name the layer and kind, and the
+  layer-style tools say which tool adds a style or lists the ones there. Lists are cut by
+  length so a message that lists names fits the server's cap whole, advice included.
 - "Did you mean" (AE-16): `ae_apply_effect` suggests up to 3 installed effects
   (`ADBE Gausian Blur 2` → `ADBE Gaussian Blur 2`), reading the installed list once per session
   on the first miss and again after the panel reconnects (a filtered read when the full list is

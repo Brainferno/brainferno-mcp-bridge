@@ -12,7 +12,7 @@ import { EvalTimeoutError, ScriptError, type AppBridge, type EvalOptions, type J
 import type { JobRegistry } from "../jobs.js";
 import { log } from "../logging.js";
 import { currentToolCall, withToolContext } from "./call-context.js";
-import { echoArgs, excerptLine } from "./echo.js";
+import { QUOTED_SPAN, echoArgs, excerptLine } from "./echo.js";
 import { runOrQueue, waitParam, type ProgressExtra } from "./jobs.js";
 import { lineCount } from "./raw-script.js";
 import { guard, imageResult, jsonResult } from "./result.js";
@@ -55,8 +55,13 @@ const rgb = (hex: string): string => {
  * "what to do next" clause after the dash always survives the server's cap) and what to do next.
  */
 const HELPERS = String.raw`
-  // Length budgets (UTF-16 units) for candidate lists, so every message stays far below the
-  // server's 1500-character cap and keeps its "what to do next" clause.
+  // Length budgets (UTF-16 units). The server keeps the first 1500 code points of a message. A miss
+  // that lists a group's children (__miss) is at most __MSG units; the 100 left under the cap are
+  // for redaction, which writes "[redacted]" (10) over a secret as short as 8. Any other message
+  // these scripts write lists one kind of thing within __BUDGET beside a few quoted names (__q: at
+  // most 125 units each), so it stays under 1000. Either way the server cuts none of it, and the
+  // "what to do next" clause at the end is kept.
+  var __MSG = 1400;
   var __BUDGET = 600;
   var __PATH_BUDGET = 300;
   // How many children a miss reads to find the names that repeat, listed or not.
@@ -74,15 +79,21 @@ const HELPERS = String.raw`
     if (t.length > 60) { out += "..."; }
     return "\"" + out + "\"";
   }
-  function __list(names, total, budget) {
+  function __list(names, total, budget, strict, bare) {
+    // "[names]" while they fit in budget, then " (+N more)" for the rest of total. The first name
+    // is shown even when it does not fit, unless strict. bare: the names are written as they are.
     var out = "", shown = 0, i, s;
     for (i = 0; i < names.length; i++) {
-      s = __q(names[i]);
-      if (shown > 0 && out.length + 2 + s.length > budget) { break; }
+      s = bare ? String(names[i]) : __q(names[i]);
+      if ((shown > 0 || strict) && out.length + (shown > 0 ? 2 : 0) + s.length > budget) { break; }
       out += (shown > 0 ? ", " : "") + s;
       shown++;
     }
     return "[" + out + "]" + (total > shown ? " (+" + (total - shown) + " more)" : "");
+  }
+  function __empty(total) {
+    // How long __list's output is when no name fits: "[] (+total more)".
+    return 11 + String(total).length;
   }
   function __kind(l) {
     // instanceof against the layer classes is unreliable in AE ExtendScript; matchName is not.
@@ -175,11 +186,11 @@ const HELPERS = String.raw`
     // Otherwise answer in the caller's vocabulary: a match-name segment gets match names.
     return String(segment).substring(0, 5) !== "ADBE ";
   }
-  function __kids(g, max, byName, budget) {
-    // Lists up to max names. Repeats are looked for among every child (up to __SCAN), listed or
-    // not, and named after the list ("; repeated: [...]"): the server reads that list and never
-    // suggests a name in it.
-    var names = [], rep = [], seen = {}, n = 0, i, s, key, text;
+  function __kids(g, max, byName) {
+    // Up to max child names (match names unless byName), how many children g has, and the names
+    // that repeat among every child (up to __SCAN), listed or not. __miss names those after the
+    // list ("; repeated: [...]"): the server reads that list and never suggests a name in it.
+    var names = [], rep = [], seen = {}, n = 0, i, s, key;
     try { n = g.numProperties; } catch (e) { n = 0; }
     if (!(n > 0)) { n = 0; }
     for (i = 1; i <= n && i <= __SCAN; i++) {
@@ -192,40 +203,89 @@ const HELPERS = String.raw`
         if (names.length < max) { names.push(s); }
       }
     }
-    text = __list(names, n, budget ? budget : __BUDGET);
-    if (rep.length > 0) { text += "; repeated: " + __list(rep, rep.length, __PATH_BUDGET); }
-    return { n: n, dup: rep.length > 0, rep: rep, byName: byName, text: text };
+    return { n: n, names: names, rep: rep, dup: rep.length > 0, byName: byName };
   }
-  function __repMatch(g, rep) {
-    // Each repeated name with the match name of every child that has it, in order:
-    // "Source": ["ADBE X-0004", "ADBE X-0008"]; "Offset": [...]
-    var at = {}, n = 0, out = "", shown = 0, i, c, key, s;
+  function __miss(lead, k, g, seg, next) {
+    // lead, then k's list of g's children, the names that repeat among them, and next (what to do
+    // next; null for __pick's, about seg), in at most __MSG units. lead and next stay whole, and
+    // next is built to leave the lists their least. The repeated names get what is left (up to
+    // __PATH_BUDGET), the children the rest (up to __BUDGET); a list given no room shows its count.
+    // The bound holds because lead (at most 666 units: a layer label, a segment and a path of
+    // quoted names), the lists' least (42) and __pick's fixed part (at most 687: the advice, the
+    // first repeated name with its copies, the count of the rest) always fit in __MSG.
+    var least = __empty(k.n) + (k.dup ? 12 + __empty(k.rep.length) : 0), rep = "", room;
+    if (next === null) { next = __pick(k, g, seg, __MSG - lead.length - least); }
+    if (k.dup) {
+      room = __MSG - lead.length - next.length - least;
+      rep = "; repeated: " + __list(k.rep, k.rep.length, room < __PATH_BUDGET ? room : __PATH_BUDGET, true, false);
+    }
+    room = __MSG - lead.length - next.length - rep.length - __empty(k.n);
+    return lead + __list(k.names, k.n, room < __BUDGET ? room : __BUDGET, true, false) + rep + next;
+  }
+  function __near(name, seg) {
+    // How much a name looks like the segment asked for: equal but for case is nearest, then the
+    // more leading characters they share (case aside), the nearer.
+    var a = String(name).toLowerCase(), b = String(seg).toLowerCase(), n = 0;
+    if (a === b) { return 100000; }
+    while (n < a.length && n < b.length && a.charAt(n) === b.charAt(n)) { n++; }
+    return n;
+  }
+  function __byNear(names, seg) {
+    // names, the nearest to seg (__near) first; equally near ones keep their order.
+    var out = [], score = [], i, j, s;
+    for (i = 0; i < names.length; i++) {
+      s = __near(names[i], seg);
+      j = out.length;
+      while (j > 0 && score[j - 1] < s) { out[j] = out[j - 1]; score[j] = score[j - 1]; j--; }
+      out[j] = names[i];
+      score[j] = s;
+    }
+    return out;
+  }
+  function __repMatch(g, rep, room) {
+    // Each repeated name, in rep's order, with the match names of its copies, in at most room or
+    // __BUDGET units (the first name always): ': "Source": ["X-0004", "X-0008"]; "Offset": [...]'.
+    // When each is g's match name, "-" and a number of up to 8 digits (as an effect's parameters
+    // are), only the numbers are written: ', "ADBE Card Dance-" + the number: "Source": [0010, 0014]'.
+    var at = {}, n = 0, pre = null, bare = true, budget = room < __BUDGET ? room : __BUDGET, more, out, shown = 0, i, j, c, key, mn, copies, s;
     for (i = 0; i < rep.length; i++) { at["#" + rep[i]] = []; }
+    try { pre = String(g.matchName) + "-"; } catch (e) { pre = null; }
+    if (pre === null || pre.length > 60) { bare = false; }
     try { n = g.numProperties; } catch (e) { n = 0; }
     if (!(n > 0)) { n = 0; }
     for (i = 1; i <= n && i <= __SCAN; i++) {
       try {
         c = g.property(i);
         key = "#" + String(c.name);
-        if (Object.prototype.hasOwnProperty.call(at, key)) { at[key].push(String(c.matchName)); }
+        if (Object.prototype.hasOwnProperty.call(at, key)) {
+          mn = String(c.matchName);
+          at[key].push(mn);
+          if (bare && !(mn.length > pre.length && mn.length - pre.length <= 8 && mn.substring(0, pre.length) === pre && /^[0-9]+$/.test(mn.substring(pre.length)))) { bare = false; }
+        }
       } catch (e) {}
     }
+    out = bare ? ", " + __q(pre) + " + the number: " : ": ";
+    more = 9 + String(rep.length).length;
     for (i = 0; i < rep.length; i++) {
-      key = "#" + rep[i];
-      s = __q(rep[i]) + ": " + __list(at[key], at[key].length, __PATH_BUDGET);
-      if (shown > 0 && out.length + 2 + s.length > __BUDGET) { break; }
-      out += (shown > 0 ? "; " : "") + s;
+      copies = at["#" + rep[i]];
+      if (bare) { for (j = 0; j < copies.length; j++) { copies[j] = copies[j].substring(pre.length); } }
+      s = (shown > 0 ? "; " : "") + __q(rep[i]) + ": " + __list(copies, copies.length, __PATH_BUDGET, false, bare);
+      // A name after the first goes in only with room left to count the ones after it.
+      if (shown > 0 && out.length + s.length + (i + 1 < rep.length ? more : 0) > budget) { break; }
+      out += s;
       shown++;
     }
     return out + (rep.length > shown ? " (+" + (rep.length - shown) + " more)" : "");
   }
-  function __pick(k, g) {
-    // Repeated names (named after the list): the user can rename what __named covers; elsewhere
-    // each repeated name's match names tell its copies apart.
+  function __pick(k, g, seg, room) {
+    // What to do next after a list of g's children, in at most room units where it can. Repeated
+    // names (named after the list): the user can rename what __named covers; elsewhere each
+    // repeated name's match names tell its copies apart, the one nearest seg first.
+    var head = " \u2014 a repeated name reaches only the first of them; pass the match name instead (by match name";
     if (!k.dup) { return " \u2014 use one of these names."; }
     if (__named(g)) { return " \u2014 a path cannot tell repeated names apart; rename them in After Effects so each is unique, then pass one."; }
     if (!k.byName) { return " \u2014 a repeated name reaches only the first of them; use one of these names."; }
-    return " \u2014 a repeated name reaches only the first of them; pass the match name instead (by match name: " + __repMatch(g, k.rep) + ").";
+    return head + __repMatch(g, __byNear(k.rep, seg), room - head.length - 2) + ").";
   }
   function __isLeaf(p) {
     try { return p.propertyType === PropertyType.PROPERTY; } catch (e) { return false; }
@@ -264,7 +324,7 @@ const HELPERS = String.raw`
             // Not a group: only without PropertyType (__isLeaf cannot tell), where p may be the leaf the path should end at.
             throw new Error(__pathHead(layer) + "segment " + __q(path[i]) + " not found " + at + ", which has nothing under it \u2014 " + (i > 0 ? "if " + under + " is the property you want, end the path there; otherwise " : "") + "check the path (ae_get_layer lists the layer's effects).");
           }
-          throw new Error(__pathHead(layer) + "segment " + __q(path[i]) + " not found " + at + "; children here: " + k.text + __pick(k, p));
+          throw new Error(__miss(__pathHead(layer) + "segment " + __q(path[i]) + " not found " + at + "; children here: ", k, p, path[i], null));
         }
         p = q;
       }
@@ -499,12 +559,12 @@ function aeNextStep(at: AeErrorLocation): string {
   return at.kind === "helper" ? (AE_HELPER_NEXT[at.helper] ?? AE_NEXT_STEP.helper) : AE_NEXT_STEP[at.kind];
 }
 
-/** A double-quoted name or path in a host message (__q's quoting, or a host's own). */
-const QUOTED_SPAN = /"(?:[^"\\]|\\.)*"/g;
-
-/** Whether the host message already says what to do next: a " — " outside the names it quotes. */
+/**
+ * Whether the host message already says what to do next: a " — " outside the names it quotes
+ * (__q's quoting, or a host's own). A quote that is never closed quotes nothing.
+ */
 function saysNext(message: string): boolean {
-  return message.replace(QUOTED_SPAN, '""').includes(" — ");
+  return message.replace(QUOTED_SPAN, (span: string, inner: string | undefined) => (inner === undefined ? span : '""')).includes(" — ");
 }
 
 /**
@@ -1128,10 +1188,10 @@ ${effectParade("  ")}
   if (!(fx.numProperties > 0)) { throw new Error("Layer " + __layerLabel(l) + " has no effects — apply one first (ae_apply_effect)."); }
   var e = null;
   try { e = fx.property(${eff}); } catch (x) { e = null; }
-  if (!e) { var ek = __kids(fx, 20, true); throw new Error("Effect not found on layer " + __layerLabel(l) + ": " + __q(${eff}) + "; effects on this layer: " + ek.text + (ek.dup ? " — a repeated name reaches only the first of them; pass the effect's index (1 = first) instead." : " — pass one of these names, or the effect's index (1 = first).")); }
+  if (!e) { var ek = __kids(fx, 20, true); throw new Error(__miss("Effect not found on layer " + __layerLabel(l) + ": " + __q(${eff}) + "; effects on this layer: ", ek, fx, "", ek.dup ? " — a repeated name reaches only the first of them; pass the effect's index (1 = first) instead." : " — pass one of these names, or the effect's index (1 = first).")); }
   var pp = null;
   try { pp = e.property(${lit(param)}); } catch (x) { pp = null; }
-  if (!pp) { var pk = __kids(e, 20, ${byName ? "true" : "false"}); throw new Error("Parameter not found on effect " + __q(e.name) + ": " + __q(${lit(param)}) + "; parameters: " + pk.text + __pick(pk, e)); }
+  if (!pp) { var pk = __kids(e, 20, ${byName ? "true" : "false"}); throw new Error(__miss("Parameter not found on effect " + __q(e.name) + ": " + __q(${lit(param)}) + "; parameters: ", pk, e, ${lit(param)}, null)); }
   return __undo("Set effect parameter", function () { pp.setValue(${v}); return { effect: e.name, param: pp.name, value: pp.value }; });`);
 }
 
@@ -1445,7 +1505,7 @@ export function setLayerStyleParamScript(compId: number, layerIndex: number, sty
   }
   if (!q) {
     var pk = __kids(s, 20, ${byName ? "true" : "false"});
-    throw new Error("Parameter not found on the " + ${lit(style)} + " style of layer " + __layerLabel(l) + ": " + __q(want) + "; parameters: " + pk.text + (pk.dup ? " — a repeated name reaches only the first of them; pass the parameter's match name instead (ae_get_layer_styles lists them)." : " — use one of these names."));
+    throw new Error(__miss("Parameter not found on the " + ${lit(style)} + " style of layer " + __layerLabel(l) + ": " + __q(want) + "; parameters: ", pk, s, want, pk.dup ? " — a repeated name reaches only the first of them; pass the parameter's match name instead (ae_get_layer_styles lists them)." : " — use one of these names."));
   }
   return __undo("Set layer style parameter", function () { q.setValue(${v}); return { style: ${lit(style)}, param: q.name, matchName: q.matchName, value: q.value }; });`);
 }
