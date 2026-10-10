@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { APPS } from "@brainferno/mcp-bridge-protocol";
+import { jsStringLiteral } from "../bridge/script-escape.js";
 import {
   AppDisconnectedError,
   AppNotConnectedError,
@@ -94,10 +95,11 @@ export function scriptErrorText(error: ScriptError): string {
   if (d.tool !== undefined) head += ` (${d.tool}${d.args !== undefined && d.args !== "{}" ? `, args ${d.args}` : ""})`;
   const at = whereText(d, error.scriptLine);
   if (at !== "") head += ` ${at}`;
-  let text = `${head}: ${capCodePoints(redactKnown(oneLine(error.message)), MESSAGE_LIMIT)}`;
+  // Redact first: oneLine changes whitespace, and a secret holding a tab or a line break must still match.
+  let text = `${head}: ${capCodePoints(oneLine(redactKnown(error.message)), MESSAGE_LIMIT)}`;
   if (d.next !== undefined) text = `${text.replace(/\.$/, "")} — ${d.next}.`;
   if (d.suggestions !== undefined && d.suggestions.length > 0) text += ` Did you mean ${orList(d.suggestions.map(suggestionText))}?`;
-  if (d.note !== undefined) text += ` ${redactKnown(oneLine(d.note))}`;
+  if (d.note !== undefined) text += ` ${oneLine(redactKnown(d.note))}`;
   if (d.excerpt !== undefined && d.excerpt.length > 0) text += ` Code: ${d.excerpt.join(" | ")}`;
   return text;
 }
@@ -111,10 +113,12 @@ export function disconnectedText(error: AppDisconnectedError): string {
 }
 
 /**
- * A failed job step's message: scriptErrorText for a ScriptError that is enriched or carries
+ * A failed job step's message, the text guard() gives for the same error: disconnectedText for a
+ * panel that dropped mid-step, scriptErrorText for a ScriptError that is enriched or carries
  * UNKNOWN_COMMAND; otherwise exactly what jobs.ts recorded before AE-16 (e.message / String(e)).
  */
 export function jobErrorMessage(e: unknown): string {
+  if (e instanceof AppDisconnectedError) return disconnectedText(e);
   if (e instanceof ScriptError && (e.details.where !== undefined || e.details.code === "UNKNOWN_COMMAND")) return scriptErrorText(e);
   return e instanceof Error ? e.message : String(e);
 }
@@ -139,8 +143,31 @@ function whereText(d: ScriptErrorDetails, scriptLine: number | undefined): strin
   }
 }
 
-const suggestionText = (s: ScriptSuggestion): string =>
-  `"${redactKnown(oneLine(s.name))}"` + (s.label === undefined ? "" : ` (${redactKnown(oneLine(s.label))})`);
+/** Code points of a suggestion's label kept (a label is a display name, there for the reader). */
+const LABEL_LIMIT = 80;
+
+/**
+ * One "did you mean" entry: the name as an escaped string literal (the quoting the host lists in
+ * the same paragraph use, so a `"` in a name cannot end it early or fake a second name), then the
+ * label in parentheses, itself a string literal when its quotes or parentheses could be misread.
+ */
+function suggestionText(s: ScriptSuggestion): string {
+  const name = jsStringLiteral(oneLine(redactKnown(s.name)));
+  if (s.label === undefined) return name;
+  const label = capCodePoints(oneLine(redactKnown(s.label)), LABEL_LIMIT);
+  return `${name} (${nestsCleanly(label) ? label : jsStringLiteral(label)})`;
+}
+
+/** No `"`, and every parenthesis pairs up in order, so the text cannot close the label's parentheses early. */
+function nestsCleanly(text: string): boolean {
+  if (text.includes('"')) return false;
+  let depth = 0;
+  for (const ch of text) {
+    if (ch === "(") depth++;
+    else if (ch === ")" && --depth < 0) return false;
+  }
+  return depth === 0;
+}
 
 function orList(items: readonly string[]): string {
   return items.length <= 1 ? items.join("") : `${items.slice(0, -1).join(", ")} or ${items[items.length - 1]}`;

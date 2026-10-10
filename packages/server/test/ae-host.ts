@@ -9,8 +9,10 @@
  *
  * The object model is a small fake of After Effects: a project with compositions, footage and
  * folders; layers by kind (text, shape, camera, light, null, adjustment, solid, footage, precomp)
- * with their top-level property groups; effects from an installed list; undo-group counting; and
- * a `mutations` log every setter and `setValue` / `addProperty` / `layers.add*` appends to.
+ * with their top-level property groups; effects from an installed list; layer-style slots;
+ * undo-group counting; and a `mutations` log every setter and `setValue` / `addProperty` /
+ * `layers.add*` appends to. File, Folder, import and render-queue objects are not modelled: a
+ * test that needs one puts a stub on `ctx` or `app`.
  * Errors the stubs throw are built with the vm realm's Error, as a host's would be.
  *
  * Not a test file (no `.test.ts`), so vitest does not collect it on its own.
@@ -59,6 +61,13 @@ export interface LayerSpec {
   masks?: string[];
   /** Shape layers: the names of the groups under Contents (each has match name "ADBE Vector Group"). */
   shapes?: string[];
+  /**
+   * Paint strokes under the layer's "ADBE Paint" effect (list it in `effects`): its "ADBE Paint Group"
+   * is an INDEXED_GROUP outside __BY_NAME, and every stroke has match name "ADBE Paint Atom".
+   */
+  strokes?: string[];
+  /** Layer styles on the layer, by key ("dropShadow", "frameFX", …); the other styles' slots are there but not added. */
+  styles?: string[];
   /** Text layers: the initial text. */
   text?: string;
 }
@@ -101,7 +110,23 @@ const PropertyType = { PROPERTY: 6212, INDEXED_GROUP: 6214, NAMED_GROUP: 6213 } 
 const EFFECT_PARAMS: Record<string, string[]> = {
   "ADBE Gaussian Blur 2": ["Blurriness", "Blur Dimensions", "Repeat Edge Pixels"],
   "ADBE Glo2": ["Glow Based On", "Glow Threshold", "Glow Radius", "Glow Intensity"],
+  // A cut-down stand-in: the real Card Dance also repeats Source / Multiplier / Offset per axis.
+  "ADBE Card Dance": ["Rows", "Columns", "X Position", "Source", "Multiplier", "Offset", "Y Position", "Source", "Multiplier", "Offset"],
 };
+
+/** The layer-style slots every layer that can take styles has (key, display name), and the parameters each style shows. */
+const LAYER_STYLES: [string, string][] = [
+  ["dropShadow", "Drop Shadow"],
+  ["innerShadow", "Inner Shadow"],
+  ["outerGlow", "Outer Glow"],
+  ["innerGlow", "Inner Glow"],
+  ["bevelEmboss", "Bevel and Emboss"],
+  ["chromeFX", "Satin"],
+  ["solidFill", "Color Overlay"],
+  ["gradientFill", "Gradient Overlay"],
+  ["frameFX", "Stroke"],
+];
+const STYLE_PARAMS = ["Blend Mode", "Color", "Opacity", "Angle", "Distance", "Size"];
 
 export interface AeHost {
   readonly ctx: vm.Context;
@@ -181,15 +206,20 @@ export function aeHost(spec: ProjectSpec = { comps: [MAIN] }, options: HostOptio
     kids.forEach((k, i) => (k.propertyIndex = i + 1));
     return g;
   };
-  const effect = (mn: string): any =>
+  const effect = (mn: string, strokes: string[] = []): any =>
     group(
       mn,
       displayOf(mn),
-      (EFFECT_PARAMS[mn] ?? ["Amount"]).map((p, i) => leaf(`${mn}-${String(i + 1).padStart(4, "0")}`, p)),
+      mn === "ADBE Paint"
+        ? [
+            group("ADBE Paint Group", "Strokes", strokes.map((n) => group("ADBE Paint Atom", n, [])), PropertyType.INDEXED_GROUP),
+            leaf(`${mn}-0001`, "Paint on Transparent"),
+          ]
+        : (EFFECT_PARAMS[mn] ?? ["Amount"]).map((p, i) => leaf(`${mn}-${String(i + 1).padStart(4, "0")}`, p)),
       PropertyType.NAMED_GROUP,
     );
-  const effectParade = (names: string[]): any => {
-    const kids = names.map(effect);
+  const effectParade = (names: string[], strokes: string[] = []): any => {
+    const kids = names.map((n) => effect(n, strokes));
     return group("ADBE Effect Parade", "Effects", kids, PropertyType.INDEXED_GROUP, {
       canAddProperty: (name: string) => installed.some(([m]) => m === name),
       addProperty(name: string) {
@@ -250,10 +280,16 @@ export function aeHost(spec: ProjectSpec = { comps: [MAIN] }, options: HostOptio
     if (s.kind === "camera") tops.push(group("ADBE Camera Options Group", "Camera Options", []));
     if (s.kind === "light") tops.push(group("ADBE Light Options Group", "Light Options", []));
     if (s.kind !== "camera" && s.kind !== "light") {
-      tops.push(maskParade(s.masks ?? []), effectParade(s.effects ?? []));
+      tops.push(maskParade(s.masks ?? []), effectParade(s.effects ?? [], s.strokes));
     }
     tops.push(transform());
-    if (s.kind !== "camera" && s.kind !== "light") tops.push(group("ADBE Layer Styles", "Layer Styles", []));
+    if (s.kind !== "camera" && s.kind !== "light") {
+      // Every slot is there; canSetEnabled is true only for a style actually added (what __styleGroup checks).
+      const slots = LAYER_STYLES.map(([key, label]) =>
+        group(`${key}/enabled`, label, STYLE_PARAMS.map((p, i) => leaf(`${key}/p${i + 1}`, p)), PropertyType.NAMED_GROUP, { canSetEnabled: (s.styles ?? []).includes(key) }),
+      );
+      tops.push(group("ADBE Layer Styles", "Layer Styles", slots));
+    }
     const root = group(MATCH[s.kind], s.name, tops);
     let name = s.name;
     let parent: any = null;

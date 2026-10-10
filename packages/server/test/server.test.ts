@@ -31,6 +31,9 @@ import {
   rawScriptWrapper,
 } from "../src/tools/raw-script.js";
 import { SERVER_VERSION } from "../src/version.js";
+import { ScriptError } from "../src/bridge/types.js";
+import { setRedactionSecrets } from "../src/tools/echo.js";
+import { scriptErrorText } from "../src/tools/result.js";
 import { AE_PRELUDE_LINES, LIST_INSTALLED_EFFECTS, applyEffectScript, getCompScript, getLayerScript, wrapAe } from "../src/tools/after-effects.js";
 import { aeHost, panelReply, type AeHost } from "./ae-host.js";
 import { hostEval, runJsxFile } from "./host-vm.js";
@@ -1030,6 +1033,19 @@ describe("After Effects error context (AE-16)", () => {
     await s.close();
   });
 
+  it("a secret longer than a name cut, used as a composition name, leaves no prefix where the host cut it (K2)", async () => {
+    // 72 characters; the host lists names cut to their first 60 and "...".
+    const secret = "s3cr3tValue".repeat(7).slice(0, 72);
+    const s = await startSession({ httpToken: secret });
+    const panel = await connectPanel(s.bridge.port(), "after_effects");
+    vmPanel(panel, aeHost({ comps: [{ id: 12, name: secret }] }));
+    const text = textOf(await s.c.callTool({ name: "ae_get_comp", arguments: { compId: 99 } }));
+    expect(text).toContain('the project has 1: 12 "[redacted]..."');
+    expect(text).not.toContain(secret.slice(0, 20));
+    panel.close();
+    await s.close();
+  });
+
   it("labels each of two concurrent failures with its own tool", async () => {
     const s = await startSession({});
     const panel = await connectPanel(s.bridge.port(), "after_effects");
@@ -1069,5 +1085,27 @@ describe("After Effects error context (AE-16)", () => {
         "reconnect the brainferno-mcp-bridge panel (cc_connected_apps shows when it is back), then retry.",
     );
     await s.close();
+  });
+});
+
+describe("buildRuntime registers the server's own secrets for redaction (R15)", () => {
+  afterEach(() => setRedactionSecrets([]));
+
+  it("a generated panel token and the Illustrator key never reach a host message", async () => {
+    // Only the configured-secret rule (R1) can catch either: 64 hex characters are kept in host
+    // messages on purpose, and this key has no "ilst_" prefix.
+    const key = "illustrator-key-without-its-usual-prefix";
+    const rt = buildRuntime({ ...config, bridgeInsecure: false, bridgeToken: "", handshakeFilePath: join(tempDir("bf-redact-"), "bridge.json"), illustratorMcpKey: key });
+    await rt.bridge.ready();
+    try {
+      const [token] = rt.bridge.redactionSecrets();
+      expect(token).toMatch(/^[0-9a-f]{64}$/);
+      for (const secret of [token!, key]) {
+        const text = scriptErrorText(new ScriptError("after_effects", `quoted ${secret} here`, 1, { where: "unknown" }));
+        expect(text).toBe("Script failed in After Effects: quoted [redacted] here");
+      }
+    } finally {
+      await rt.bridge.close();
+    }
   });
 });

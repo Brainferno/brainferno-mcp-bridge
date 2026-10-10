@@ -76,30 +76,40 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   it failed (`at body line N (script line M)` with the failing line and its neighbours,
   `in helper __x`, or `outside this tool's own code` for an error the panel hit while
   converting the result) and what to do next; the old `(line N)` was a line of the generated
-  script. Echoed arguments are cut (80 characters per string, 5 items per array, 300 overall)
-  and never show the server's keys or tokens. No error-code prefix. Other apps' script errors
-  read exactly as before.
+  script. Every error the tools raise carries its own next step; a generic one is added only
+  to an error After Effects raised itself, and it fits where that happened (inside a shared
+  helper it no longer blames the arguments you passed). A ` — ` inside a quoted name never
+  counts as a next step. Echoed arguments are cut (80 characters per string, 5 items per
+  array, 300 overall) and never show the server's keys or tokens. No error-code prefix. Other
+  apps' script errors read exactly as before.
 - After Effects lookups explain themselves (AE-16): a bad `compId` lists the compositions (or
-  says how to make one); an out-of-range `layerIndex` lists the range and each layer's name and
-  kind; a property path that does not resolve names the layer and its kind, the resolved part,
-  the failing segment and the child names in the vocabulary the path used (match names or
-  display names; shape groups, masks, effects and text animators by name), or says the group
-  exists only on another kind of layer, or that it is empty and which tool fills it;
-  `ae_set_effect_param` lists the layer's effects or the effect's parameters; `ae_set_text`,
-  `ae_add_mask` and the layer-style tools name the layer and kind. Lists are cut by length so
-  the advice at the end is never lost.
+  says how to make one), and so does an unknown `compName` in `ae_queue_render`; an
+  out-of-range `layerIndex` lists the range and each layer's name and kind; a property path
+  that does not resolve names the layer and its kind, the resolved part, the failing segment
+  and the child names in the vocabulary the path used (match names or display names; shape
+  groups, masks, effects and text animators by name), or says the group exists only on another
+  kind of layer, or that it is empty (an empty effect or mask list also names the tool that
+  fills it); `ae_set_effect_param` lists the layer's effects or the effect's parameters. When
+  listed names repeat, the advice fits what can be done: rename them where After Effects
+  allows it, otherwise pass the effect's index or the match name. `ae_set_text`,
+  `ae_add_mask` and the layer-style tools name the layer and kind, and the layer-style tools
+  say which tool adds a style or lists the ones there. Lists are cut by length so the advice at
+  the end is never lost.
 - "Did you mean" (AE-16): `ae_apply_effect` suggests up to 3 installed effects
   (`ADBE Gausian Blur 2` → `ADBE Gaussian Blur 2`), reading the installed list once per session
   on the first miss and again after the panel reconnects (a filtered read when the full list is
   slow); a name that differs from an installed one only in case gets that exact match name, and
   an installed effect After Effects would not add to the layer gets a note instead of guesses.
-  Property, effect and parameter misses suggest from the names they list.
+  Property, effect and parameter misses suggest from the names they list, leaving out a name
+  that repeats in that list, since it cannot pick one item.
 - After Effects scripts are sent as pure ASCII (AE-16): non-ASCII characters travel as `\uXXXX`
   escapes; the result is the same text.
 - All apps (AE-16): a panel older than the server (`UNKNOWN_COMMAND`) now says to update or
   reload the panel instead of "Script failed"; a panel that disconnects mid-call says the call
-  may have partly run and how to reconnect, instead of "Unexpected failure" (and is logged at
-  `warn`, no longer as an unhandled error).
+  may have partly run and how to reconnect — in a tool's error, instead of "Unexpected
+  failure" (and it is logged at `warn`, no longer as an unhandled error), and in a failed job
+  step (`ae_render_comp`, `pp_export_sequence`, the pipelines), instead of the bare disconnect
+  message.
 
 **Added**
 
@@ -136,9 +146,10 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   inside an undo group. Both now say what to pass, and the footage item is looked up before
   anything changes. `ae_set_layer_props` with an out-of-range `parentIndex` applied every
   other change before failing; the parent is now checked first. `ae_apply_effect` and
-  `ae_set_effect_param` on a camera or light failed with a null error. Job and pipeline errors
-  from After Effects scripts kept only the bare host message. `ae_apply_effect`'s `matchName`
-  had no description.
+  `ae_set_effect_param` on a camera or light failed with a null error; they now say which
+  kinds of layer take effects (null layers included). Job and pipeline errors from After
+  Effects scripts kept only the bare host message. `ae_apply_effect`'s `matchName` and
+  `ae_set_effect_param`'s `value` had no description.
 
 **Docs**
 
@@ -161,13 +172,17 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   `es3Violations` in the new `test/es3.ts`) and drops its stale notes (CONTRIBUTING's
   `jsStringLiteral` text, tool counts and the `ae_queue_render` gap before X-03).
 - AE-16: the AE-16 prompt corrections (no error-code prefix, no font promise, the fake-panel
-  frame with `code: "HOST_ERROR"`, stale line cites; status in review), `IMPLEMENTATION_PLAN.md`
-  superseded notes on error codes, `CONTRIBUTING.md` Errors (`ScriptError.details`,
-  `scriptErrorText`, the disconnect text), AE-03 / AE-04 / AE-14 / AE-01 / X-01 notes,
+  frame with `code: "HOST_ERROR"`, stale line cites; status in review; the cross-app texts to
+  call out for the architect), `IMPLEMENTATION_PLAN.md` superseded notes on error codes,
+  `CONTRIBUTING.md` Errors (`ScriptError.details`, `scriptErrorText`, the disconnect text in
+  tool errors and failed job steps) and its registration example (now an After Effects tool on
+  `evaluateAe` and the `withToolContext` server), AE-03 / AE-04 / AE-14 / AE-01 / X-01 notes,
   `00_PREAMBLE.md` (the shared-core list gains `tools/raw-script.ts`; After Effects tools call
   `evaluateAe` and register through `withToolContext`; the error-test harness), the README
-  (what a tool error says), `docs/protocol.md`, and spike 06 (how error lines are read; the
-  live probes still pending).
+  (what a tool error says; the security note now says which errors remove keys and tokens),
+  `docs/protocol.md`, and spike 06 (how error lines are read; the live probes still pending).
+  The After Effects prompts cite `after-effects.ts` by symbol instead of by line number, which
+  AE-16 shifted (AE-02 to AE-10, AE-14).
 
 ## v0.3.3 — 2026-10-01
 

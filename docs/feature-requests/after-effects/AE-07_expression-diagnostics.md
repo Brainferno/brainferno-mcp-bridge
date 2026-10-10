@@ -11,10 +11,10 @@ depends_on: [AE-05]
 # AE-07 — Expression diagnostics
 
 ## Problem
-`ae_set_expression` checks `prop.expressionError` once, immediately after assignment (`after-effects.ts:561`). If it is set, the tool restores the previous expression and throws `Expression error: …` (`:562-564`). That catches compile errors only.
-- **Runtime errors are never reported.** An expression that references a layer, effect, or comp that does not exist yet (or is renamed later) is accepted; the tool returns `enabled: true` (`:566`). The error appears only when the property is evaluated, often at render time.
+`ae_set_expression` checks `prop.expressionError` once, immediately after assignment (`setExpressionScript` in `after-effects.ts`). If it is set, the tool restores the previous expression and throws `Expression error: …`. That catches compile errors only.
+- **Runtime errors are never reported.** An expression that references a layer, effect, or comp that does not exist yet (or is renamed later) is accepted; the tool returns `enabled: true`. The error appears only when the property is evaluated, often at render time.
 - `expressionError` is not refreshed until the property is evaluated, so the single early read can be stale.
-- `ae_get_layer` (`:166`) and `ae_get_keyframes` (`:534`) return the expression text, or `null` when disabled, and never the error.
+- `ae_get_layer` (`getLayerScript`) and `ae_get_keyframes` (`getKeyframesScript`) return the expression text, or `null` when disabled, and never the error.
 - A client building expression-driven layouts had no way to ask "which expressions in this project are broken?" and learned about failures only from a rendered preview.
 
 ## Add

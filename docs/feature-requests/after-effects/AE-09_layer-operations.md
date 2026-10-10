@@ -11,8 +11,8 @@ depends_on: [AE-03]
 # AE-09 — Layer operations and comp settings
 
 ## Problem
-- `ae_set_layer_props` can set only `name`, `enabled`, `startTime`, `inPoint`, `outPoint`, `position`, `scale`, `rotation` (Z), `opacity`, `anchorPoint`, `parentIndex` (`after-effects.ts:442-454`, `1245-1259`). No blend mode, track matte, shy, solo, guide, 3D, motion blur, adjustment flag, or label.
-- `ae_set_comp_props` can set only `name`, `duration`, `frameRate`, `width`, `height` (`:259-265`, `1115-1122`). `pixelAspect` is create-time only; no background color, work area, display start time, or motion-blur settings.
+- `ae_set_layer_props` can set only `name`, `enabled`, `startTime`, `inPoint`, `outPoint`, `position`, `scale`, `rotation` (Z), `opacity`, `anchorPoint`, `parentIndex` (`LayerProps` and `setLayerPropsScript` in `after-effects.ts`). No blend mode, track matte, shy, solo, guide, 3D, motion blur, adjustment flag, or label.
+- `ae_set_comp_props` can set only `name`, `duration`, `frameRate`, `width`, `height` (`CompProps` and `setCompPropsScript`). `pixelAspect` is create-time only (`CreateCompParams`); no background color, work area, display start time, or motion-blur settings.
 - New layers always go to the **top** (`ae_add_layer`); a layer cannot be moved afterwards. Z-order can only be controlled by adding layers in reverse.
 - No `precompose`, copy layers between comps, or replace a layer's source (a search for `precompose`, `copyToComp`, and `moveTo*` in the AE tool file finds nothing).
 

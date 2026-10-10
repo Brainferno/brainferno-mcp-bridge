@@ -11,9 +11,9 @@ depends_on: []
 # AE-10 — Render and preview
 
 ## Problem
-`ae_render_frame` takes only `compId`, `time` (default 0), and `maxDimension` (64-2048, default 1024) (`after-effects.ts:1526`). It builds a temporary downscaled comp, saves a PNG, and returns it as base64 plus a path.
-- **No background control.** `renderFrameScript` (`:834-850`) never sets a background color. A comp with transparent areas appears on **white** in the returned image, so a client cannot tell "transparent" from "white" and cannot verify an alpha deliverable.
-- The tool discards the rendered width/height (`:1534`).
+`ae_render_frame` takes only `compId`, `time` (default 0), and `maxDimension` (64-2048, default 1024) (the `ae_render_frame` registration in `after-effects.ts`). It builds a temporary downscaled comp, saves a PNG, and returns it as base64 plus a path.
+- **No background control.** `renderFrameScript` never sets a background color. A comp with transparent areas appears on **white** in the returned image, so a client cannot tell "transparent" from "white" and cannot verify an alpha deliverable.
+- The tool discards the rendered width/height that `renderFrameScript` returns.
 - It is not wrapped in `__undo`, and it is limited to one frame per call: checking six moments of an animation takes six calls and six images.
 - `saveFrameToPng` returns before the file exists, so the server polls (`waitForFile`, up to 20 s; see `docs/spikes/06-…`).
 - `ae_render_comp` (aerender) accepts `renderSettings` and `outputModule` names but there is no way to list the available templates, so a client must guess names such as `H.264 - Match Render Settings`.

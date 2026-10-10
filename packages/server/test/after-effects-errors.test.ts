@@ -1,9 +1,16 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AppDisconnectedError, EvalTimeoutError, ScriptError, type AppBridge, type JsonValue } from "../src/bridge/types.js";
+import { JobRegistry } from "../src/jobs.js";
 import {
+  AE_NAME_CUT,
   AE_PRELUDE_LINES,
   EFFECT_MISS,
   EffectCatalog,
@@ -12,22 +19,34 @@ import {
   LIST_INSTALLED_EFFECTS,
   SLOW_EFFECTS_READ_MS,
   addLayerScript,
+  addLayerStyleScript,
   addMaskScript,
+  addToEssentialGraphicsScript,
   aeExcerpt,
   aeHelperRanges,
   aeListSuggestions,
   applyEffectScript,
   enrichAeError,
   evaluateAe,
+  exportMogrtScript,
   filteredEffectsScript,
   getCompScript,
   getKeyframesScript,
   getLayerScript,
   getLayerStylesScript,
+  importAsCompScript,
+  importFootageScript,
   locateAeError,
+  openProjectScript,
+  queueRenderScript,
+  registerAfterEffectsTools,
+  removeLayerStyleScript,
+  renderCompHeadless,
+  saveProjectScript,
   setEffectParamScript,
   setExpressionScript,
   setLayerPropsScript,
+  setLayerStyleParamScript,
   setTextScript,
   withEffectSuggestions,
   wrapAe,
@@ -35,11 +54,13 @@ import {
 } from "../src/tools/after-effects.js";
 import { runAsToolCall } from "../src/tools/call-context.js";
 import { MESSAGE_LIMIT, setRedactionSecrets } from "../src/tools/echo.js";
+import { registerJobTools } from "../src/tools/jobs.js";
 import { lineCount } from "../src/tools/raw-script.js";
 import { scriptErrorText } from "../src/tools/result.js";
-import { stripAeVendor, suggestionThreshold, fold } from "../src/tools/suggest.js";
-import { AE_EFFECT_ITEMS } from "./ae-effects-fixture.js";
+import { closestNames, rank, stripAeVendor, suggestionThreshold, fold } from "../src/tools/suggest.js";
+import { AE_EFFECTS, AE_EFFECT_ITEMS } from "./ae-effects-fixture.js";
 import { HOST_JSX_PATH, MAIN, aeHost, type AeHost, type CompSpec, type EvalReply, type HostOptions, type ProjectSpec } from "./ae-host.js";
+import { ES5_CALLS, es5Calls } from "./es3.js";
 
 const SUFFIX = "\n})()";
 const PRELUDE = wrapAe("").slice(0, -SUFFIX.length);
@@ -58,11 +79,18 @@ function bodyLineOf(script: string, needle: string): number {
 
 /** Run a script in a fresh fake After Effects and return the failure (the test fails if it succeeded). */
 function fail(script: string, spec?: ProjectSpec, options?: HostOptions): { message: string; line: number | null; host: AeHost } {
-  const host = aeHost(spec, options);
+  return failIn(aeHost(spec, options), script);
+}
+
+/** fail() in a fake After Effects the test has already set up (stubs, getters that throw). */
+function failIn(host: AeHost, script: string): { message: string; line: number | null; host: AeHost } {
   const r = host.eval(script);
   if (r.ok) throw new Error(`expected a failure, got ${JSON.stringify(r.value)}`);
   return { ...r.error, host };
 }
+
+/** enrichAeError's next step for a host error on a body line (a builder's own throw never gets it). */
+const NEXT_BODY = "check the values the line marked >>> uses (ae_get_comp and ae_get_layer show what exists), then retry";
 
 /** What the socket lane would raise for that failure. */
 function scriptError(r: { message: string; line: number | null }): ScriptError {
@@ -102,8 +130,41 @@ describe("prelude contract (U1, A1, A5)", () => {
     expect(r.message).toContain(` ${DASH} pass one of these compIds`);
   });
 
-  it("uses no ES5 array or string methods in the helpers (the regex ES3 gate cannot see these)", () => {
-    for (const banned of [".map(", ".filter(", ".forEach(", ".indexOf(", ".trim(", "Object.keys", "Array.isArray"]) expect(PRELUDE, banned).not.toContain(banned);
+  it("uses no ES5-only built-ins in the helpers, nor indexOf/lastIndexOf at all (the regex ES3 gate cannot see these) (R13)", () => {
+    expect(es5Calls(PRELUDE)).toEqual([]);
+    for (const banned of [".indexOf(", ".lastIndexOf("]) expect(PRELUDE, banned).not.toContain(banned);
+  });
+
+  it("the ES5 gate sees the calls an ES3 engine lacks, and passes ES3 string methods (R13)", () => {
+    expect(es5Calls("names.some(function (n) { return n; }); var t = Date.now(); f.bind(o); Object.create(null);")).toEqual([".some(", ".bind(", "Object.create", "Date.now"]);
+    expect(es5Calls('$.os.indexOf("Windows"); s.lastIndexOf("/"); s.charAt(0); s.substring(1);')).toEqual([]);
+    expect(ES5_CALLS).toContain(".reduceRight(");
+  });
+
+  it("__q keeps AE_NAME_CUT units of a name and marks a cut with ... (K2)", () => {
+    const name = (n: number) => (aeHost().eval(wrapAe(`\n  return __q("${"n".repeat(n)}");`)) as { ok: true; value: string }).value;
+    expect(name(AE_NAME_CUT)).toBe(`"${"n".repeat(AE_NAME_CUT)}"`);
+    expect(name(AE_NAME_CUT + 1)).toBe(`"${"n".repeat(AE_NAME_CUT)}..."`);
+  });
+
+  it("__q writes every C0 and C1 control, U+2028 and U+2029 as a space, and keeps other text (R10)", () => {
+    // NUL, ESC, DEL, NEL, CSI, APC (U+009F), LS; then NBSP and é, which stay.
+    const r = aeHost().eval(wrapAe('\n  return __q("a\\u0000b\\u001bc\\u007fd\\u0085e\\u009bf\\u009fg\\u2028h\\u00a0i\\u00e9j");'));
+    expect(r).toEqual({ ok: true, value: '"a b c d e f g h iéj"' });
+  });
+
+  it("a name holding a C1 control is quoted the way a registered secret's blanked form expects (R10, K2)", () => {
+    const secret = "Logo\u0085QuietSecretValue";
+    setRedactionSecrets([secret]);
+    try {
+      const r = fail(getCompScript(99), { comps: [{ id: 12, name: secret }] });
+      expect(r.message).toContain('12 "Logo QuietSecretValue"');
+      const text = scriptErrorText(enrichAeError(scriptError(r), getCompScript(99)) as ScriptError);
+      expect(text).toContain('12 "[redacted]"');
+      expect(text).not.toContain("QuietSecretValue");
+    } finally {
+      setRedactionSecrets([]);
+    }
   });
 });
 
@@ -198,7 +259,10 @@ describe("__comp (missing compositions)", () => {
     const comps: CompSpec[] = Array.from({ length: 25 }, (_, i) => ({ id: 100 + i, name: `${i}`.padStart(60, "C") }));
     const r = fail(getCompScript(99), { comps });
     expect(r.message.length).toBeLessThanOrEqual(MESSAGE_LIMIT);
-    expect(r.message).toMatch(/ \.\.\. and \d+ more /);
+    // The 20-name cap alone would leave 5 more; the 600-character budget stops the list sooner (R2).
+    const more = Number(/ \.\.\. and (\d+) more /.exec(r.message)![1]);
+    expect(more).toBeGreaterThan(comps.length - 20);
+    expect(r.message.length).toBeLessThan(800);
     expect(scriptErrorText(enrichAeError(scriptError(r), getCompScript(99)) as ScriptError)).toMatch(/\(ae_list_compositions lists them all\)\.$/);
   });
 });
@@ -223,7 +287,7 @@ describe("__layer (out-of-range indexes, acceptance 3)", () => {
     const layers = Array.from({ length: 25 }, (_, i) => ({ kind: "solid" as const, name: `${i}`.padStart(60, "L") }));
     const r = fail(getLayerScript(12, 30), { comps: [{ id: 12, name: "Main", layers }] });
     expect(r.message.length).toBeLessThanOrEqual(MESSAGE_LIMIT);
-    expect(r.message).toMatch(/ \.\.\. and \d+ more /);
+    expect(Number(/ \.\.\. and (\d+) more /.exec(r.message)![1])).toBeGreaterThan(layers.length - 20);
     expect(scriptErrorText(enrichAeError(scriptError(r), getLayerScript(12, 30)) as ScriptError)).toMatch(/\(ae_get_comp lists every layer\)\.$/);
   });
 
@@ -246,6 +310,10 @@ describe("__prop (property paths, acceptance 2)", () => {
       { kind: "solid", name: "Plain" },
       { kind: "shape", name: "Twins", shapes: ["Shape 1", "Shape 1"] },
       { kind: "camera", name: "Camera 1" },
+      { kind: "solid", name: "Masked", masks: ["Mask 1", "Mask 2"] },
+      { kind: "solid", name: "Painted", effects: ["ADBE Paint"], strokes: ["Brush 1", "Brush 2"] },
+      { kind: "shape", name: "Empty Shape" },
+      { kind: "solid", name: "Cards", effects: ["ADBE Card Dance"] },
     ],
   };
   const spec = { comps: [FX] };
@@ -310,6 +378,94 @@ describe("__prop (property paths, acceptance 2)", () => {
         `${DASH} some of these names repeat, so a path cannot tell those apart; rename them in After Effects so each is unique, then pass one.`,
     );
     expect(twins.message).not.toContain("use one of these names");
+    // "Shape 1" is one edit from "Shape 3", but it names two groups: never a suggestion (R6).
+    const enriched = enrichAeError(scriptError(twins), getKeyframesScript(12, 5, "position", ["ADBE Root Vectors Group", "Shape 3"])) as ScriptError;
+    expect(enriched.details.suggestions).toBeUndefined();
+    expect(scriptErrorText(enriched)).not.toContain("Did you mean");
+  });
+
+  it("repeated names in a group users cannot rename point to the match names, listed in the same order (R18)", () => {
+    const display = ["Rows", "Columns", "X Position", "Source", "Multiplier", "Offset", "Y Position", "Source", "Multiplier", "Offset"];
+    const matchNames = display.map((_, i) => `ADBE Card Dance-${String(i + 1).padStart(4, "0")}`);
+    const clause =
+      `${DASH} some of these names repeat, so a name cannot pick between them; pass the match name instead ` +
+      `(the same list by match name: ${JSON.stringify(matchNames).replace(/","/g, '", "')}).`;
+    const r = path(10, ["ADBE Effect Parade", "Card Dance", "Sorce"]);
+    expect(r.message).toBe(
+      'Property path not found on layer 10 "Cards" (solid): segment "Sorce" not found under ["ADBE Effect Parade", "Card Dance"]; ' +
+        `children here: ${JSON.stringify(display).replace(/","/g, '", "')} ${clause}`,
+    );
+    expect(r.message).not.toContain("rename");
+    // "Source" is close, but it names two parameters: no suggestion (R6).
+    expect(aeListSuggestions(r.message)).toEqual([]);
+  });
+
+  it("an empty group says it is empty and never offers to end the path at it (R11)", () => {
+    const animators = path(1, ["ADBE Text Properties", "ADBE Text Animators", "Animator 1", "X"]);
+    expect(animators.message).toBe(
+      'Property path not found on layer 1 "Title" (text): segment "Animator 1" not found under ["ADBE Text Properties", "ADBE Text Animators"], ' +
+        `which is an empty group ${DASH} nothing can be addressed under "ADBE Text Animators" until something is added there; check the path.`,
+    );
+    const byDisplay = path(1, ["Text", "Animators", "Animator 1"]);
+    expect(byDisplay.message).toContain(`which is an empty group ${DASH} nothing can be addressed under "Animators" until something is added there; check the path.`);
+    const contents = path(9, ["ADBE Root Vectors Group", "Shape 1"]);
+    expect(contents.message).toBe(
+      'Property path not found on layer 9 "Empty Shape" (shape): segment "Shape 1" not found under ["ADBE Root Vectors Group"], ' +
+        `which is an empty group ${DASH} nothing can be addressed under "ADBE Root Vectors Group" until something is added there; check the path.`,
+    );
+    for (const m of [animators.message, byDisplay.message, contents.message]) {
+      expect(m).not.toContain("end the path there");
+      expect(m).not.toContain("ae_get_layer lists the layer's effects");
+    }
+  });
+
+  it("builds the message head only for a miss, so a path that resolves never reads the layer's name or kind (K4)", () => {
+    const host = aeHost(spec);
+    const layer = host.comp(12).layer(3);
+    const mn = layer.matchName as string;
+    let reads = 0;
+    Object.defineProperty(layer, "matchName", {
+      configurable: true,
+      get: () => {
+        reads++;
+        return mn;
+      },
+    });
+    expect(host.eval(getKeyframesScript(12, 3, "position", ["ADBE Effect Parade", "Gaussian Blur", "Blurriness"])).ok).toBe(true);
+    expect(reads).toBe(0);
+  });
+
+  it("a layer whose kind cannot be read still gets the path miss, not the read failure (K4)", () => {
+    const host = aeHost(spec);
+    Object.defineProperty(host.comp(12).layer(3), "matchName", {
+      configurable: true,
+      get: () => {
+        throw new host.VmError("After Effects error: Object is invalid");
+      },
+    });
+    const r = host.eval(getKeyframesScript(12, 3, "position", ["ADBE Text Properties", "ADBE Text Document"])) as Extract<EvalReply, { ok: false }>;
+    expect(r.ok).toBe(false);
+    expect(r.error.message).toMatch(
+      new RegExp(`^Property path not found on layer 3 "BG" \\(unknown kind\\): segment "ADBE Text Properties" not found at the top of the layer; children here: \\[.*\\] ${DASH} use one of these names\\.$`),
+    );
+  });
+
+  it("lists shape groups and masks by name for a match-name segment too: the fixed set decides (M17, R19)", () => {
+    // Without PropertyType the INDEXED_GROUP check cannot answer, so only the __BY_NAME table can.
+    for (const options of [{}, { noPropertyType: true }]) {
+      const shapes = path(2, ["ADBE Root Vectors Group", "ADBE Vector Grp"], options);
+      expect(shapes.message).toContain('children here: ["Shape 1", "Shape 2"]');
+      expect(shapes.message).not.toContain("ADBE Vector Group");
+      const masks = path(7, ["ADBE Mask Parade", "ADBE Mask Atm"], options);
+      expect(masks.message).toContain('children here: ["Mask 1", "Mask 2"]');
+      expect(masks.message).not.toContain("ADBE Mask Atom");
+    }
+  });
+
+  it("lists an indexed group outside the fixed set by name, not the match name its children share (M17, R16)", () => {
+    const r = path(8, ["ADBE Effect Parade", "ADBE Paint", "ADBE Paint Group", "ADBE Paint Atm"]);
+    expect(r.message).toContain('children here: ["Brush 1", "Brush 2"]');
+    expect(r.message).not.toContain("ADBE Paint Atom");
   });
 
   it("answers an empty Effect Parade or Mask Parade with the tool that fills it (M5)", () => {
@@ -399,7 +555,17 @@ describe("effects and parameters", () => {
       `Effect not found on layer 1 "BG" (solid): "Gausian Blur"; effects on this layer: ["Gaussian Blur"] ${DASH} pass one of these names, or the effect's index (1 = first).`,
     );
     expect(aeListSuggestions(r.message)).toEqual(["Gaussian Blur"]);
-    expect(aeListSuggestions(fail(setEffectParamScript(12, 1, 5, "Blurriness", 5), spec).message)).toEqual([]);
+  });
+
+  it("setEffectParamScript gives no suggestion for an effect index, even next to a numeric name (R14)", () => {
+    const fifty: ProjectSpec = {
+      comps: [{ id: 12, name: "Main", layers: [{ kind: "solid", name: "BG", effects: ["VEND Fifty", "ADBE Gaussian Blur 2"] }] }],
+      effects: [...AE_EFFECTS, ["VEND Fifty", "50"]],
+    };
+    const r = fail(setEffectParamScript(12, 1, 5, "Blurriness", 5), fifty);
+    expect(r.message).toContain('"5"; effects on this layer: ["50", "Gaussian Blur"]');
+    expect(closestNames("5", ["50", "Gaussian Blur"], { normalize: stripAeVendor })).toEqual(["50"]); // what the guard prevents
+    expect(aeListSuggestions(r.message)).toEqual([]);
   });
 
   it("setEffectParamScript lists parameters in the vocabulary the caller used (M6)", () => {
@@ -412,19 +578,35 @@ describe("effects and parameters", () => {
     expect(match.message).toContain('parameters: ["ADBE Gaussian Blur 2-0001", "ADBE Gaussian Blur 2-0002", "ADBE Gaussian Blur 2-0003"]');
   });
 
-  it("setEffectParamScript on a layer without effects, and on a camera", () => {
+  it("setEffectParamScript on a layer without effects, and on a camera (null layers, the home of expression controls, are named: R12)", () => {
     expect(fail(setEffectParamScript(12, 2, 1, "Blurriness", 5), spec).message).toBe(`Layer 2 "Plain" (solid) has no effects ${DASH} apply one first (ae_apply_effect).`);
     expect(fail(setEffectParamScript(12, 3, 1, "x", 0), spec).message).toBe(
-      `Layer 3 "Camera 1" (camera) cannot have effects ${DASH} address a footage, solid, text, shape, adjustment or precomp layer.`,
+      `Layer 3 "Camera 1" (camera) cannot have effects ${DASH} address a footage, solid, text, shape, null, adjustment or precomp layer.`,
     );
+  });
+
+  it("setEffectParamScript: repeated parameter names point to the match names, never to renaming (R18)", () => {
+    const cards: ProjectSpec = { comps: [{ id: 12, name: "Main", layers: [{ kind: "solid", name: "Cards", effects: ["ADBE Card Dance"] }] }] };
+    const r = fail(setEffectParamScript(12, 1, 1, "Sorce", 5), cards);
+    expect(r.message).toMatch(
+      new RegExp(
+        `^Parameter not found on effect "Card Dance": "Sorce"; parameters: \\["Rows", .*"Source", .*"Source", .*\\] ${DASH} some of these names repeat, so a name cannot pick between them; ` +
+          `pass the match name instead \\(the same list by match name: \\["ADBE Card Dance-0001", .*"ADBE Card Dance-0010"\\]\\)\\.$`,
+      ),
+    );
+    expect(r.message).not.toContain("rename");
+    expect(aeListSuggestions(r.message)).toEqual([]);
+    // The match name the message offers resolves.
+    expect(aeHost(cards).eval(setEffectParamScript(12, 1, 1, "ADBE Card Dance-0008", 5)).ok).toBe(true);
   });
 
   it("applyEffectScript on a camera, and an unknown effect at the canAddProperty body line", () => {
     expect(fail(applyEffectScript(12, 3, "ADBE Gaussian Blur 2"), spec).message).toMatch(/^Layer 3 "Camera 1" \(camera\) cannot have effects/);
     const script = applyEffectScript(12, 1, "ADBE Gausian Blur 2");
     const r = fail(script, spec);
+    // The requested name is quoted like every other name in a message (R7).
     expect(r.message).toBe(
-      `${EFFECT_MISS}ADBE Gausian Blur 2 (layer 1 "BG" (solid)) ${DASH} use an installed effect's match name, e.g. 'ADBE Gaussian Blur 2', or its display name.`,
+      `${EFFECT_MISS}"ADBE Gausian Blur 2" (layer 1 "BG" (solid)) ${DASH} use an installed effect's match name, e.g. 'ADBE Gaussian Blur 2', or its display name.`,
     );
     expect(locateAeError(script, r.line ?? undefined)).toEqual({ kind: "body", bodyLine: bodyLineOf(script, "canAddProperty") });
     expect(r.host.mutations).toEqual([]);
@@ -478,6 +660,226 @@ describe("effects and parameters", () => {
     expect(sent.at(-1)).toBe(filteredEffectsScript(q, 3));
     expect(out.details.suggestions?.[0]).toEqual({ name: "ADBE Gaussian Blur 2", label: "Gaussian Blur" });
   });
+
+  it("filteredEffectsScript's window keeps a margin for UTF-16 and NFC lengths, so it never drops a name the server ranks (K3)", () => {
+    const q = stripAeVendor(fold("Gausian Blur"));
+    const t = suggestionThreshold(q);
+    const astral = ["VEND A Long Match Name Far From The Query", "Gausian Blur\u{1F600}ab"] as const;
+    const decomposed = ["VEND Another Long Match Name Far Away", "Gausian Bluréxé"] as const;
+    for (const [, displayName] of [astral, decomposed]) {
+      // The server (code points, NFC) ranks it, although its UTF-16 length is further from the query than the threshold.
+      expect(rank(q, [displayName], (n) => [n], { normalize: stripAeVendor }), displayName).toHaveLength(1);
+      expect(Math.abs(displayName.length - q.length), displayName).toBeGreaterThan(t);
+    }
+    const r = aeHost({ comps: [MAIN], effects: [...AE_EFFECTS, astral, decomposed] }).eval(filteredEffectsScript(q, t)) as { ok: true; value: [string, string][] };
+    expect(r.ok).toBe(true);
+    expect(r.value).toContainEqual([...astral]);
+    expect(r.value).toContainEqual([...decomposed]);
+  });
+});
+
+// ---- every throw a builder or helper raises says what to do next (R7, R17) --------------
+
+/** File, Folder and import stand-ins: the fake host models none of them. */
+function fileStubs(host: AeHost, o: { exists?: boolean; canImportAs?: boolean; imports?: unknown } = {}): void {
+  host.ctx["File"] = function (this: Record<string, unknown>, p: string) {
+    this["fsName"] = p;
+    this["exists"] = o.exists ?? false;
+  };
+  host.ctx["Folder"] = function (this: Record<string, unknown>) {
+    this["exists"] = true;
+    this["create"] = () => true;
+  };
+  host.ctx["ImportOptions"] = function (this: Record<string, unknown>) {
+    this["canImportAs"] = () => o.canImportAs ?? false;
+  };
+  host.ctx["ImportAsType"] = { COMP: 1, COMP_CROPPED_LAYERS: 2 };
+  host.app.project.importFile = () => o.imports;
+}
+
+/** The message split at its own " — " (one outside the names it quotes): the facts, then the next step. */
+function factsAndNext(message: string): [string, string] | null {
+  const masked = message.replace(/"(?:[^"\\]|\\.)*"/g, (q) => "x".repeat(q.length));
+  const at = masked.indexOf(` ${DASH} `);
+  return at < 0 ? null : [message.slice(0, at), message.slice(at + 3)];
+}
+
+describe("every throw says what to do next, so none needs the generic step (R7, R17)", () => {
+  const STYLED: ProjectSpec = {
+    comps: [{ id: 12, name: "Main", layers: [{ kind: "solid", name: "BG", styles: ["dropShadow"] }, { kind: "camera", name: "Camera 1" }, { kind: "text", name: "Title" }] }],
+  };
+  const position = (host: AeHost) => host.comp(12).layer(1).property("ADBE Transform Group").property("ADBE Position");
+
+  const cases: { name: string; script: string; spec?: ProjectSpec; setup?: (host: AeHost) => void; message?: string }[] = [
+    // helpers
+    { name: "__comp", script: getCompScript(99) },
+    { name: "__layer", script: getLayerScript(12, 9) },
+    { name: "__prop children", script: getKeyframesScript(12, 1, "position", ["ADBE Text Properties", "ADBE Text Documnt"]) },
+    { name: "__prop kind", script: getKeyframesScript(12, 3, "position", ["ADBE Text Properties"]) },
+    { name: "__prop transform", script: wrapAe('\n  var c = __comp(12);\n  return __prop(c.layer(1), "skew", null);') },
+    { name: "__styles", script: getLayerStylesScript(12, 2), spec: STYLED },
+    // builders
+    { name: "open: no file", script: openProjectScript("C:/p/missing.aep"), setup: (h) => fileStubs(h) },
+    { name: "save: never saved", script: saveProjectScript(undefined) },
+    { name: "import: no file", script: importFootageScript("C:/p/missing.mov"), setup: (h) => fileStubs(h) },
+    { name: "import as comp: no file", script: importAsCompScript("C:/p/missing.psd", false), setup: (h) => fileStubs(h) },
+    {
+      name: "import as comp: not importable",
+      script: importAsCompScript("C:/p/flat.ai", false),
+      setup: (h) => fileStubs(h, { exists: true }),
+      message: `After Effects cannot import this file as a composition ${DASH} pass a layered .psd, or an .ai saved in RGB (not CMYK) with PDF compatibility.`,
+    },
+    {
+      name: "import as comp: came in as footage",
+      script: importAsCompScript("C:/p/flat.psd", false),
+      setup: (h) => {
+        const FootageItem = h.ctx["FootageItem"] as new () => object;
+        fileStubs(h, { exists: true, canImportAs: true, imports: Object.assign(new FootageItem(), { id: 31, name: 'flat "v2".psd' }) });
+      },
+      message: `Imported "flat \\"v2\\".psd" (id 31) as footage, not as a composition, so the file may have only one layer ${DASH} add that footage with ae_add_layer (kind footage, itemId 31), or pass a layered .psd or .ai.`,
+    },
+    { name: "add layer: no itemId", script: addLayerScript({ compId: 12, kind: "footage" }) },
+    { name: "add layer: unknown item", script: addLayerScript({ compId: 12, kind: "footage", itemId: 999 }) },
+    { name: "add mask: camera", script: addMaskScript({ compId: 12, layerIndex: 2, kind: "rectangle" }), spec: STYLED },
+    {
+      name: "expression error",
+      script: setExpressionScript(12, 1, "position", undefined, "wiggle("),
+      setup: (h) => {
+        const p = position(h);
+        Object.defineProperty(p, "expressionError", { configurable: true, get: () => (p.expression === "wiggle(" ? "Syntax error: missing )" : "") });
+      },
+      message: `Expression error: Syntax error: missing ) ${DASH} fix the expression; the property keeps its previous one.`,
+    },
+    { name: "apply effect: camera", script: applyEffectScript(12, 2, "ADBE Gaussian Blur 2"), spec: STYLED },
+    { name: "apply effect: unknown", script: applyEffectScript(12, 1, "ADBE Gausian Blur 2") },
+    { name: "effect param: no effects", script: setEffectParamScript(12, 3, 1, "Blurriness", 5) },
+    { name: "set text: not a text layer", script: setTextScript({ compId: 12, layerIndex: 3, text: "x" }) },
+    {
+      name: "style param: style missing",
+      script: setLayerStyleParamScript(12, 1, "innerGlow", "Size", 5),
+      spec: STYLED,
+      message: `The innerGlow style is not on layer 1 "BG" (solid) ${DASH} add it first with ae_add_layer_style.`,
+    },
+    {
+      name: "style param: parameter missing",
+      script: setLayerStyleParamScript(12, 1, "dropShadow", "Distnce", 5),
+      spec: STYLED,
+      message:
+        'Parameter not found on the dropShadow style of layer 1 "BG" (solid): "Distnce"; parameters: ["Blend Mode", "Color", "Opacity", "Angle", "Distance", "Size"] ' +
+        `${DASH} use one of these names.`,
+    },
+    {
+      name: "style param: match name missing",
+      script: setLayerStyleParamScript(12, 1, "dropShadow", "dropShadow/p9", 5),
+      spec: STYLED,
+      message:
+        'Parameter not found on the dropShadow style of layer 1 "BG" (solid): "dropShadow/p9"; parameters: ' +
+        `["dropShadow/p1", "dropShadow/p2", "dropShadow/p3", "dropShadow/p4", "dropShadow/p5", "dropShadow/p6"] ${DASH} use one of these names.`,
+    },
+    {
+      name: "remove style: not there",
+      script: removeLayerStyleScript(12, 1, "satin"),
+      spec: STYLED,
+      message: `The satin style is not on layer 1 "BG" (solid) ${DASH} nothing to turn off; ae_get_layer_styles lists the styles on this layer.`,
+    },
+    {
+      name: "add style: the menu command did not take",
+      script: addLayerStyleScript(12, 1, "stroke"),
+      spec: STYLED,
+      setup: (h) => {
+        h.ctx["$"] = { sleep: () => undefined };
+        h.app.executeCommand = () => undefined;
+        h.app.findMenuCommandId = () => 0;
+        h.comp(12).openInViewer = () => undefined;
+      },
+      message:
+        `Could not add the stroke layer style to layer 1 "BG" (solid): the Layer Styles menu command did not take ${DASH} ` +
+        "close any open dialog in After Effects and retry; if it keeps failing, add the style from the Layer menu (Layer Styles) in After Effects.",
+    },
+    {
+      name: "essential graphics: cannot add",
+      script: addToEssentialGraphicsScript(12, 1, "position", undefined),
+      setup: (h) => {
+        position(h).canAddToMotionGraphicsTemplate = () => false;
+      },
+      message:
+        'Property "Position" of layer 1 "Title" (text) cannot be added to Essential Graphics: its type is not supported, or the panel already has a control with that name ' +
+        `${DASH} pass another property (a transform channel, sourceText or an effect control), or rename that control in the Essential Graphics panel, then retry.`,
+    },
+    {
+      name: "essential graphics: refused",
+      script: addToEssentialGraphicsScript(12, 1, "position", undefined),
+      setup: (h) => {
+        position(h).canAddToMotionGraphicsTemplate = () => true;
+        position(h).addToMotionGraphicsTemplate = () => false;
+      },
+      message: `After Effects refused to add "Position" to the Essential Graphics panel of "Main" ${DASH} check that panel in After Effects, then retry or pass another property.`,
+    },
+    {
+      name: "mogrt: never saved",
+      script: exportMogrtScript(12, "C:/m", "LT", true),
+      message:
+        `The project has never been saved, and exporting a Motion Graphics template needs a saved project ${DASH} ` +
+        "save it first with ae_save_project (pass a path ending in .aep), then retry.",
+    },
+    {
+      name: "mogrt: not written",
+      script: exportMogrtScript(12, "C:/m", "LT", false),
+      setup: (h) => {
+        fileStubs(h);
+        Object.assign(h.app, { beginSuppressDialogs: () => undefined, endSuppressDialogs: () => undefined });
+        Object.assign(h.app.project, { file: {}, save: () => undefined });
+        h.comp(12).exportAsMotionGraphicsTemplate = () => false;
+      },
+      message: `After Effects did not write C:/m/LT.mogrt (export returned false) ${DASH} if that file already exists, pass overwrite: true; otherwise pass a folder you can write to, then retry.`,
+    },
+    {
+      name: "queue render: unknown name",
+      script: queueRenderScript("Mian", "C:/r/main.mov", undefined),
+      spec: { comps: [MAIN, { id: 15, name: "LT" }] },
+      message: `No composition named "Mian"; compositions: ["Main", "LT"] ${DASH} pass one of these names exactly (ae_list_compositions lists them all).`,
+    },
+    {
+      name: "queue render: no compositions",
+      script: queueRenderScript("Main", "C:/r/main.mov", undefined),
+      spec: { comps: [] },
+      message: `No composition named "Main"; the project has no compositions ${DASH} create one with ae_create_comp, then queue it.`,
+    },
+    {
+      name: "queue render: a dash inside the name",
+      script: queueRenderScript(`Intro ${DASH} Final`, "C:/r/main.mov", undefined),
+      message: `No composition named "Intro ${DASH} Final"; compositions: ["Main"] ${DASH} pass one of these names exactly (ae_list_compositions lists them all).`,
+    },
+  ];
+
+  for (const c of cases) {
+    it(c.name, () => {
+      const host = aeHost(c.spec);
+      c.setup?.(host);
+      const r = failIn(host, c.script);
+      if (c.message !== undefined) expect(r.message).toBe(c.message);
+      const split = factsAndNext(r.message);
+      expect(split, r.message).not.toBeNull();
+      expect(split![0].trim(), r.message).not.toBe("");
+      expect(split![1].trim().length, r.message).toBeGreaterThan(8);
+      expect((enrichAeError(scriptError(r), c.script) as ScriptError).details.next, r.message).toBeUndefined();
+    });
+  }
+
+  it("a listed parameter or composition name gets 'did you mean' (R17)", () => {
+    expect(aeListSuggestions(fail(setLayerStyleParamScript(12, 1, "dropShadow", "Distnce", 5), STYLED).message)).toEqual(["Distance"]);
+    expect(aeListSuggestions(fail(queueRenderScript("Mian", "C:/r/main.mov", undefined)).message)).toEqual(["Main"]);
+  });
+
+  it("renderCompHeadless's own failures say what to do next too", async () => {
+    const answers = (save: JsonValue, info: JsonValue) => fakeBridge(async (script) => (script === saveProjectScript(undefined) ? save : info));
+    await expect(renderCompHeadless(answers({ saved: true }, { projectPath: null, appFolder: "x", isWindows: true }), { compName: "Main", outputPath: "C:/r/a.mov" })).rejects.toThrow(
+      `The project has no file ${DASH} save it first with ae_save_project (pass a path ending in .aep), then retry.`,
+    );
+    const missing = join(tmpdir(), "bf-ae16-no-aerender");
+    const noExe = renderCompHeadless(answers({ path: "C:/p/a.aep", saved: true }, { projectPath: "C:/p/a.aep", appFolder: missing, isWindows: true }), { compName: "Main", outputPath: "C:/r/a.mov" });
+    await expect(noExe).rejects.toThrow(new RegExp(`^aerender not found at .*bf-ae16-no-aerender.aerender\\.exe ${DASH} `));
+  });
 });
 
 describe("aeListSuggestions", () => {
@@ -488,7 +890,9 @@ describe("aeListSuggestions", () => {
   });
 
   it("gives nothing for a numeric query, an unparseable or absent list, or a non-list message", () => {
-    expect(aeListSuggestions('Effect not found on layer 1 "BG" (solid): "5"; effects on this layer: ["Glow"] — x')).toEqual([]);
+    // "50" is within the threshold of "5", so only the numeric-query guard keeps it out (R14).
+    expect(aeListSuggestions('Effect not found on layer 1 "BG" (solid): "5"; effects on this layer: ["50", "Glow"] — x')).toEqual([]);
+    expect(aeListSuggestions('Effect not found on layer 1 "BG" (solid): "12"; effects on this layer: ["Glow", "Tint", "CC 1"] — x')).toEqual([]);
     expect(aeListSuggestions('Parameter not found on effect "Glow": "Glw"; parameters: ["Glow", — x')).toEqual([]);
     expect(aeListSuggestions("Layer index 9 is out of range")).toEqual([]);
     expect(aeListSuggestions('Parameter not found on effect "Glow": "Glw"; parameters: [] — x')).toEqual([]);
@@ -498,6 +902,18 @@ describe("aeListSuggestions", () => {
     const cut = `${"A".repeat(60)}...`;
     expect(aeListSuggestions(`Parameter not found on effect "E": "${"A".repeat(59)}B"; parameters: ["${cut}", "Other"] — x`)).toEqual([]);
     expect(aeListSuggestions(`Parameter not found on effect "E": "${cut}"; parameters: ["${"A".repeat(60)}"] — x`)).toEqual([]);
+  });
+
+  it("never suggests a name that repeats in the list, since it cannot pick one item; a unique close name still counts (R6)", () => {
+    const head = 'Property path not found on layer 5 "Twins" (shape): segment "Shape 3" not found under ["ADBE Root Vectors Group"]; children here: ';
+    expect(aeListSuggestions(`${head}["Shape 1", "Shape 1"] — some of these names repeat`)).toEqual([]);
+    expect(aeListSuggestions(`${head}["Shape 1", "Shape 1", "Shape 2"] — some of these names repeat`)).toEqual(["Shape 2"]);
+    expect(aeListSuggestions('Effect not found on layer 1 "BG" (solid): "Glw"; effects on this layer: ["Glow", "Glow"] — some names repeat; pass the index')).toEqual([]);
+    expect(aeListSuggestions('Parameter not found on effect "Glow": "Colr"; parameters: ["Color", "Size", "Color"] — x')).toEqual([]);
+  });
+
+  it("parses ae_queue_render's composition list (R17)", () => {
+    expect(aeListSuggestions('No composition named "Mian"; compositions: ["Main", "LT"] — pass one of these names exactly')).toEqual(["Main"]);
   });
 
   it("still parses a path whose names contain ';'", () => {
@@ -557,6 +973,50 @@ describe("enrichAeError", () => {
     const unknown = enrichAeError(new ScriptError("after_effects", "x"), LIST_COMPOSITIONS) as ScriptError;
     expect(unknown.details.where).toBe("unknown");
     expect(unknown.details.next).toMatch(/close and reopen the brainferno-mcp-bridge panel in After Effects$/);
+  });
+
+  it("a ' — ' inside a quoted name is not the message's own next step (R7)", () => {
+    const at = AE_PRELUDE_LINES + 4;
+    const next = (message: string) => (enrichAeError(new ScriptError("after_effects", message, at), LIST_COMPOSITIONS) as ScriptError).details.next;
+    expect(next(`Unable to find "Intro ${DASH} Final"`)).toBe(NEXT_BODY);
+    expect(next(`Unable to find "say \\"a ${DASH} b\\" twice"`)).toBe(NEXT_BODY);
+    expect(next(`Unable to find "Intro ${DASH} Final" ${DASH} pass another name.`)).toBeUndefined();
+    expect(next(`Intro ${DASH} Final`)).toBeUndefined(); // unquoted: read as the message's own clause
+  });
+
+  it("a host failure inside a helper gets a next step that fits the helper, never one that blames the arguments (R20)", () => {
+    const keyframed = (host: AeHost) => {
+      host.comp(12).layer(1).property("ADBE Transform Group").property("ADBE Anchor Point").setValue = () => {
+        throw new host.VmError("After Effects error: Can't use setValue on a property that has keyframes");
+      };
+    };
+    const ANCHOR_NEXT =
+      "most likely the Anchor Point has keyframes, which After Effects will not overwrite: remove them with ae_remove_keyframes (property anchorPoint), then retry. " +
+      "What the call changed before this stays; one Ctrl-Z in After Effects undoes it";
+    const helpers: string[] = [];
+    for (const script of [setTextScript({ compId: 12, layerIndex: 1, text: "New title" }), setTextScript({ compId: 12, layerIndex: 1, anchor: "origin" })]) {
+      const host = aeHost();
+      keyframed(host);
+      const e = enrichAeError(scriptError(failIn(host, script)), script) as ScriptError;
+      expect(e.details.where).toBe("helper");
+      helpers.push(e.details.helper!);
+      expect(e.details.next).toBe(ANCHOR_NEXT);
+      expect(scriptErrorText(e)).not.toContain("you passed");
+    }
+    expect(helpers).toEqual(["__centerAnchor", "__originAnchor"]);
+    // Any other helper: a next step that does not blame the ids or the path.
+    const host = aeHost();
+    Object.defineProperty(host.comp(12), "width", {
+      configurable: true,
+      get: () => {
+        throw new host.VmError("After Effects error: Object is invalid");
+      },
+    });
+    const e = enrichAeError(scriptError(failIn(host, getCompScript(12))), getCompScript(12)) as ScriptError;
+    expect(e.details).toMatchObject({ where: "helper", helper: "__compInfo" });
+    expect(e.details.next).toBe(
+      "After Effects itself refused an operation inside a shared helper (a bad id or path gets its own message); check the current state with ae_get_comp or ae_get_layer, then retry",
+    );
   });
 
   it("returns other apps' errors, plain errors and already-enriched errors as they are", () => {
@@ -649,6 +1109,20 @@ describe("withEffectSuggestions (M20)", () => {
     expect(strict.details.note).toBe("Names must match exactly, case included.");
     const lenient = (await withEffectSuggestions(fixedCatalog(EFFECTS).catalog, missFor("adbe gaussian blur 2"), "adbe gaussian blur 2", { ...STRICT, caseSensitive: false })) as ScriptError;
     expect(lenient.details.note).toBe(REFUSED);
+  });
+
+  it("a case-folded display name: the display-name rule decides first, then case, under all four rules (R1)", async () => {
+    const PASS_MATCH = `That effect is installed; pass its match name ${DASH} if that also fails, this layer cannot take it.`;
+    const cases: [{ caseSensitive: boolean; displayNamesAccepted: boolean }, { suggestions?: unknown; note: string }][] = [
+      [{ caseSensitive: true, displayNamesAccepted: false }, { suggestions: [{ name: "ADBE Gaussian Blur 2", label: "Gaussian Blur" }], note: PASS_MATCH }],
+      [{ caseSensitive: false, displayNamesAccepted: false }, { suggestions: [{ name: "ADBE Gaussian Blur 2", label: "Gaussian Blur" }], note: PASS_MATCH }],
+      [{ caseSensitive: true, displayNamesAccepted: true }, { suggestions: [{ name: "Gaussian Blur" }], note: "Names must match exactly, case included." }],
+      [{ caseSensitive: false, displayNamesAccepted: true }, { note: REFUSED }],
+    ];
+    for (const [rules, want] of cases) {
+      const out = (await withEffectSuggestions(fixedCatalog(EFFECTS).catalog, missFor("gaussian blur"), "gaussian blur", rules)) as ScriptError;
+      expect({ suggestions: out.details.suggestions, note: out.details.note }, JSON.stringify(rules)).toEqual({ suggestions: want.suggestions, note: want.note });
+    }
   });
 
   it("a typo gets up to 3 ranked names (acceptance 4)", async () => {
@@ -778,5 +1252,129 @@ describe("EffectCatalog (M18, M19, M22)", () => {
     await h.catalog.candidates("x");
     await h.catalog.candidates("x");
     expect(h.sent).toHaveLength(1);
+  });
+});
+
+// ---- the other evaluate sites: ae_render_frame and job steps (R3, R5) ---------------
+
+describe("ae_render_frame and ae_render_comp's job step keep the tool context (R3)", () => {
+  const textOf = (r: unknown) => (r as { content: { text: string }[] }).content[0]!.text;
+  /** The body's first statement (line 1) failing the way a closed project fails a save. */
+  const noProject = async (): Promise<JsonValue> => {
+    throw new ScriptError("after_effects", "No project is open", AE_PRELUDE_LINES + 2, { code: "HOST_ERROR" });
+  };
+
+  /** registerAfterEffectsTools with a job registry and the job tools, over an in-memory MCP session. */
+  async function session(evaluate: (script: string) => Promise<JsonValue>) {
+    const workRoot = mkdtempSync(join(tmpdir(), "bf-ae16-jobs-"));
+    const jobs = new JobRegistry({ workRoot });
+    const server = new McpServer({ name: "ae16-jobs", version: "0" });
+    registerAfterEffectsTools(server, fakeBridge(evaluate), { jobs, defaultWait: true });
+    registerJobTools(server, jobs);
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "ae16-jobs", version: "0" });
+    await Promise.all([client.connect(ct), server.connect(st)]);
+    return {
+      call: (name: string, args: Record<string, unknown>) => client.callTool({ name, arguments: args }),
+      tools: async () => (await client.listTools()).tools,
+      close: async () => {
+        await client.close();
+        await server.close();
+        rmSync(workRoot, { recursive: true, force: true, maxRetries: 3 });
+      },
+    };
+  }
+
+  it("ae_render_comp names the tool, its arguments and the body line, waited on or polled with cc_job_wait", async () => {
+    const s = await session(noProject);
+    const head = /^Script failed in After Effects \(ae_render_comp, args \{compName: "Main", outputPath: "C:\/r\/main\.mov", wait: (true|false)\}\) at body line 1 \(script line \d+\): No project is open/;
+
+    const waited = await s.call("ae_render_comp", { compName: "Main", outputPath: "C:/r/main.mov", wait: true });
+    expect(waited.isError).toBe(true);
+    const view = JSON.parse(textOf(waited)) as { error: { step: string; message: string } };
+    expect(view.error.step).toBe("Render with aerender");
+    expect(view.error.message).toMatch(head);
+    expect(view.error.message).toContain("Code: >>> 1: ");
+
+    // wait:false returns at once; the step runs later, still inside the call's context.
+    const queued = JSON.parse(textOf(await s.call("ae_render_comp", { compName: "Main", outputPath: "C:/r/main.mov", wait: false }))) as { jobId: string };
+    const polled = await s.call("cc_job_wait", { jobId: queued.jobId, timeoutSeconds: 10 });
+    expect(polled.isError).toBe(true);
+    const later = (JSON.parse(textOf(polled)) as { error: { message: string } }).error.message;
+    expect(later).toMatch(head);
+    expect(later).toContain("wait: false");
+    await s.close();
+  });
+
+  it("ae_set_effect_param describes the value shapes it takes (K6)", async () => {
+    const s = await session(noProject);
+    const tool = (await s.tools()).find((t) => t.name === "ae_set_effect_param");
+    const value = (tool!.inputSchema["properties"] as Record<string, { description?: string }>)["value"];
+    expect(value?.description).toMatch(/number/i);
+    expect(value?.description).toMatch(/\[r, g, b\]/);
+    expect(value?.description).toMatch(/string/i);
+    await s.close();
+  });
+
+  it("ae_render_frame names the tool and its arguments", async () => {
+    const s = await session(noProject);
+    const r = await s.call("ae_render_frame", { compId: 12 });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toMatch(/^Script failed in After Effects \(ae_render_frame, args \{compId: 12\}\) at body line 1 \(script line \d+\): No project is open/);
+    await s.close();
+  });
+
+  it("a panel that drops during a job step says the step may have partly run (R5)", async () => {
+    const s = await session(async () => {
+      throw new AppDisconnectedError("after_effects", "socket closed");
+    });
+    const r = await s.call("ae_render_comp", { compName: "Main", outputPath: "C:/r/main.mov", wait: true });
+    expect((JSON.parse(textOf(r)) as { error: { message: string } }).error.message).toBe(
+      `The "after_effects" panel disconnected before the command completed (socket closed) ${DASH} it may have partly run; check After Effects, ` +
+        "reconnect the brainferno-mcp-bridge panel (cc_connected_apps shows when it is back), then retry.",
+    );
+    await s.close();
+  });
+});
+
+// ---- the source rule: every evaluate goes through evaluateAe, every tool through withToolContext (R4)
+
+describe("After Effects call sites (R4)", () => {
+  const read = (file: string) => readFileSync(new URL(`../src/tools/${file}`, import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  const AE_SRC = read("after-effects.ts");
+
+  /** The 0-based line range [first, last] of a top-level declaration, closed by a line that is exactly "}". */
+  function span(lines: string[], start: RegExp): [number, number] {
+    const first = lines.findIndex((l) => start.test(l));
+    const last = lines.findIndex((l, i) => i > first && l === "}");
+    if (first < 0 || last < 0) throw new Error(`after-effects.ts has no ${start}`);
+    return [first, last];
+  }
+
+  it("calls the bridge only inside evaluateAe and the effect catalog", () => {
+    const lines = AE_SRC.split("\n");
+    const allowed = [span(lines, /^export async function evaluateAe\(/), span(lines, /^export class EffectCatalog /)];
+    const sites = lines.flatMap((l, i) => (/\.(evaluate|execute)\(/.test(l) ? [i] : []));
+    expect(sites.length).toBeGreaterThanOrEqual(3);
+    for (const i of sites) expect(allowed.some(([a, b]) => i > a && i < b), `after-effects.ts:${i + 1}: ${lines[i]!.trim()}`).toBe(true);
+    // The pipelines' After Effects steps go through evaluateAe (or renderCompHeadless) too.
+    const pipelines = read("pipelines.ts");
+    expect(pipelines).not.toMatch(/afterEffects\.(evaluate|execute)\(/);
+    expect(pipelines).toMatch(/evaluateAe\(deps\.afterEffects,/);
+  });
+
+  it("registers every After Effects tool on the withToolContext server", () => {
+    const lines = AE_SRC.split("\n");
+    const [first, last] = span(lines, /^export function registerAfterEffectsTools\(/);
+    const body = lines.slice(first, last + 1).join("\n");
+    // `mcp` is the parameter and is used once: to build the wrapper every registration goes through.
+    expect(body.match(/(?<![\w-])mcp(?![\w-])/g)).toHaveLength(2);
+    expect(body).toContain("const server = withToolContext(mcp, ");
+    const registrations = lines.flatMap((l, i) => (/registerTool\(/.test(l) ? [i] : []));
+    expect(registrations.length).toBeGreaterThan(30);
+    for (const i of registrations) {
+      expect(lines[i]!.trim(), `after-effects.ts:${i + 1}`).toBe("server.registerTool(");
+      expect(i > first && i < last, `after-effects.ts:${i + 1} is outside registerAfterEffectsTools`).toBe(true);
+    }
   });
 });

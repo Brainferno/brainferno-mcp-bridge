@@ -42,4 +42,4 @@ Script failures are hard to act on.
 6. Round-trip test in `server.test.ts` with the fake panel returning `{ type: "result", id, ok: false, error: { code: "HOST_ERROR", message, line } }` (a frame without `code` is dropped by the protocol parser and the call times out).
 
 ## Definition of done
-See `00_PREAMBLE.md`. Shared core (`tools/result.ts`, `bridge/`, `server.ts`; also `src/jobs.ts`) is touched, so call it out in the PR for the architect. Live verification on After Effects 26.5 is still pending (`docs/spikes/06-aftereffects-tools-live.md` lists what it must settle).
+See `00_PREAMBLE.md`. Shared core (`tools/result.ts`, `bridge/`, `server.ts`; also `src/jobs.ts`) is touched, so call it out in the PR for the architect, including the three texts that change for every app, not only After Effects: a panel's `UNKNOWN_COMMAND`, and a panel that dropped mid-call (`AppDisconnectedError`) both in `guard()` and in a failed job step (`jobErrorMessage`). Live verification on After Effects 26.5 is still pending (`docs/spikes/06-aftereffects-tools-live.md` lists what it must settle).
