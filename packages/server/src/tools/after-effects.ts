@@ -12,7 +12,7 @@ import { EvalTimeoutError, ScriptError, type AppBridge, type EvalOptions, type J
 import type { JobRegistry } from "../jobs.js";
 import { log } from "../logging.js";
 import { currentToolCall, withToolContext } from "./call-context.js";
-import { MESSAGE_LIMIT, QUOTED_SPAN, echoArgs, excerptLine, shownMessage } from "./echo.js";
+import { MESSAGE_LIMIT, QUOTED_SPAN, echoArgs, excerptLine, messageText } from "./echo.js";
 import { runOrQueue, waitParam, type ProgressExtra } from "./jobs.js";
 import { lineCount } from "./raw-script.js";
 import { guard, imageResult, jsonResult } from "./result.js";
@@ -60,7 +60,7 @@ const HELPERS = String.raw`
   // for redaction, which writes "[redacted]" (10) over a secret as short as 8. A message built only
   // from names __q quoted (at most 125 units each) and lists within __BUDGET stays under 1000. The
   // server cuts neither, so their "what to do next" clause is kept. One that holds a raw file path
-  // or After Effects' own expression error has no bound: cut, it gets a next step from the server.
+  // or After Effects' own expression error has no bound: cut, its own last clause follows the cut.
   var __MSG = 1400;
   var __BUDGET = 600;
   var __PATH_BUDGET = 300;
@@ -535,11 +535,10 @@ export function aeExcerpt(script: string, bodyLine: number): string[] {
 const AE_NO_ARG_ECHO: ReadonlySet<string> = new Set(["ae_run_script"]);
 
 /**
- * What to say next when the host message does not. Every throw the builders and helpers raise
- * carries its own " — <next step>", so these reach errors After Effects raised itself, and a
- * builder's message the paragraph cuts before its step (one holding a long raw path or a long
- * expression error). A bad id, index or path always gets a helper's own message, so a host error
- * inside a helper never blames the arguments.
+ * What to say next when the host message does not. Every throw the builders and helpers raise ends
+ * with its own " — <next step>", shown after the cut when the paragraph cuts the message (nextStep),
+ * so these reach errors After Effects raised itself. A bad id, index or path always gets a helper's
+ * own message, so a host error inside a helper never blames the arguments.
  */
 const AE_NEXT_STEP = {
   body: "check the values the line marked >>> uses (ae_get_comp and ae_get_layer show what exists), then retry",
@@ -560,21 +559,43 @@ function aeNextStep(at: AeErrorLocation): string {
   return at.kind === "helper" ? (AE_HELPER_NEXT[at.helper] ?? AE_NEXT_STEP.helper) : AE_NEXT_STEP[at.kind];
 }
 
+/** The most code points of a message's own step that nextStep shows after a cut: several times any step a tool writes. */
+const OWN_STEP_LIMIT = 200;
+
 /**
- * Whether the text an error paragraph shows of the host message (shownMessage: redacted, on one
- * line, cut at MESSAGE_LIMIT) already says what to do next: a " — " outside the names it quotes
- * (__q's quoting, or a host's own). A quote that is never closed quotes nothing; a step past the
- * cut is not shown, so it does not count.
+ * The next step an error paragraph adds after the host message, or undefined when it shows the
+ * message's own. The paragraph shows the message redacted, on one line (messageText) and cut at
+ * MESSAGE_LIMIT code points. The message's own step is the clause after its last " — " outside the
+ * names it quotes (__q's quoting, or a host's own; a quote that is never closed quotes nothing):
+ * every throw the builders and helpers raise ends with one.
+ *  - Shown whole: undefined when the message has such a " — ", otherwise the generic step for `at`.
+ *  - Cut: a " — " in the text that still shows proves nothing (it may sit in a raw path or an
+ *    expression error, or be the message's own with its step cut to a stub). The message's own step
+ *    follows the cut, unless the cut left it whole; the generic step when the message has none, or
+ *    when its last clause is longer than OWN_STEP_LIMIT (that is other text, not a step).
+ * Linear in the message's length.
  */
-function saysNext(shown: string): boolean {
-  return shown.replace(QUOTED_SPAN, (span: string, inner: string | undefined) => (inner === undefined ? span : '""')).includes(" — ");
+function nextStep(message: string, at: AeErrorLocation): string | undefined {
+  const full = messageText(message);
+  const masked = full.replace(QUOTED_SPAN, (span: string, inner: string | undefined) => (inner === undefined ? span : `"${"x".repeat(span.length - 2)}"`));
+  const dash = masked.lastIndexOf(" — ");
+  const points = Array.from(full);
+  if (points.length <= MESSAGE_LIMIT) return dash < 0 ? aeNextStep(at) : undefined;
+  if (dash < 0) return aeNextStep(at);
+  const clause = full.slice(dash + 3);
+  const step = clause.trim().replace(/\.$/, "");
+  if (step === "" || Array.from(step).length > OWN_STEP_LIMIT) return aeNextStep(at);
+  // Where the step ends in the message, and how much of the message the cut keeps (UTF-16 units).
+  const end = dash + 3 + (clause.length - clause.trimStart().length) + step.length;
+  const kept = points.slice(0, MESSAGE_LIMIT).join("").length;
+  return end <= kept ? undefined : step;
 }
 
 /**
  * Adds AE-16's details to an After Effects ScriptError raised by `script`: where the line falls,
  * the code around a body line, the tool and its arguments (from the tool-call context), "did you
- * mean" names from a list the host message carries, and a next step when what the paragraph shows
- * of the message has none.
+ * mean" names from a list the host message carries, and a next step when the paragraph would show
+ * none (nextStep).
  * Anything else is returned unchanged; message, appId and scriptLine never change.
  */
 export function enrichAeError(error: unknown, script: string): unknown {
@@ -582,13 +603,14 @@ export function enrichAeError(error: unknown, script: string): unknown {
   const at = locateAeError(script, error.scriptLine);
   const call = currentToolCall();
   const names = aeListSuggestions(error.message);
+  const next = nextStep(error.message, at);
   return error.withDetails({
     where: at.kind,
     ...(at.kind === "body" ? { bodyLine: at.bodyLine, excerpt: aeExcerpt(script, at.bodyLine) } : {}),
     ...(at.kind === "helper" ? { helper: at.helper } : {}),
     ...(call !== undefined ? { tool: call.tool, ...(call.args !== undefined ? { args: echoArgs(call.args) } : {}) } : {}),
     ...(names.length > 0 ? { suggestions: names.map((name) => ({ name })) } : {}),
-    ...(saysNext(shownMessage(error.message)) ? {} : { next: aeNextStep(at) }),
+    ...(next !== undefined ? { next } : {}),
   });
 }
 
@@ -683,11 +705,13 @@ function repeatedNames(message: string, end: number): string[] | null {
  * names that repeat in the list and names the host says repeat among children it did not list;
  * [] when the message is not one of these misses or does not parse.
  *
- * A repeated name is never offered, since it cannot pick one item. When one is the nearest of all
- * the names (listed, or named as repeated), a name farther from the query than it is not offered
- * either: the advice already lists that name's match names first, and a farther name would point
- * away from what the caller most likely meant. Names as near as it stay, and when the nearest name
- * does not repeat, every suggestion stays.
+ * A repeated name is never offered, since it cannot pick one item. When one is as near the query as
+ * any of the names (listed, or named as repeated; alone or tied, whatever order the tie sorts in), a
+ * name farther from the query is not offered either: the caller most likely meant the repeated name,
+ * and the message's advice says how to reach one of its copies where the tool has a way (by match
+ * name for effect and layer-style parameters, by the effect's index, or by renaming them where After
+ * Effects allows that); a farther name would point away from it. Names as near as it stay, and when
+ * no name at the smallest distance repeats, every suggestion stays.
  *
  * Bounded before any parsing, because reading a long text costs time that grows faster than its
  * length (the path pattern looks for its list from every "segment" to the end of the text; an edit
@@ -711,7 +735,8 @@ export function aeListSuggestions(message: string): string[] {
     const ranked = rank(query, pool, (n) => [n], { limit: pool.length, normalize: stripAeVendor });
     const nearest = ranked[0];
     if (nearest === undefined) return [];
-    const nearestRepeats = repeated.has(nearest.item);
+    // Every name at the smallest distance decides, not just the one the tie-break put first.
+    const nearestRepeats = ranked.some((r) => r.distance === nearest.distance && repeated.has(r.item));
     return ranked
       .filter((r) => !repeated.has(r.item) && (!nearestRepeats || r.distance <= nearest.distance))
       .slice(0, 3)
@@ -1184,6 +1209,15 @@ export function setExpressionScript(compId: number, layerIndex: number, property
 /** The marker both the ES3 throw in applyEffectScript and the server's "did you mean" check use. */
 export const EFFECT_MISS = "Effect not available: ";
 
+/**
+ * The longest effect name ae_apply_effect takes, in UTF-16 units. After Effects' match and display
+ * names are a few dozen characters, so no real name comes near it. The miss path (withEffectSuggestions,
+ * the catalog's filtered read) folds and ranks no longer name: fold's NFC reorders a run of combining
+ * marks in time quadratic in its length (a 100K-unit name held the event loop for about 16 seconds), and no
+ * installed name could match one, since rank keeps only names within 30 % of the query's length.
+ */
+export const EFFECT_NAME_MAX = 1024;
+
 /** The Effect Parade lookup both effect builders open with (two lines at `indent`): a camera or light has none. */
 const effectParade = (indent: string): string =>
   `${indent}var fx = l.property("ADBE Effect Parade");\n` +
@@ -1357,6 +1391,8 @@ export class EffectCatalog {
   }
 
   private async readFiltered(requested: string, epoch: number): Promise<readonly InstalledEffect[]> {
+    // No installed name is near one this long (EFFECT_NAME_MAX): nothing to read, and nothing to fold.
+    if (requested.length > EFFECT_NAME_MAX) return [];
     const q = stripAeVendor(fold(requested));
     try {
       return parseEffects(await this.bridge.evaluate(filteredEffectsScript(q, suggestionThreshold(q)), { timeoutClass: "fast" }));
@@ -1377,7 +1413,8 @@ const EFFECT_NAME_RULES: EffectNameRules = { caseSensitive: EFFECT_NAMES_CASE_SE
 /**
  * ae_apply_effect's miss path: an installed effect After Effects refused gets a note; a display
  * name or a case slip gets the exact match name; a typo gets up to 3 close installed names.
- * Returns `error` unchanged for anything else, or when the installed list cannot be read now.
+ * Returns `error` unchanged for anything else, or when the installed list cannot be read now. A
+ * name longer than EFFECT_NAME_MAX is only compared exactly: it is never folded or ranked.
  */
 export async function withEffectSuggestions(catalog: EffectCatalog, error: unknown, requested: string, rules: EffectNameRules = EFFECT_NAME_RULES): Promise<unknown> {
   if (!(error instanceof ScriptError) || !error.message.startsWith(EFFECT_MISS)) return error;
@@ -1401,6 +1438,7 @@ export async function withEffectSuggestions(catalog: EffectCatalog, error: unkno
   }
   const byDisplay = effects.find((e) => e.displayName === requested);
   if (byDisplay !== undefined) return rules.displayNamesAccepted ? error.withDetails({ note: refused }) : passMatchName(byDisplay);
+  if (requested.length > EFFECT_NAME_MAX) return error;
   const folded = fold(requested);
   // A match name with a case slip: only the case rule applies.
   const caseMatch = effects.find((e) => fold(e.matchName) === folded);
@@ -2267,7 +2305,10 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
         matchName: z
           .string()
           .min(1)
-          .describe("Effect match name (e.g. 'ADBE Gaussian Blur 2') or display name (e.g. 'Gaussian Blur'). An unknown name fails with up to 3 close installed names."),
+          .max(EFFECT_NAME_MAX)
+          .describe(
+            `Effect match name (e.g. 'ADBE Gaussian Blur 2') or display name (e.g. 'Gaussian Blur'), at most ${EFFECT_NAME_MAX} characters. An unknown name fails with up to 3 close installed names.`,
+          ),
         name: z.string().min(1).optional().describe("Rename the effect once applied (e.g. a Slider Control named 'Speed'). Essential Graphics shows a control under this name."),
       },
     },
