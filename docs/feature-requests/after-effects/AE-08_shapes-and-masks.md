@@ -11,8 +11,8 @@ depends_on: [AE-05]
 # AE-08 — Shape and mask authoring
 
 ## Problem
-- `ae_add_shape` creates **one parametric shape per layer**: `kind` is `rectangle | ellipse | star | polygon` (`after-effects.ts:1160-1174`). No custom path, no second shape in the same layer, no gradients, trim paths, repeater, rounded-corner operator, or stroke options beyond width.
-- `ae_add_mask` supports only `rectangle | ellipse`; the vertices are hard-coded (`:417-422`). It cannot make a polygon or bezier mask, and it cannot edit a mask afterwards.
+- `ae_add_shape` creates **one parametric shape per layer**: `kind` is `rectangle | ellipse | star | polygon` (`AddShapeParams` and `addShapeScript` in `after-effects.ts`). No custom path, no second shape in the same layer, no gradients, trim paths, repeater, rounded-corner operator, or stroke options beyond width.
+- `ae_add_mask` supports only `rectangle | ellipse`; the vertices are hard-coded (`addMaskScript`). It cannot make a polygon or bezier mask, and it cannot edit a mask afterwards.
 - Shapes cannot be edited after creation. Changing a rectangle's size, roundness, or stroke needed a raw match-name path: `["ADBE Root Vectors Group","ADBE Vector Group","ADBE Vectors Group","ADBE Vector Shape - Rect","ADBE Vector Rect Size"]`.
 - Observed workaround: a custom arrow was drawn by adding a solid, adding a rectangle mask, and replacing its Mask Path with an expression `createPath([...],[],[],true)`.
 

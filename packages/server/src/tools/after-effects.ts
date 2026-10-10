@@ -59,12 +59,14 @@ const HELPERS = String.raw`
   // server's 1500-character cap and keeps its "what to do next" clause.
   var __BUDGET = 600;
   var __PATH_BUDGET = 300;
+  // A name as a message quotes it: quote and backslash escaped; every control character (C0, DEL,
+  // C1) and the line and paragraph separators a space; cut at 60 with "...".
   function __q(s) {
     var t = String(s), out = "", i, c;
     for (i = 0; i < t.length && i < 60; i++) {
       c = t.charCodeAt(i);
       if (c === 34 || c === 92) { out += "\\" + t.charAt(i); }
-      else if (c < 32 || c === 8232 || c === 8233) { out += " "; }
+      else if (c < 32 || (c > 126 && c < 160) || c === 8232 || c === 8233) { out += " "; }
       else { out += t.charAt(i); }
     }
     if (t.length > 60) { out += "..."; }
@@ -94,9 +96,12 @@ const HELPERS = String.raw`
     return "footage";
   }
   function __layerLabel(l) {
-    var k = "unknown kind";
+    // Only ever part of a message: a read that fails never replaces the failure being reported.
+    var n = "?", s = "(unreadable)", k = "unknown kind";
+    try { n = String(l.index); } catch (e) {}
+    try { s = __q(l.name); } catch (e) {}
     try { k = __kind(l); } catch (e) {}
-    return l.index + " " + __q(l.name) + " (" + k + ")";
+    return n + " " + s + " (" + k + ")";
   }
   function __layerList(comp, max) {
     var out = "", shown = 0, i, s;
@@ -155,16 +160,20 @@ const HELPERS = String.raw`
   // Groups whose children the user names, or whose children all share one match name (every shape
   // group is "ADBE Vector Group", every mask "ADBE Mask Atom"): listed by name whatever the caller passed.
   var __BY_NAME = { "ADBE Effect Parade": true, "ADBE Mask Parade": true, "ADBE Root Vectors Group": true, "ADBE Vectors Group": true, "ADBE Text Animators": true, "ADBE Text Selectors": true };
-  function __byName(g, segment) {
+  function __named(g) {
+    // In the fixed set, or an indexed group: the user names (and can rename) its children.
     var mn = "", indexed = false;
     try { mn = String(g.matchName); } catch (e) { mn = ""; }
     if (Object.prototype.hasOwnProperty.call(__BY_NAME, mn)) { return true; }
     try { indexed = g.propertyType === PropertyType.INDEXED_GROUP; } catch (e) { indexed = false; }
-    if (indexed) { return true; }
+    return indexed;
+  }
+  function __byName(g, segment) {
+    if (__named(g)) { return true; }
     // Otherwise answer in the caller's vocabulary: a match-name segment gets match names.
     return String(segment).substring(0, 5) !== "ADBE ";
   }
-  function __kids(g, max, byName) {
+  function __kids(g, max, byName, budget) {
     var names = [], n = 0, dup = false, i, j, s;
     try { n = g.numProperties; } catch (e) { n = 0; }
     if (!(n > 0)) { n = 0; }
@@ -176,37 +185,53 @@ const HELPERS = String.raw`
         names.push(s);
       }
     }
-    return { n: n, dup: dup, text: __list(names, n, __BUDGET) };
+    return { n: n, dup: dup, byName: byName, text: __list(names, n, budget ? budget : __BUDGET) };
   }
-  function __pick(k) {
-    if (k.dup) { return " \u2014 some of these names repeat, so a path cannot tell those apart; rename them in After Effects so each is unique, then pass one."; }
-    return " \u2014 use one of these names.";
+  function __pick(k, g) {
+    // Repeated names: the user can rename what __named covers; elsewhere the match names tell them apart.
+    if (!k.dup) { return " \u2014 use one of these names."; }
+    if (__named(g)) { return " \u2014 some of these names repeat, so a path cannot tell those apart; rename them in After Effects so each is unique, then pass one."; }
+    if (!k.byName) { return " \u2014 some of these names repeat, so a name reaches only the first of them; use one of these names."; }
+    return " \u2014 some of these names repeat, so a name cannot pick between them; pass the match name instead (the same list by match name: " + __kids(g, 20, false, __PATH_BUDGET).text + ").";
   }
   function __isLeaf(p) {
     try { return p.propertyType === PropertyType.PROPERTY; } catch (e) { return false; }
   }
+  function __isGroup(p) {
+    try { return typeof p.numProperties === "number"; } catch (e) { return false; }
+  }
+  function __pathHead(l) {
+    return "Property path not found on layer " + __layerLabel(l) + ": ";
+  }
   function __prop(layer, name, path) {
-    var p, q, i, only, at, mn, k, pmn, head;
+    var p, q, i, only, kind, at, mn, k, pmn, under;
     if (path !== null) {
       p = layer;
+      // __pathHead reads the layer's name and kind, so it is built only for a miss.
       for (i = 0; i < path.length; i++) {
-        head = "Property path not found on layer " + __layerLabel(layer) + ": ";
-        if (i > 0 && __isLeaf(p)) { throw new Error(head + __q(path[i - 1]) + " is a property, not a group, so nothing named " + __q(path[i]) + " is under it \u2014 end the path at " + __q(path[i - 1]) + "."); }
+        if (i > 0 && __isLeaf(p)) { throw new Error(__pathHead(layer) + __q(path[i - 1]) + " is a property, not a group, so nothing named " + __q(path[i]) + " is under it \u2014 end the path at " + __q(path[i - 1]) + "."); }
         q = null;
         try { q = p.property(path[i]); } catch (e) { q = null; }
         if (!q) {
           only = (i === 0 && Object.prototype.hasOwnProperty.call(__KIND_ROOTS, path[0])) ? __KIND_ROOTS[path[0]] : null;
-          if (only !== null && only !== __kind(layer)) { throw new Error(head + __q(path[0]) + " exists only on " + only + " layers \u2014 address a " + only + " layer (ae_get_comp lists each layer's kind)."); }
+          if (only !== null) {
+            kind = null;
+            try { kind = __kind(layer); } catch (e) { kind = null; }
+            if (kind !== null && kind !== only) { throw new Error(__pathHead(layer) + __q(path[0]) + " exists only on " + only + " layers \u2014 address a " + only + " layer (ae_get_comp lists each layer's kind)."); }
+          }
           at = i === 0 ? "at the top of the layer" : "under " + __list(path.slice(0, i), i, __PATH_BUDGET);
           k = __kids(p, i === 0 ? 20 : 10, __byName(p, path[i]));
           if (k.n === 0) {
             pmn = "";
             try { pmn = String(p.matchName); } catch (e) { pmn = ""; }
-            if (pmn === "ADBE Effect Parade") { throw new Error(head + "segment " + __q(path[i]) + " not found " + at + ", which is empty \u2014 the layer has no effects; apply one first (ae_apply_effect), or check the path."); }
-            if (pmn === "ADBE Mask Parade") { throw new Error(head + "segment " + __q(path[i]) + " not found " + at + ", which is empty \u2014 the layer has no masks; add one first (ae_add_mask), or check the path."); }
-            throw new Error(head + "segment " + __q(path[i]) + " not found " + at + ", which has nothing under it \u2014 " + (i > 0 ? "if " + __q(path[i - 1]) + " is the property you want, end the path there; otherwise " : "") + "check the path (ae_get_layer lists the layer's effects).");
+            if (pmn === "ADBE Effect Parade") { throw new Error(__pathHead(layer) + "segment " + __q(path[i]) + " not found " + at + ", which is empty \u2014 the layer has no effects; apply one first (ae_apply_effect), or check the path."); }
+            if (pmn === "ADBE Mask Parade") { throw new Error(__pathHead(layer) + "segment " + __q(path[i]) + " not found " + at + ", which is empty \u2014 the layer has no masks; add one first (ae_add_mask), or check the path."); }
+            under = i > 0 ? __q(path[i - 1]) : "the layer";
+            if (__isGroup(p)) { throw new Error(__pathHead(layer) + "segment " + __q(path[i]) + " not found " + at + ", which is an empty group \u2014 nothing can be addressed under " + under + " until something is added there; check the path."); }
+            // Not a group: only without PropertyType (__isLeaf cannot tell), where p may be the leaf the path should end at.
+            throw new Error(__pathHead(layer) + "segment " + __q(path[i]) + " not found " + at + ", which has nothing under it \u2014 " + (i > 0 ? "if " + under + " is the property you want, end the path there; otherwise " : "") + "check the path (ae_get_layer lists the layer's effects).");
           }
-          throw new Error(head + "segment " + __q(path[i]) + " not found " + at + "; children here: " + k.text + __pick(k));
+          throw new Error(__pathHead(layer) + "segment " + __q(path[i]) + " not found " + at + "; children here: " + k.text + __pick(k, p));
         }
         p = q;
       }
@@ -334,6 +359,27 @@ if (new RegExp(NON_ASCII_CLASS).test(HELPERS)) throw new Error("HELPERS must be 
 /** Built once at module load from the prelude; throws if a helper breaks the style rules. */
 const AE_HELPERS: readonly AeHelperRange[] = scanHelpers(AE_PRELUDE);
 
+/** What __q appends to a name it cut. */
+const CUT_MARK = "...";
+
+/** __q's cut length, read from its own source (one N in `i < N` and `.length > N`); throws when that cannot be read. */
+function nameCutOf(helpers: string): number {
+  const q = /\n {2}function __q\([\s\S]*?\n {2}\}\n/.exec(helpers)?.[0] ?? "";
+  const kept = /\bi < (\d+)/.exec(q)?.[1];
+  const marked = /\.length > (\d+)\)/.exec(q)?.[1];
+  if (kept === undefined || kept !== marked || !q.includes(`"${CUT_MARK}"`)) {
+    throw new Error(`HELPERS: __q must keep a name's first N characters and append "${CUT_MARK}" past N (i < N and .length > N, one N)`);
+  }
+  return Number(kept);
+}
+
+/**
+ * How many UTF-16 units of a name __q keeps before it cuts the rest and appends "...". Read from
+ * __q's source, so the number is typed once: a cut name can never resolve (aeListSuggestions drops
+ * it), and buildRuntime registers each long secret's prefix of this length for redaction.
+ */
+export const AE_NAME_CUT = nameCutOf(HELPERS);
+
 /** The shared helpers' script-line ranges (tests, AE-03). */
 export function aeHelperRanges(): readonly AeHelperRange[] {
   return AE_HELPERS;
@@ -393,13 +439,38 @@ export function aeExcerpt(script: string, bodyLine: number): string[] {
 /** Tools whose arguments are never echoed (raw script text). AE-01's ae_run_script goes here. */
 const AE_NO_ARG_ECHO: ReadonlySet<string> = new Set(["ae_run_script"]);
 
-/** What to say next when the host message does not (it has no " — "). */
+/**
+ * What to say next when the host message does not. Every throw the builders and helpers raise
+ * carries its own " — <next step>", so these reach only errors After Effects raised itself.
+ * A bad id, index or path always gets a helper's own message, so a host error inside a helper
+ * never blames the arguments.
+ */
 const AE_NEXT_STEP = {
   body: "check the values the line marked >>> uses (ae_get_comp and ae_get_layer show what exists), then retry",
-  helper: "check the ids, layer indexes and property path you passed (ae_list_compositions and ae_get_comp show what exists), then retry",
+  helper:
+    "After Effects itself refused an operation inside a shared helper (a bad id or path gets its own message); " +
+    "check the current state with ae_get_comp or ae_get_layer, then retry",
   outside: "the result held a value After Effects could not read; read it another way (for example ae_get_layer) or report the tool and its arguments",
   unknown: "check the arguments and retry; if it keeps failing, close and reopen the brainferno-mcp-bridge panel in After Effects",
 } as const;
+
+/** Helpers whose host failures have one likely cause: the next step for that cause. */
+const ANCHOR_NEXT =
+  "most likely the Anchor Point has keyframes, which After Effects will not overwrite: remove them with ae_remove_keyframes (property anchorPoint), then retry. " +
+  "What the call changed before this stays; one Ctrl-Z in After Effects undoes it";
+const AE_HELPER_NEXT: Readonly<Record<string, string>> = { __centerAnchor: ANCHOR_NEXT, __originAnchor: ANCHOR_NEXT };
+
+function aeNextStep(at: AeErrorLocation): string {
+  return at.kind === "helper" ? (AE_HELPER_NEXT[at.helper] ?? AE_NEXT_STEP.helper) : AE_NEXT_STEP[at.kind];
+}
+
+/** A double-quoted name or path in a host message (__q's quoting, or a host's own). */
+const QUOTED_SPAN = /"(?:[^"\\]|\\.)*"/g;
+
+/** Whether the host message already says what to do next: a " — " outside the names it quotes. */
+function saysNext(message: string): boolean {
+  return message.replace(QUOTED_SPAN, '""').includes(" — ");
+}
 
 /**
  * Adds AE-16's details to an After Effects ScriptError raised by `script`: where the line falls,
@@ -418,7 +489,7 @@ export function enrichAeError(error: unknown, script: string): unknown {
     ...(at.kind === "helper" ? { helper: at.helper } : {}),
     ...(call !== undefined ? { tool: call.tool, ...(call.args !== undefined ? { args: echoArgs(call.args) } : {}) } : {}),
     ...(names.length > 0 ? { suggestions: names.map((name) => ({ name })) } : {}),
-    ...(error.message.includes(" — ") ? {} : { next: AE_NEXT_STEP[at.kind] }),
+    ...(saysNext(error.message) ? {} : { next: aeNextStep(at) }),
   });
 }
 
@@ -440,10 +511,12 @@ const LIST_MISSES: readonly RegExp[] = [
   // setEffectParamScript: an effect, then a parameter, that is not there
   new RegExp(`: ${JSON_STRING}; effects on this layer: (?=\\[)`),
   new RegExp(`: ${JSON_STRING}; parameters: (?=\\[)`),
+  // queueRenderScript: a composition name that is not there
+  new RegExp(`^No composition named ${JSON_STRING}; compositions: (?=\\[)`),
 ];
 
-/** __q cuts names at 60 UTF-16 units and appends "...": such a name can never resolve. */
-const isCutName = (s: string): boolean => s.length === 63 && s.endsWith("...");
+/** __q cuts names at AE_NAME_CUT UTF-16 units and appends "...": such a name can never resolve. */
+const isCutName = (s: string): boolean => s.length === AE_NAME_CUT + CUT_MARK.length && s.endsWith(CUT_MARK);
 
 function parseJsonString(literal: string): string | null {
   try {
@@ -480,7 +553,17 @@ function readJsonStringArray(text: string, start: number): string[] | null {
   return null;
 }
 
-/** Ranks the names a host message lists against the name it could not find; [] when the message is not one of these misses or does not parse. */
+/** The names that appear once: a name that repeats in a list names several items, and a lookup by it reaches only the first. */
+function onlyUnique(names: readonly string[]): string[] {
+  const seen = new Map<string, number>();
+  for (const n of names) seen.set(n, (seen.get(n) ?? 0) + 1);
+  return names.filter((n) => seen.get(n) === 1);
+}
+
+/**
+ * Ranks the names a host message lists against the name it could not find, leaving out cut names
+ * and names that repeat in the list; [] when the message is not one of these misses or does not parse.
+ */
 export function aeListSuggestions(message: string): string[] {
   for (const re of LIST_MISSES) {
     const m = re.exec(message);
@@ -490,7 +573,7 @@ export function aeListSuggestions(message: string): string[] {
     if (query === null || names === null || /^\d+$/.test(query) || isCutName(query)) return [];
     return closestNames(
       query,
-      names.filter((n) => !isCutName(n)),
+      onlyUnique(names).filter((n) => !isCutName(n)),
       { limit: 3, normalize: stripAeVendor },
     );
   }
@@ -603,9 +686,9 @@ export function importAsCompScript(path: string, cropped: boolean, opts: ImportA
     var io = new ImportOptions(f);
     if (io.canImportAs(${want})) { io.importAs = ${want}; }
     else if (io.canImportAs(ImportAsType.COMP)) { io.importAs = ImportAsType.COMP; }
-    else { throw new Error("After Effects can't import this as a composition. Layered .psd works; an .ai must be RGB (not CMYK) and saved with PDF compatibility."); }
+    else { throw new Error("After Effects cannot import this file as a composition — pass a layered .psd, or an .ai saved in RGB (not CMYK) with PDF compatibility."); }
     var item = app.project.importFile(io);
-    if (!(item instanceof CompItem)) { throw new Error("Imported '" + item.name + "', but not as a composition — the file may have only one layer."); }
+    if (!(item instanceof CompItem)) { throw new Error("Imported " + __q(item.name) + " (id " + item.id + ") as footage, not as a composition, so the file may have only one layer — add that footage with ae_add_layer (kind footage, itemId " + item.id + "), or pass a layered .psd or .ai."); }
 ${timing}    var info = __compInfo(item);
     var layers = [];
     for (var i = 1; i <= item.numLayers; i++) { layers.push(__layerInfo(item.layer(i))); }
@@ -964,14 +1047,14 @@ export const EFFECT_MISS = "Effect not available: ";
 /** The Effect Parade lookup both effect builders open with (two lines at `indent`): a camera or light has none. */
 const effectParade = (indent: string): string =>
   `${indent}var fx = l.property("ADBE Effect Parade");\n` +
-  `${indent}if (!fx) { throw new Error("Layer " + __layerLabel(l) + " cannot have effects — address a footage, solid, text, shape, adjustment or precomp layer."); }`;
+  `${indent}if (!fx) { throw new Error("Layer " + __layerLabel(l) + " cannot have effects — address a footage, solid, text, shape, null, adjustment or precomp layer."); }`;
 
 export function applyEffectScript(compId: number, layerIndex: number, matchName: string, name?: string): string {
   return wrap(`
   var c = __comp(${num(compId)}); var l = __layer(c, ${num(layerIndex)});
   return __undo("Apply effect", function () {
 ${effectParade("    ")}
-    if (!fx.canAddProperty(${lit(matchName)})) { throw new Error(${lit(EFFECT_MISS)} + ${lit(matchName)} + " (layer " + __layerLabel(l) + ") — use an installed effect's match name, e.g. 'ADBE Gaussian Blur 2', or its display name."); }
+    if (!fx.canAddProperty(${lit(matchName)})) { throw new Error(${lit(EFFECT_MISS)} + __q(${lit(matchName)}) + " (layer " + __layerLabel(l) + ") — use an installed effect's match name, e.g. 'ADBE Gaussian Blur 2', or its display name."); }
     var e = fx.addProperty(${lit(matchName)});
 ${name !== undefined ? `    e.name = ${lit(name)};\n` : ""}
     var params = [];
@@ -994,7 +1077,7 @@ ${effectParade("  ")}
   if (!e) { var ek = __kids(fx, 20, true); throw new Error("Effect not found on layer " + __layerLabel(l) + ": " + __q(${eff}) + "; effects on this layer: " + ek.text + (ek.dup ? " — some names repeat; pass the effect's index (1 = first) instead." : " — pass one of these names, or the effect's index (1 = first).")); }
   var pp = null;
   try { pp = e.property(${lit(param)}); } catch (x) { pp = null; }
-  if (!pp) { var pk = __kids(e, 20, ${byName ? "true" : "false"}); throw new Error("Parameter not found on effect " + __q(e.name) + ": " + __q(${lit(param)}) + "; parameters: " + pk.text + __pick(pk)); }
+  if (!pp) { var pk = __kids(e, 20, ${byName ? "true" : "false"}); throw new Error("Parameter not found on effect " + __q(e.name) + ": " + __q(${lit(param)}) + "; parameters: " + pk.text + __pick(pk, e)); }
   return __undo("Set effect parameter", function () { pp.setValue(${v}); return { effect: e.name, param: pp.name, value: pp.value }; });`);
 }
 
@@ -1165,25 +1248,32 @@ export async function withEffectSuggestions(catalog: EffectCatalog, error: unkno
     return error;
   }
   const refused = "That effect is installed, but After Effects would not add it to this layer.";
+  const caseNote = "Names must match exactly, case included.";
+  /** A display name that is (or would be, once its case is right) refused: the match name to pass instead. */
+  const passMatchName = (e: InstalledEffect) =>
+    error.withDetails({
+      suggestions: [{ name: e.matchName, label: e.displayName }],
+      note: "That effect is installed; pass its match name — if that also fails, this layer cannot take it.",
+    });
   const byMatch = effects.find((e) => e.matchName === requested);
   if (byMatch !== undefined) {
     return error.withDetails({ note: `"${byMatch.matchName}" (${byMatch.displayName}) is installed, but After Effects would not add it to this layer.` });
   }
   const byDisplay = effects.find((e) => e.displayName === requested);
-  if (byDisplay !== undefined) {
-    return rules.displayNamesAccepted
-      ? error.withDetails({ note: refused })
-      : error.withDetails({
-          suggestions: [{ name: byDisplay.matchName, label: byDisplay.displayName }],
-          note: "That effect is installed; pass its match name — if that also fails, this layer cannot take it.",
-        });
-  }
+  if (byDisplay !== undefined) return rules.displayNamesAccepted ? error.withDetails({ note: refused }) : passMatchName(byDisplay);
   const folded = fold(requested);
-  const caseHit = effects.find((e) => fold(e.matchName) === folded || fold(e.displayName) === folded);
-  if (caseHit !== undefined) {
+  // A match name with a case slip: only the case rule applies.
+  const caseMatch = effects.find((e) => fold(e.matchName) === folded);
+  if (caseMatch !== undefined) {
     return rules.caseSensitive
-      ? error.withDetails({ suggestions: [{ name: caseHit.matchName, label: caseHit.displayName }], note: "Names must match exactly, case included." })
+      ? error.withDetails({ suggestions: [{ name: caseMatch.matchName, label: caseMatch.displayName }], note: caseNote })
       : error.withDetails({ note: refused });
+  }
+  // A display name with a case slip: the display-name rule decides first, then the case rule.
+  const caseDisplay = effects.find((e) => fold(e.displayName) === folded);
+  if (caseDisplay !== undefined) {
+    if (!rules.displayNamesAccepted) return passMatchName(caseDisplay);
+    return rules.caseSensitive ? error.withDetails({ suggestions: [{ name: caseDisplay.displayName }], note: caseNote }) : error.withDetails({ note: refused });
   }
   const ranked = rank(requested, effects, (e) => [e.matchName, e.displayName], { limit: 3, normalize: stripAeVendor });
   if (ranked.length === 0) return error;
@@ -1260,7 +1350,7 @@ export function addLayerStyleScript(compId: number, layerIndex: number, style: L
       try { mid = app.findMenuCommandId(${lit(menu.label)}); } catch (e) {}
       if (mid) { app.executeCommand(mid); added = __styleGroup(g, ${lit(key)}); }
     }
-    if (!added) { throw new Error("Could not add the ${style} layer style (menu command did not take; is the layer a camera or light?)."); }
+    if (!added) { throw new Error("Could not add the " + ${lit(style)} + " layer style to layer " + __layerLabel(l) + ": the Layer Styles menu command did not take — close any open dialog in After Effects and retry; if it keeps failing, add the style from the Layer menu (Layer Styles) in After Effects."); }
     try { added.enabled = true; } catch (e) {}
     return { style: ${lit(style)}, matchName: added.matchName, params: __styleParams(added) };
   });`);
@@ -1285,11 +1375,13 @@ export function setLayerStyleParamScript(compId: number, layerIndex: number, sty
   // Hex colors become AE's [r, g, b, a] 0–1 arrays; other strings pass through.
   const hexMatch = typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value);
   const v = hexMatch ? `${rgb(value as string).slice(0, -1)}, 1]` : typeof value === "string" ? lit(value) : Array.isArray(value) ? `[${value.map(num).join(", ")}]` : num(value);
+  // The parameter list answers in the caller's vocabulary: match names ("dropShadow/blur") hold a slash.
+  const byName = !param.includes("/");
   return wrap(`
   var c = __comp(${num(compId)}); var l = __layer(c, ${num(layerIndex)});
   var g = __styles(l);
   var s = __styleGroup(g, ${lit(key)});
-  if (!s) { throw new Error("The ${style} style is not on this layer. Call ae_add_layer_style first."); }
+  if (!s) { throw new Error("The " + ${lit(style)} + " style is not on layer " + __layerLabel(l) + " — add it first with ae_add_layer_style."); }
   var q = null;
   var want = ${lit(param)};
   var wl = want.toLowerCase();
@@ -1298,9 +1390,8 @@ export function setLayerStyleParamScript(compId: number, layerIndex: number, sty
     if (cand.matchName === want || String(cand.name).toLowerCase() === wl) { q = cand; break; }
   }
   if (!q) {
-    var names = [];
-    for (var j = 1; j <= s.numProperties; j++) { names.push(s.property(j).name); }
-    throw new Error("No parameter " + want + " on " + s.name + ". Parameters: " + names.join(", "));
+    var pk = __kids(s, 20, ${byName ? "true" : "false"});
+    throw new Error("Parameter not found on the " + ${lit(style)} + " style of layer " + __layerLabel(l) + ": " + __q(want) + "; parameters: " + pk.text + (pk.dup ? " — some of these names repeat; pass the parameter's match name instead (ae_get_layer_styles lists them)." : " — use one of these names."));
   }
   return __undo("Set layer style parameter", function () { q.setValue(${v}); return { style: ${lit(style)}, param: q.name, matchName: q.matchName, value: q.value }; });`);
 }
@@ -1314,7 +1405,7 @@ export function removeLayerStyleScript(compId: number, layerIndex: number, style
   var c = __comp(${num(compId)}); var l = __layer(c, ${num(layerIndex)});
   var g = __styles(l);
   var s = __styleGroup(g, ${lit(key)});
-  if (!s) { throw new Error("The ${style} style is not on this layer."); }
+  if (!s) { throw new Error("The " + ${lit(style)} + " style is not on layer " + __layerLabel(l) + " — nothing to turn off; ae_get_layer_styles lists the styles on this layer."); }
   return __undo("Turn off layer style", function () { s.enabled = false; return { style: ${lit(style)}, enabled: false }; });`);
 }
 
@@ -1333,11 +1424,11 @@ export function addToEssentialGraphicsScript(compId: number, layerIndex: number,
   var c = __comp(${num(compId)}); var l = __layer(c, ${num(layerIndex)});
   var prop = __prop(l, ${lit(property)}, ${path});
   if (!prop.canAddToMotionGraphicsTemplate(c)) {
-    throw new Error("'" + prop.name + "' cannot be added to Essential Graphics — either its type is not supported or a control with that name is already there.");
+    throw new Error("Property " + __q(prop.name) + " of layer " + __layerLabel(l) + " cannot be added to Essential Graphics: its type is not supported, or the panel already has a control with that name — pass another property (a transform channel, sourceText or an effect control), or rename that control in the Essential Graphics panel, then retry.");
   }
   return __undo("Add to Essential Graphics", function () {
     var ok = prop.addToMotionGraphicsTemplate(c);
-    if (!ok) { throw new Error("After Effects refused to add '" + prop.name + "' to the Essential Graphics panel."); }
+    if (!ok) { throw new Error("After Effects refused to add " + __q(prop.name) + " to the Essential Graphics panel of " + __q(c.name) + " — check that panel in After Effects, then retry or pass another property."); }
     var count = c.motionGraphicsTemplateControllerCount;
     var names = [];
     for (var i = 1; i <= count; i++) { names.push(c.getMotionGraphicsTemplateControllerName(i)); }
@@ -1355,7 +1446,7 @@ export function addToEssentialGraphicsScript(compId: number, layerIndex: number,
 export function exportMogrtScript(compId: number, folder: string, name: string, overwrite: boolean): string {
   return wrap(`
   var c = __comp(${num(compId)});
-  if (!app.project.file) { throw new Error("Save the After Effects project first (ae_save_project) — exporting a Motion Graphics template needs a saved project."); }
+  if (!app.project.file) { throw new Error("The project has never been saved, and exporting a Motion Graphics template needs a saved project — save it first with ae_save_project (pass a path ending in .aep), then retry."); }
   var fo = new Folder(${lit(folder)});
   if (!fo.exists) { fo.create(); }
   c.motionGraphicsTemplateName = ${lit(name)};
@@ -1376,7 +1467,7 @@ export function exportMogrtScript(compId: number, folder: string, name: string, 
   }
   var outPath = ${lit(folder)} + "/" + ${lit(name)} + ".mogrt";
   var f = new File(outPath);
-  if (!f.exists) { throw new Error("After Effects did not write the .mogrt (export returned " + ok + "). Does the file already exist without overwrite, or is the folder writable? " + outPath); }
+  if (!f.exists) { throw new Error("After Effects did not write " + outPath + " (export returned " + ok + ") — if that file already exists, pass overwrite: true; otherwise pass a folder you can write to, then retry."); }
   return { compName: compName, name: ${lit(name)}, outputPath: outPath, controllerCount: controllers };`);
 }
 
@@ -1451,7 +1542,13 @@ export function queueRenderScript(compName: string, outputPath: string, template
   return wrap(`
   var target = null;
   for (var i = 1; i <= app.project.numItems; i++) { var item = app.project.item(i); if (item instanceof CompItem && item.name === ${lit(compName)}) { target = item; break; } }
-  if (target === null) { throw new Error("No composition named " + ${lit(compName)}); }
+  if (target === null) {
+    // The names this tool takes, as a list aeListSuggestions reads (up to 20, cut by length).
+    var names = [], n = 0;
+    for (var j = 1; j <= app.project.numItems; j++) { var it = app.project.item(j); if (it instanceof CompItem) { n++; if (names.length < 20) { names.push(it.name); } } }
+    if (n === 0) { throw new Error("No composition named " + __q(${lit(compName)}) + "; the project has no compositions — create one with ae_create_comp, then queue it."); }
+    throw new Error("No composition named " + __q(${lit(compName)}) + "; compositions: " + __list(names, n, __BUDGET) + " — pass one of these names exactly (ae_list_compositions lists them all).");
+  }
   return __undo("Queue render", function () {
     var rqItem = app.project.renderQueue.items.add(target);
     var output = rqItem.outputModule(1);
@@ -1493,7 +1590,10 @@ async function waitForFile(path: string, timeoutMs: number): Promise<void> {
     }
     await new Promise((r) => setTimeout(r, 150));
   }
-  throw new Error(`After Effects did not finish writing ${path} within ${Math.round(timeoutMs / 1000)}s. Is "Allow Scripts to Write Files and Access Network" enabled in Preferences > Scripting & Expressions?`);
+  throw new Error(
+    `After Effects did not finish writing ${path} within ${Math.round(timeoutMs / 1000)}s — turn on "Allow Scripts to Write Files and Access Network" ` +
+      "in After Effects (Preferences > Scripting & Expressions) if it is off, then retry.",
+  );
 }
 
 function runAerender(exe: string, args: string[], timeoutMs: number, signal?: AbortSignal, onLine?: (line: string) => void): Promise<{ code: number | null; tail: string }> {
@@ -1516,7 +1616,7 @@ function runAerender(exe: string, args: string[], timeoutMs: number, signal?: Ab
     child.stderr.on("data", keep);
     const timer = setTimeout(() => {
       child.kill();
-      reject(new Error(`aerender did not finish within ${Math.round(timeoutMs / 1000)}s`));
+      reject(new Error(`aerender did not finish within ${Math.round(timeoutMs / 1000)}s — queue the composition with ae_queue_render and render it in After Effects instead.`));
     }, timeoutMs);
     const onAbort = () => {
       child.kill();
@@ -1550,19 +1650,23 @@ export interface RenderCompOptions {
 export async function renderCompHeadless(bridge: AppBridge, o: RenderCompOptions, ctx: { signal?: AbortSignal; log?: (line: string) => void } = {}): Promise<{ outputPath: string; compName: string; log: string }> {
   const info = (await evaluateAe(bridge, saveProjectScript(undefined), { timeoutClass: "slow" })) as { path?: string };
   const meta = (await evaluateAe(bridge, AERENDER_INFO, { timeoutClass: "fast" })) as { projectPath: string | null; appFolder: string; isWindows: boolean };
-  if (!info.path || !meta.projectPath) throw new Error("Project has no file. Save it first with ae_save_project.");
+  if (!info.path || !meta.projectPath) throw new Error("The project has no file — save it first with ae_save_project (pass a path ending in .aep), then retry.");
   const exe = aerenderExecutable(meta.appFolder, meta.isWindows);
   try {
     await stat(exe);
   } catch {
-    throw new Error(`aerender not found at ${exe}`);
+    throw new Error(`aerender not found at ${exe} — check that After Effects is fully installed (aerender ships with it), or queue the composition with ae_queue_render instead.`);
   }
   const args = ["-project", meta.projectPath, "-comp", o.compName, "-output", o.outputPath];
   if (o.outputModule) args.push("-OMtemplate", o.outputModule);
   if (o.renderSettings) args.push("-RStemplate", o.renderSettings);
   log.info(`aerender ${args.join(" ")}`);
   const { code, tail } = await runAerender(exe, args, 30 * 60_000, ctx.signal, ctx.log);
-  if (code !== 0) throw new Error(`aerender exited with ${code}:\n${tail.slice(-1500)}`);
+  if (code !== 0) {
+    throw new Error(
+      `aerender exited with ${code} — check compName and the outputModule and renderSettings template names against the project, then retry. Its output ends:\n${tail.slice(-1500)}`,
+    );
+  }
   return { outputPath: o.outputPath, compName: o.compName, log: tail.slice(-600) };
 }
 
@@ -2045,7 +2149,12 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
         layerIndex,
         effect: z.union([z.number().int().min(1), z.string().min(1)]).describe("Effect index (from ae_apply_effect / ae_get_layer) or name."),
         param: z.string().min(1).describe("Parameter display name or match name, e.g. 'Blurriness'."),
-        value: z.union([z.number(), z.array(z.number()), z.string()]),
+        value: z
+          .union([z.number(), z.array(z.number()), z.string()])
+          .describe(
+            "The new value: a number (a slider, angle or opacity; a checkbox as 1 or 0; a menu as its item number, 1 = first), " +
+              "an array of numbers (a point as [x, y] or [x, y, z]; a color as [r, g, b] with each channel 0–1), or a string (a text parameter).",
+          ),
       },
     },
     async ({ compId: id, layerIndex: li, effect, param, value }) => run(setEffectParamScript(id, li, effect, param, value)),

@@ -66,11 +66,18 @@ Every tool goes through `server.registerTool` in its app's
 ```ts
 server.registerTool(
   "ae_project_info",
-  { title, description, inputSchema: { /* zod raw shape */ }, annotations: { readOnlyHint: true } },
-  async (args) => guard(async () => jsonResult(await bridge.evaluate(SCRIPT))),
+  { title, description, inputSchema: {}, annotations: { readOnlyHint: true } },
+  async () => guard(async () => jsonResult(await evaluateAe(bridge, PROJECT_INFO, { timeoutClass: "fast" }))),
 );
 ```
 
+- After Effects (AE-16): a tool's scripts go through `evaluateAe`, not `bridge.evaluate` — in
+  its own `guard()`, in a job step and in a pipeline step alike — and the tool registers on
+  the `server` that `registerAfterEffectsTools` builds with
+  `withToolContext(mcp, { noArgs: AE_NO_ARG_ECHO })` (`tools/call-context.ts`). A script error
+  then names the tool and its arguments, where its line falls and the code around it. The
+  file's `run(script, opts)` is the callback above in short. A tool whose arguments must never
+  be echoed (raw script text, such as AE-01's `ae_run_script`) goes in `AE_NO_ARG_ECHO`.
 - Zod schemas: every parameter carries `.describe()`. Optional params state
   their default in the description.
 - Tools are registered unconditionally — a closed app returns the actionable
@@ -94,16 +101,17 @@ server.registerTool(
 
 `guard()` converts typed bridge failures (`AppNotConnectedError`, `ScriptError`,
 timeouts, and `AppDisconnectedError` — a panel that dropped mid-call, which reads as "it may
-have partly run" plus how to reconnect) into readable tool errors. Error text always says
-what happened **and what to do next**; for expected failures
-`throw new Error("<what happened> — <what to do next>")`. (Earlier drafts planned a code
-prefix such as `SCRIPT_ERROR:`; that was not adopted — the actionable message is the contract.) Two kinds of tool errors carry JSON: failed
-or cancelled jobs (the job view from `jobResult` in tools/jobs.ts) and the raw-script tools,
-where JSON-versus-plain-text is the dispatch signal (see the next section).
+have partly run" plus how to reconnect) into readable tool errors; a failed job step gets the
+same disconnect text (`jobErrorMessage`). Error text always says what happened **and what to
+do next**; for expected failures `throw new Error("<what happened> — <what to do next>")`.
+(Earlier drafts planned a code prefix such as `SCRIPT_ERROR:`; that was not adopted — the
+actionable message is the contract.) Two kinds of tool errors carry JSON: failed or cancelled
+jobs (the job view from `jobResult` in tools/jobs.ts) and the raw-script tools, where
+JSON-versus-plain-text is the dispatch signal (see the next section).
 
 A `ScriptError` keeps the host's text in `message`, unchanged — raw-script envelopes and the
-`NO_RESULT_MESSAGE` check depend on it. Context goes in its optional `details`: the panel's wire
-`code`, and, where an app enriches it (After Effects, AE-16), where the line falls
+`NO_RESULT_MESSAGE` check depend on it. Context goes in its optional `details`: the panel's
+wire `code`, and, where an app enriches it (After Effects, AE-16), where the line falls
 (`body`/`helper`/`outside`), the tool, a capped and redacted echo of its arguments, a code
 excerpt and "did you mean" names. `guard()` and failed job steps render them with
 `scriptErrorText` (tools/result.ts) as one plain-text paragraph; an error no app enriched (no

@@ -11,7 +11,7 @@ import { IllustratorDelegate } from "./drivers/illustrator-delegate.js";
 import { OsScriptBridge } from "./drivers/osscript.js";
 import { JobRegistry } from "./jobs.js";
 import { log, setLogLevel } from "./logging.js";
-import { registerAfterEffectsTools } from "./tools/after-effects.js";
+import { AE_NAME_CUT, registerAfterEffectsTools } from "./tools/after-effects.js";
 import { registerAudioTools, type AudioToolOptions } from "./tools/audio.js";
 import { registerAuditionTools } from "./tools/audition.js";
 import { registerDiagnosticTools } from "./tools/diagnostics.js";
@@ -67,8 +67,9 @@ export function buildRuntime(config: Config): Runtime {
     handshakeFilePath: config.handshakeFilePath,
     allowedOrigins: config.allowedOrigins,
   });
-  // Error text AE-16 echoes (arguments, code excerpts, host messages) never carries these.
-  setRedactionSecrets([config.bridgeToken, config.httpToken, config.illustratorMcpKey, ...bridge.redactionSecrets()]);
+  // Error text AE-16 echoes (arguments, code excerpts, host messages) never carries these, nor the
+  // prefix of one that After Effects cut where it listed it as a name.
+  setRedactionSecrets([config.bridgeToken, config.httpToken, config.illustratorMcpKey, ...bridge.redactionSecrets()], { cut: AE_NAME_CUT });
   const illustratorBridge = new OsScriptBridge({ appId: "illustrator", defaultTimeoutMs: config.evalTimeoutMs, target: config.illustratorApp });
   const illustratorDelegate = new IllustratorDelegate({ url: config.illustratorMcpUrl, token: config.illustratorMcpKey });
   // Job work folders sit beside the handshake file (~/.brainferno-mcp-bridge/work/<jobId>/).

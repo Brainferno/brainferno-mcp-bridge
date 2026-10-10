@@ -144,6 +144,45 @@ describe("scriptErrorText (AE-16)", () => {
     const long = scriptErrorText(new ScriptError("after_effects", "x".repeat(2000), 5, { where: "unknown" }));
     expect(long).toBe(`Script failed in After Effects: ${"x".repeat(1500)}\u2026(+500 chars)`);
   });
+
+  it("redacts before it reflows: a secret holding a tab is still found in the message, note and suggestions (R8)", () => {
+    const secret = "abc\tDEFghijkl";
+    setRedactionSecrets([secret]);
+    const e = new ScriptError("after_effects", `Unable to find "${secret}" here`, 5, {
+      where: "unknown",
+      suggestions: [{ name: secret, label: `the ${secret} one` }],
+      note: `note ${secret}`,
+    });
+    const text = scriptErrorText(e);
+    expect(text).not.toContain("DEFghijkl");
+    expect(text).toBe('Script failed in After Effects: Unable to find "[redacted]" here Did you mean "[redacted]" (the [redacted] one)? note [redacted]');
+  });
+
+  it("escapes a suggestion name the way the host lists do, so a quote in it cannot fake another name (R9)", () => {
+    const vinyl = new ScriptError("after_effects", "m", 9, { where: "unknown", suggestions: [{ name: 'Vinyl 12" Label' }] });
+    expect(scriptErrorText(vinyl)).toBe('Script failed in After Effects: m Did you mean "Vinyl 12\\" Label"?');
+    const fake = new ScriptError("after_effects", "m", 9, { where: "unknown", suggestions: [{ name: 'Lower Third Background" or "Box' }] });
+    expect(scriptErrorText(fake)).toBe('Script failed in After Effects: m Did you mean "Lower Third Background\\" or \\"Box"?');
+    const slash = new ScriptError("after_effects", "m", 9, { where: "unknown", suggestions: [{ name: "a\\b\nc" }] });
+    expect(scriptErrorText(slash)).toBe('Script failed in After Effects: m Did you mean "a\\\\b c"?');
+  });
+
+  it("keeps a label in parentheses when it nests cleanly, quotes it when it does not, and caps it (R9)", () => {
+    const legacy = new ScriptError("after_effects", "m", 9, { where: "unknown", suggestions: [{ name: "ADBE Gaussian Blur", label: "Gaussian Blur (Legacy)" }] });
+    expect(scriptErrorText(legacy)).toBe('Script failed in After Effects: m Did you mean "ADBE Gaussian Blur" (Gaussian Blur (Legacy))?');
+    const breakout = new ScriptError("after_effects", "m", 9, { where: "unknown", suggestions: [{ name: "A", label: 'Blur) or "Fake" (x' }] });
+    expect(scriptErrorText(breakout)).toBe('Script failed in After Effects: m Did you mean "A" ("Blur) or \\"Fake\\" (x")?');
+    const quote = new ScriptError("after_effects", "m", 9, { where: "unknown", suggestions: [{ name: "A", label: '12" Vinyl' }] });
+    expect(scriptErrorText(quote)).toBe('Script failed in After Effects: m Did you mean "A" ("12\\" Vinyl")?');
+    const long = new ScriptError("after_effects", "m", 9, { where: "unknown", suggestions: [{ name: "A", label: "L".repeat(200) }] });
+    expect(scriptErrorText(long)).toBe(`Script failed in After Effects: m Did you mean "A" (${"L".repeat(80)}\u2026(+120 chars))?`);
+  });
+
+  it("redacts a suggestion's label (K3)", () => {
+    setRedactionSecrets(["configured-secret-value"]);
+    const e = new ScriptError("after_effects", "m", 9, { where: "unknown", suggestions: [{ name: "A", label: "x configured-secret-value y" }] });
+    expect(scriptErrorText(e)).toBe('Script failed in After Effects: m Did you mean "A" (x [redacted] y)?');
+  });
 });
 
 describe("guard and jobErrorMessage (AE-16)", () => {
@@ -182,6 +221,13 @@ describe("guard and jobErrorMessage (AE-16)", () => {
     );
     expect(jobErrorMessage(new ScriptError("premiere", "panel does not implement pp.x", undefined, { code: "UNKNOWN_COMMAND" }))).toMatch(
       /^The Premiere Pro panel does not support this command \(panel does not implement pp\.x\) \u2014 it is older than this server/,
+    );
+  });
+
+  it("jobErrorMessage: a panel that dropped during a step reads as guard() says it (R5)", () => {
+    expect(jobErrorMessage(new AppDisconnectedError("premiere", "socket closed"))).toBe(
+      'The "premiere" panel disconnected before the command completed (socket closed) \u2014 it may have partly run; check Premiere Pro, ' +
+        "reconnect the brainferno-mcp-bridge panel (cc_connected_apps shows when it is back), then retry.",
     );
   });
 });

@@ -7,8 +7,9 @@
  *    the configured secrets, Bearer credentials and Illustrator keys.
  *  - `redact` (R1-R4) for echoed arguments and code excerpts: also any long opaque run that
  *    mixes letters and digits and is not a path segment.
- * Redaction always runs on the full text before any cut, so a cut never leaves a fragment of a
- * secret that would no longer match. Never redact by argument name (`keys` is a real argument).
+ * Redaction always runs on the full text before any cut or reflow (oneLine), so neither leaves a
+ * fragment of a secret that would no longer match. Never redact by argument name (`keys` is a real
+ * argument).
  */
 
 import { jsStringLiteral } from "../bridge/script-escape.js";
@@ -22,21 +23,47 @@ const MIN_SECRET_LENGTH = 8;
 const REDACTED = "[redacted]";
 let secrets: string[] = [];
 
+/** C0 and C1 control characters (tab, line feed, VT, FF, NEL, ESC, CSI, …) and U+2028/U+2029. */
+const CONTROL_CLASS = "[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]";
+
+export interface RedactionOptions {
+  /**
+   * The length (UTF-16 units) at which a host cuts the names it quotes (After Effects' __q:
+   * AE_NAME_CUT). A secret longer than that is also registered by its first `cut` units, in every
+   * form, so a secret used as a project item name cannot leak its prefix where the host cut it.
+   */
+  readonly cut?: number;
+}
+
 /**
  * Process-wide exact-match secrets (bridge token, httpToken, Illustrator key), set once in
- * buildRuntime like setPreviewMode. Short values (< 8) are ignored. Each secret is registered with
- * its escaped forms too (jsStringLiteral's inner text and JSON's inner text), so a secret holding
- * `"`, `\` or a control character is still found where text was escaped.
+ * buildRuntime like setPreviewMode. Short values (< 8) are ignored. Each secret is registered in
+ * every form it can take in error text: raw; jsStringLiteral's and JSON's inner text (a secret
+ * holding `"`, `\` or a control character is still found where text was escaped); and blanked, the
+ * way a host's name quoting writes it (`"` and `\` escaped, every control character a space).
  */
-export function setRedactionSecrets(values: readonly (string | undefined)[]): void {
+export function setRedactionSecrets(values: readonly (string | undefined)[], options: RedactionOptions = {}): void {
   const all = new Set<string>();
-  for (const v of values) {
-    if (typeof v !== "string" || v.length < MIN_SECRET_LENGTH) continue;
+  const add = (v: string): void => {
+    if (v.length < MIN_SECRET_LENGTH) return;
     all.add(v);
     all.add(jsStringLiteral(v).slice(1, -1));
     all.add(JSON.stringify(v).slice(1, -1));
+    all.add(blanked(v));
+  };
+  for (const v of values) {
+    if (typeof v !== "string") continue;
+    add(v);
+    if (options.cut !== undefined && v.length >= MIN_SECRET_LENGTH && v.length > options.cut) add(v.slice(0, options.cut));
   }
   secrets = [...all].sort((a, b) => b.length - a.length);
+}
+
+const CONTROL_CHAR = new RegExp(CONTROL_CLASS, "g");
+
+/** A value as a host's name quoting writes it (After Effects' __q): `"` and `\` escaped, every control character a space. */
+function blanked(v: string): string {
+  return v.replace(/["\\]/g, "\\$&").replace(CONTROL_CHAR, " ");
 }
 
 /** R1: every configured secret and its escaped forms, longest first. */
@@ -69,9 +96,19 @@ export function redact(text: string): string {
   });
 }
 
-/** Every line break (and tab), with the whitespace around it, becomes one space. */
+/** A run of control characters with the whitespace around it. */
+const CONTROL_RUN = new RegExp(`\\s*${CONTROL_CLASS}+\\s*`, "g");
+/** Bidi embeddings, overrides and isolates: they reorder how the text after them is shown. */
+const BIDI_CONTROL = /[\u202a-\u202e\u2066-\u2069]/g;
+
+/**
+ * One paragraph: every line break and every other control character (tab, VT, FF, NEL, ESC, CSI,
+ * U+2028, U+2029, any C0 or C1), with the whitespace around it, becomes one space, and bidi
+ * overrides are dropped, so text a host or a project supplied cannot start a new line, drive a
+ * terminal or reorder what follows it. Redact before calling this: it changes the text.
+ */
 export function oneLine(text: string): string {
-  return text.replace(/\s*(?:\r\n|[\r\n\u2028\u2029\t])\s*/g, " ");
+  return text.replace(CONTROL_RUN, " ").replace(BIDI_CONTROL, "");
 }
 
 /** Cut to `max` code points; a cut text ends "…(+N chars)" (N code points dropped). */

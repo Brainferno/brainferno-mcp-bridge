@@ -12,7 +12,7 @@ depends_on: []
 
 ## Problem
 A client that creates comps during automation cannot clean up or organize them.
-- No tool deletes a composition, footage item, or folder. The only `.remove()` calls in `after-effects.ts` act on layers (line ~491) and the temporary preview comp (~847).
+- No tool deletes a composition, footage item, or folder. The only `.remove()` calls in `after-effects.ts` act on layers (`deleteLayerScript`) and the temporary preview comp (`renderFrameScript`).
 - No tool creates folders or moves items. A search for `addFolder`, `parentFolder`, and `FolderItem` in `after-effects.ts` finds nothing.
 - Comps can be renamed through `ae_set_comp_props`, but footage and folders cannot.
 - No tool duplicates a composition.

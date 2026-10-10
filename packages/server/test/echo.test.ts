@@ -59,6 +59,35 @@ describe("redact (R1-R4: echoed arguments and code excerpts)", () => {
     expect(redact(`json ${JSON.stringify(secret)} end`)).toBe('json "[redacted]" end');
   });
 
+  it("R1: finds a secret with a control character where a host quoting turned it into a space", () => {
+    setRedactionSecrets(["abc\tDEFghijkl"]);
+    expect(redactKnown('Unable to find "abc DEFghijkl" here')).toBe('Unable to find "[redacted]" here');
+  });
+
+  it("R1 with a cut length: a long secret's cut prefix is redacted too, raw, escaped and blanked (K2)", () => {
+    setRedactionSecrets([HEX64], { cut: 60 });
+    const cut = `${HEX64.slice(0, 60)}...`;
+    expect(redactKnown(`No composition with id 9; the project has 1: 12 "${cut}"`)).toBe('No composition with id 9; the project has 1: 12 "[redacted]..."');
+    expect(redactKnown(`whole ${HEX64}`)).toBe("whole [redacted]");
+    expect(redactKnown(`shorter ${HEX64.slice(0, 59)}`)).toBe(`shorter ${HEX64.slice(0, 59)}`);
+
+    const quoted = `pa"ss\\word\t${"q".repeat(60)}`;
+    setRedactionSecrets([quoted], { cut: 60 });
+    const prefix = quoted.slice(0, 60);
+    expect(redactKnown(`raw ${prefix}...`)).toBe("raw [redacted]...");
+    expect(redactKnown(`json ${JSON.stringify(prefix).slice(1, -1)}...`)).toBe("json [redacted]...");
+    expect(redactKnown(`blanked ${prefix.replace(/["\\]/g, "\\$&").replace("\t", " ")}...`)).toBe("blanked [redacted]...");
+  });
+
+  it("R1 with a cut length: only a secret longer than the cut adds its prefix, and never a short one", () => {
+    setRedactionSecrets(["configured-secret-value"], { cut: 60 });
+    expect(redactKnown("configured-secret-valu")).toBe("configured-secret-valu");
+    setRedactionSecrets(["configured-secret-value"], { cut: 10 });
+    expect(redactKnown("configured...")).toBe("[redacted]...");
+    setRedactionSecrets(["configured-secret-value"], { cut: 4 });
+    expect(redactKnown("conf...")).toBe("conf...");
+  });
+
   it("R2: redacts only a credential-shaped Bearer value (M14)", () => {
     expect(redact("The ring bearer walks in")).toBe("The ring bearer walks in");
     expect(redact("Bearer abc")).toBe("Bearer abc");
@@ -180,7 +209,15 @@ describe("excerptLine (X1-X5)", () => {
 describe("oneLine and capCodePoints", () => {
   it("collapses every kind of line break (and tabs) with the spaces around it", () => {
     expect(oneLine("a\r\nb \n  c\u2028d\u2029e\tf\rg")).toBe("a b c d e f g");
+    expect(oneLine("a\vb \f c\u0085d")).toBe("a b c d");
     expect(oneLine("no breaks")).toBe("no breaks");
+  });
+
+  it("turns every other C0 and C1 control into a space and drops bidi overrides (R10)", () => {
+    expect(oneLine("a\u001bb\u009bc\u007fd\u0000e")).toBe("a b c d e");
+    expect(oneLine("a\u001b[2Jb")).toBe("a [2Jb");
+    expect(oneLine("x\u202ey\u2066z\u2069")).toBe("xyz");
+    expect(oneLine("Caf\u00e9 \u2014 \u00a0ok")).toBe("Caf\u00e9 \u2014 \u00a0ok");
   });
 
   it("cuts by code points and says how many were dropped", () => {

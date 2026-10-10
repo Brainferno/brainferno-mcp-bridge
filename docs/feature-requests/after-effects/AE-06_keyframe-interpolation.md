@@ -11,7 +11,7 @@ depends_on: []
 # AE-06 — Keyframe interpolation control
 
 ## Problem
-`ae_set_keyframes` accepts keys as `{ time, value, easy? }` (`after-effects.ts:1299`). `easy: true` applies `new KeyframeEase(0, 33.3333)` to both sides of the key (`:515-520`). Nothing else is controllable:
+`ae_set_keyframes` accepts keys as `{ time, value, easy? }` (`KeyframeParams` and the `ae_set_keyframes` registration in `after-effects.ts`). `easy: true` applies `new KeyframeEase(0, 33.3333)` to both sides of the key (`setKeyframesScript`). Nothing else is controllable:
 - **No hold (stepped) keys.** A client needing values that step (a counter, a text index) faked hold with two keys one frame apart, or used an expression.
 - **No ease-out-only or ease-in-only.** Only symmetric Easy Ease.
 - **No speed or influence**, no linear or bezier choice per side, no spatial tangents for motion paths.

@@ -227,7 +227,7 @@ export class JobRegistry {
           job.status = "cancelled";
           break;
         }
-        // An enriched After Effects ScriptError (AE-16) or an UNKNOWN_COMMAND keeps its full text; anything else its message.
+        // guard()'s text for a dropped panel, an enriched After Effects ScriptError (AE-16) or an UNKNOWN_COMMAND; anything else its message.
         const message = jobErrorMessage(e);
         step.status = "failed";
         step.error = message;

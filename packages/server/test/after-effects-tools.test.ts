@@ -41,7 +41,7 @@ import {
   setLayerStyleParamScript,
   setTextScript,
 } from "../src/tools/after-effects.js";
-import { es3Violations } from "./es3.js";
+import { es3Violations, es5Calls } from "./es3.js";
 
 const SAMPLES: Record<string, string> = {
   LIST_COMPOSITIONS,
@@ -88,6 +88,8 @@ const SAMPLES: Record<string, string> = {
   getStyles: getLayerStylesScript(12, 2),
   styleParam: setLayerStyleParamScript(12, 2, "dropShadow", "Distance", 12),
   styleParamColor: setLayerStyleParamScript(12, 2, "stroke", "Color", "#ff8800"),
+  styleParamMatchName: setLayerStyleParamScript(12, 2, "dropShadow", "dropShadow/blur", 3),
+  footageNoItem: addLayerScript({ compId: 12, kind: "footage" }),
   removeStyle: removeLayerStyleScript(12, 2, "satin"),
   egpTransform: addToEssentialGraphicsScript(12, 1, "position", undefined),
   egpText: addToEssentialGraphicsScript(12, 1, "position", ["ADBE Text Properties", "ADBE Text Document"]),
@@ -139,6 +141,22 @@ const NO_UNDO_OK = new Set(["openProjectScript", "saveProjectScript", "renderFra
 describe("After Effects tool scripts", () => {
   it("are all ES3-clean", () => {
     for (const [name, src] of Object.entries(SAMPLES)) expect(es3Violations(src), name).toEqual([]);
+  });
+
+  it("call no ES5-only built-in, in the helpers or in any builder body (the syntax gate cannot see these)", () => {
+    for (const [name, src] of Object.entries(SAMPLES)) expect(es5Calls(src), name).toEqual([]);
+  });
+
+  it("give every throw its own next step: an em dash clause, or __pick's (AE-16, R17)", () => {
+    // A throw with no " — " would get enrichAeError's generic step, which cannot fit every message.
+    let throws = 0;
+    for (const [name, src] of Object.entries(SAMPLES)) {
+      for (const line of src.split("\n").filter((l) => l.includes("throw new Error("))) {
+        throws++;
+        expect(line.includes("\\u2014") || line.includes("__pick("), `${name}: ${line.trim()}`).toBe(true);
+      }
+    }
+    expect(throws).toBeGreaterThan(40);
   });
 
   it("classifies every exported script builder (so a new mutating tool can't skip __undo)", () => {
@@ -218,7 +236,7 @@ describe("After Effects tool scripts", () => {
   });
 
   it("says which names exist when an effect, parameter or footage lookup fails (AE-16)", () => {
-    expect(SAMPLES["effect"]).toContain('throw new Error("Effect not available: " + "ADBE Gaussian Blur 2"');
+    expect(SAMPLES["effect"]).toContain('throw new Error("Effect not available: " + __q("ADBE Gaussian Blur 2")');
     expect(SAMPLES["effectParam"]).toContain("effects on this layer: ");
     expect(SAMPLES["effectParam"]).toContain("parameters: ");
     // The footage item is looked up (and a bad id reported) before the undo group opens.
