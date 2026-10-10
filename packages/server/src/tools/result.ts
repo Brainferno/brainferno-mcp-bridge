@@ -123,9 +123,10 @@ export function jobErrorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/** The panel's own text is redacted, then kept on one line, the order scriptErrorText uses. */
 function unknownCommandText(app: string, message: string): string {
   return (
-    `The ${app} panel does not support this command (${message}) — it is older than this server; ` +
+    `The ${app} panel does not support this command (${oneLine(redactKnown(message))}) — it is older than this server; ` +
     "update the brainferno-mcp-bridge panel (or reload it after updating), then retry."
   );
 }

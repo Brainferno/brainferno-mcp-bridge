@@ -112,6 +112,14 @@ const EFFECT_PARAMS: Record<string, string[]> = {
   "ADBE Glo2": ["Glow Based On", "Glow Threshold", "Glow Radius", "Glow Intensity"],
   // A cut-down stand-in: the real Card Dance also repeats Source / Multiplier / Offset per axis.
   "ADBE Card Dance": ["Rows", "Columns", "X Position", "Source", "Multiplier", "Offset", "Y Position", "Source", "Multiplier", "Offset"],
+  // A cut-down stand-in for Particle Playground (Cannon, Grid): each name that repeats has one copy
+  // among the first 10 and the other past the 20th, so a repeat check that saw only a listed window
+  // (10 in a path, 20 in ae_set_effect_param) would miss it.
+  "ADBE Playgnd": [
+    "Cannon", "Position", "Barrel Radius", "Particles Per Second", "Direction", "Direction Random Spread", "Velocity", "Velocity Random Spread", "Color", "Particle Radius",
+    "Grid", "Width", "Height", "Particles Across", "Particles Down", "Layer Exploder", "Explode Layer", "Radius of New Particles", "Dispersion Speed", "Gravity",
+    "Position", "Color", "Particle Radius",
+  ],
 };
 
 /** The layer-style slots every layer that can take styles has (key, display name), and the parameters each style shows. */

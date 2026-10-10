@@ -94,6 +94,7 @@ const SAMPLES: Record<string, string> = {
   egpTransform: addToEssentialGraphicsScript(12, 1, "position", undefined),
   egpText: addToEssentialGraphicsScript(12, 1, "position", ["ADBE Text Properties", "ADBE Text Document"]),
   exportMogrt: exportMogrtScript(12, "C:/mogrts", "Fancy Lower Third", true),
+  exportMogrtKeep: exportMogrtScript(12, "C:/mogrts", 'Say "hi"', false),
   effectNamed: applyEffectScript(12, 2, "ADBE Slider Control", "Speed"),
   importPsdTimed: importAsCompScript("C:/p/art.psd", false, { duration: 8, frameRate: 29.97 }),
   compProps: setCompPropsScript(12, { name: "LT", duration: 8, frameRate: 29.97, width: 1920, height: 1080 }),

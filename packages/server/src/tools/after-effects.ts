@@ -59,6 +59,8 @@ const HELPERS = String.raw`
   // server's 1500-character cap and keeps its "what to do next" clause.
   var __BUDGET = 600;
   var __PATH_BUDGET = 300;
+  // How many children a miss reads to find the names that repeat, listed or not.
+  var __SCAN = 200;
   // A name as a message quotes it: quote and backslash escaped; every control character (C0, DEL,
   // C1) and the line and paragraph separators a space; cut at 60 with "...".
   function __q(s) {
@@ -174,25 +176,56 @@ const HELPERS = String.raw`
     return String(segment).substring(0, 5) !== "ADBE ";
   }
   function __kids(g, max, byName, budget) {
-    var names = [], n = 0, dup = false, i, j, s;
+    // Lists up to max names. Repeats are looked for among every child (up to __SCAN), listed or
+    // not, and named after the list ("; repeated: [...]"): the server reads that list and never
+    // suggests a name in it.
+    var names = [], rep = [], seen = {}, n = 0, i, s, key, text;
     try { n = g.numProperties; } catch (e) { n = 0; }
     if (!(n > 0)) { n = 0; }
-    for (i = 1; i <= n && names.length < max; i++) {
+    for (i = 1; i <= n && i <= __SCAN; i++) {
       s = null;
       try { s = String(byName ? g.property(i).name : g.property(i).matchName); } catch (e) { s = null; }
       if (s !== null) {
-        for (j = 0; j < names.length; j++) { if (names[j] === s) { dup = true; } }
-        names.push(s);
+        key = "#" + s;
+        if (!Object.prototype.hasOwnProperty.call(seen, key)) { seen[key] = 1; }
+        else if (seen[key] === 1) { seen[key] = 2; rep.push(s); }
+        if (names.length < max) { names.push(s); }
       }
     }
-    return { n: n, dup: dup, byName: byName, text: __list(names, n, budget ? budget : __BUDGET) };
+    text = __list(names, n, budget ? budget : __BUDGET);
+    if (rep.length > 0) { text += "; repeated: " + __list(rep, rep.length, __PATH_BUDGET); }
+    return { n: n, dup: rep.length > 0, rep: rep, byName: byName, text: text };
+  }
+  function __repMatch(g, rep) {
+    // Each repeated name with the match name of every child that has it, in order:
+    // "Source": ["ADBE X-0004", "ADBE X-0008"]; "Offset": [...]
+    var at = {}, n = 0, out = "", shown = 0, i, c, key, s;
+    for (i = 0; i < rep.length; i++) { at["#" + rep[i]] = []; }
+    try { n = g.numProperties; } catch (e) { n = 0; }
+    if (!(n > 0)) { n = 0; }
+    for (i = 1; i <= n && i <= __SCAN; i++) {
+      try {
+        c = g.property(i);
+        key = "#" + String(c.name);
+        if (Object.prototype.hasOwnProperty.call(at, key)) { at[key].push(String(c.matchName)); }
+      } catch (e) {}
+    }
+    for (i = 0; i < rep.length; i++) {
+      key = "#" + rep[i];
+      s = __q(rep[i]) + ": " + __list(at[key], at[key].length, __PATH_BUDGET);
+      if (shown > 0 && out.length + 2 + s.length > __BUDGET) { break; }
+      out += (shown > 0 ? "; " : "") + s;
+      shown++;
+    }
+    return out + (rep.length > shown ? " (+" + (rep.length - shown) + " more)" : "");
   }
   function __pick(k, g) {
-    // Repeated names: the user can rename what __named covers; elsewhere the match names tell them apart.
+    // Repeated names (named after the list): the user can rename what __named covers; elsewhere
+    // each repeated name's match names tell its copies apart.
     if (!k.dup) { return " \u2014 use one of these names."; }
-    if (__named(g)) { return " \u2014 some of these names repeat, so a path cannot tell those apart; rename them in After Effects so each is unique, then pass one."; }
-    if (!k.byName) { return " \u2014 some of these names repeat, so a name reaches only the first of them; use one of these names."; }
-    return " \u2014 some of these names repeat, so a name cannot pick between them; pass the match name instead (the same list by match name: " + __kids(g, 20, false, __PATH_BUDGET).text + ").";
+    if (__named(g)) { return " \u2014 a path cannot tell repeated names apart; rename them in After Effects so each is unique, then pass one."; }
+    if (!k.byName) { return " \u2014 a repeated name reaches only the first of them; use one of these names."; }
+    return " \u2014 a repeated name reaches only the first of them; pass the match name instead (by match name: " + __repMatch(g, k.rep) + ").";
   }
   function __isLeaf(p) {
     try { return p.propertyType === PropertyType.PROPERTY; } catch (e) { return false; }
@@ -359,8 +392,9 @@ if (new RegExp(NON_ASCII_CLASS).test(HELPERS)) throw new Error("HELPERS must be 
 /** Built once at module load from the prelude; throws if a helper breaks the style rules. */
 const AE_HELPERS: readonly AeHelperRange[] = scanHelpers(AE_PRELUDE);
 
-/** What __q appends to a name it cut. */
-const CUT_MARK = "...";
+/** What __q appends to a name it cut (checked against __q's source with AE_NAME_CUT). */
+export const AE_CUT_MARK = "...";
+const CUT_MARK = AE_CUT_MARK;
 
 /** __q's cut length, read from its own source (one N in `i < N` and `.length > N`); throws when that cannot be read. */
 function nameCutOf(helpers: string): number {
@@ -376,7 +410,8 @@ function nameCutOf(helpers: string): number {
 /**
  * How many UTF-16 units of a name __q keeps before it cuts the rest and appends "...". Read from
  * __q's source, so the number is typed once: a cut name can never resolve (aeListSuggestions drops
- * it), and buildRuntime registers each long secret's prefix of this length for redaction.
+ * it), and buildRuntime passes it (with AE_CUT_MARK) to redaction, which then finds a secret in a
+ * name __q cut, whether the name was the secret or the secret came after other text.
  */
 export const AE_NAME_CUT = nameCutOf(HELPERS);
 
@@ -527,8 +562,8 @@ function parseJsonString(literal: string): string | null {
   }
 }
 
-/** The JSON array of strings starting at text[start] (a "[" ), or null when there is none. */
-function readJsonStringArray(text: string, start: number): string[] | null {
+/** The JSON array of strings starting at text[start] (a "[" ) and the index just past it, or null when there is none. */
+function readJsonStringArray(text: string, start: number): { items: string[]; end: number } | null {
   if (text[start] !== "[") return null;
   let inString = false;
   let escaped = false;
@@ -544,7 +579,7 @@ function readJsonStringArray(text: string, start: number): string[] | null {
     else if (ch === "]" && --depth === 0) {
       try {
         const v: unknown = JSON.parse(text.slice(start, i + 1));
-        return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : null;
+        return Array.isArray(v) ? { items: v.filter((x): x is string => typeof x === "string"), end: i + 1 } : null;
       } catch {
         return null;
       }
@@ -560,9 +595,26 @@ function onlyUnique(names: readonly string[]): string[] {
   return names.filter((n) => seen.get(n) === 1);
 }
 
+/** What __kids writes after a list when names repeat among all the children, listed or not; then the count __list adds when it cut. */
+const REPEATED_AFTER_LIST = /^(?: \(\+\d+ more\))?; repeated: (?=\[)/;
+const LIST_CUT = /^ \(\+\d+ more\)/;
+
 /**
- * Ranks the names a host message lists against the name it could not find, leaving out cut names
- * and names that repeat in the list; [] when the message is not one of these misses or does not parse.
+ * The names __kids says repeat, read right after the list that ends at `end`: [] when it says none;
+ * null when it names them but that list was cut or does not parse (then any listed name may repeat).
+ */
+function repeatedNames(message: string, end: number): string[] | null {
+  const rest = message.slice(end);
+  const m = REPEATED_AFTER_LIST.exec(rest);
+  if (m === null) return [];
+  const rep = readJsonStringArray(rest, m[0].length);
+  return rep === null || LIST_CUT.test(rest.slice(rep.end)) ? null : rep.items;
+}
+
+/**
+ * Ranks the names a host message lists against the name it could not find, leaving out cut names,
+ * names that repeat in the list and names the host says repeat among children it did not list;
+ * [] when the message is not one of these misses or does not parse.
  */
 export function aeListSuggestions(message: string): string[] {
   for (const re of LIST_MISSES) {
@@ -571,9 +623,11 @@ export function aeListSuggestions(message: string): string[] {
     const query = parseJsonString(m[1]!);
     const names = readJsonStringArray(message, m.index + m[0].length);
     if (query === null || names === null || /^\d+$/.test(query) || isCutName(query)) return [];
+    const repeated = repeatedNames(message, names.end);
+    if (repeated === null) return [];
     return closestNames(
       query,
-      onlyUnique(names).filter((n) => !isCutName(n)),
+      onlyUnique(names.items).filter((n) => !isCutName(n) && !repeated.includes(n)),
       { limit: 3, normalize: stripAeVendor },
     );
   }
@@ -1074,7 +1128,7 @@ ${effectParade("  ")}
   if (!(fx.numProperties > 0)) { throw new Error("Layer " + __layerLabel(l) + " has no effects — apply one first (ae_apply_effect)."); }
   var e = null;
   try { e = fx.property(${eff}); } catch (x) { e = null; }
-  if (!e) { var ek = __kids(fx, 20, true); throw new Error("Effect not found on layer " + __layerLabel(l) + ": " + __q(${eff}) + "; effects on this layer: " + ek.text + (ek.dup ? " — some names repeat; pass the effect's index (1 = first) instead." : " — pass one of these names, or the effect's index (1 = first).")); }
+  if (!e) { var ek = __kids(fx, 20, true); throw new Error("Effect not found on layer " + __layerLabel(l) + ": " + __q(${eff}) + "; effects on this layer: " + ek.text + (ek.dup ? " — a repeated name reaches only the first of them; pass the effect's index (1 = first) instead." : " — pass one of these names, or the effect's index (1 = first).")); }
   var pp = null;
   try { pp = e.property(${lit(param)}); } catch (x) { pp = null; }
   if (!pp) { var pk = __kids(e, 20, ${byName ? "true" : "false"}); throw new Error("Parameter not found on effect " + __q(e.name) + ": " + __q(${lit(param)}) + "; parameters: " + pk.text + __pick(pk, e)); }
@@ -1391,7 +1445,7 @@ export function setLayerStyleParamScript(compId: number, layerIndex: number, sty
   }
   if (!q) {
     var pk = __kids(s, 20, ${byName ? "true" : "false"});
-    throw new Error("Parameter not found on the " + ${lit(style)} + " style of layer " + __layerLabel(l) + ": " + __q(want) + "; parameters: " + pk.text + (pk.dup ? " — some of these names repeat; pass the parameter's match name instead (ae_get_layer_styles lists them)." : " — use one of these names."));
+    throw new Error("Parameter not found on the " + ${lit(style)} + " style of layer " + __layerLabel(l) + ": " + __q(want) + "; parameters: " + pk.text + (pk.dup ? " — a repeated name reaches only the first of them; pass the parameter's match name instead (ae_get_layer_styles lists them)." : " — use one of these names."));
   }
   return __undo("Set layer style parameter", function () { q.setValue(${v}); return { style: ${lit(style)}, param: q.name, matchName: q.matchName, value: q.value }; });`);
 }
@@ -1442,12 +1496,15 @@ export function addToEssentialGraphicsScript(compId: number, layerIndex: number,
  * requested path, set the name, and write <folder>/<name>.mogrt. Verified live on
  * AE 26.3 (the pre-24.3 "always returns false" bug is gone; we still check the
  * file exists). The project must be saved — a dirty project makes AE prompt.
+ * Without overwrite, an existing file is refused before anything is saved or exported, so the
+ * file check after the export only ever sees a folder it could not write or an export that failed.
  */
 export function exportMogrtScript(compId: number, folder: string, name: string, overwrite: boolean): string {
   return wrap(`
   var c = __comp(${num(compId)});
   if (!app.project.file) { throw new Error("The project has never been saved, and exporting a Motion Graphics template needs a saved project — save it first with ae_save_project (pass a path ending in .aep), then retry."); }
-  var fo = new Folder(${lit(folder)});
+  var outPath = ${lit(folder)} + "/" + ${lit(name)} + ".mogrt";
+${overwrite ? "" : `  if (new File(outPath).exists) { throw new Error("A file already exists at " + outPath + " — pass overwrite: true (the default) or another outputPath."); }\n`}  var fo = new Folder(${lit(folder)});
   if (!fo.exists) { fo.create(); }
   c.motionGraphicsTemplateName = ${lit(name)};
   // Read everything off the comp now: exportAsMotionGraphicsTemplate invalidates
@@ -1465,9 +1522,8 @@ export function exportMogrtScript(compId: number, folder: string, name: string, 
   } finally {
     app.endSuppressDialogs(false);
   }
-  var outPath = ${lit(folder)} + "/" + ${lit(name)} + ".mogrt";
   var f = new File(outPath);
-  if (!f.exists) { throw new Error("After Effects did not write " + outPath + " (export returned " + ok + ") — if that file already exists, pass overwrite: true; otherwise pass a folder you can write to, then retry."); }
+  if (!f.exists) { throw new Error("After Effects did not write " + outPath + " (export returned " + ok + "): the folder is not writable, or the export failed — pass a folder you can write to, then retry."); }
   return { compName: compName, name: ${lit(name)}, outputPath: outPath, controllerCount: controllers };`);
 }
 

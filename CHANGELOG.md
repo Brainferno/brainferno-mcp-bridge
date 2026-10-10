@@ -80,8 +80,9 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   to an error After Effects raised itself, and it fits where that happened (inside a shared
   helper it no longer blames the arguments you passed). A ` — ` inside a quoted name never
   counts as a next step. Echoed arguments are cut (80 characters per string, 5 items per
-  array, 300 overall) and never show the server's keys or tokens. No error-code prefix. Other
-  apps' script errors read exactly as before.
+  array, 300 overall), lose any bidi override, and never show the server's keys or tokens;
+  neither does the host's message, even where After Effects cut a listed name part-way
+  through one. No error-code prefix. Other apps' script errors read exactly as before.
 - After Effects lookups explain themselves (AE-16): a bad `compId` lists the compositions (or
   says how to make one), and so does an unknown `compName` in `ae_queue_render`; an
   out-of-range `layerIndex` lists the range and each layer's name and kind; a property path
@@ -90,8 +91,9 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   groups, masks, effects and text animators by name), or says the group exists only on another
   kind of layer, or that it is empty (an empty effect or mask list also names the tool that
   fills it); `ae_set_effect_param` lists the layer's effects or the effect's parameters. When
-  listed names repeat, the advice fits what can be done: rename them where After Effects
-  allows it, otherwise pass the effect's index or the match name. `ae_set_text`,
+  names repeat among the children, listed or not, the message names them and the advice fits
+  what can be done: rename them where After Effects allows it, otherwise pass the effect's
+  index or the match name (listed for every copy of a repeated parameter). `ae_set_text`,
   `ae_add_mask` and the layer-style tools name the layer and kind, and the layer-style tools
   say which tool adds a style or lists the ones there. Lists are cut by length so the advice at
   the end is never lost.
@@ -101,11 +103,12 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   slow); a name that differs from an installed one only in case gets that exact match name, and
   an installed effect After Effects would not add to the layer gets a note instead of guesses.
   Property, effect and parameter misses suggest from the names they list, leaving out a name
-  that repeats in that list, since it cannot pick one item.
+  that repeats, in the list or past it, since it cannot pick one item.
 - After Effects scripts are sent as pure ASCII (AE-16): non-ASCII characters travel as `\uXXXX`
   escapes; the result is the same text.
 - All apps (AE-16): a panel older than the server (`UNKNOWN_COMMAND`) now says to update or
-  reload the panel instead of "Script failed"; a panel that disconnects mid-call says the call
+  reload the panel instead of "Script failed" (quoting the panel's text on one line, keys and
+  tokens removed); a panel that disconnects mid-call says the call
   may have partly run and how to reconnect — in a tool's error, instead of "Unexpected
   failure" (and it is logged at `warn`, no longer as an unhandled error), and in a failed job
   step (`ae_render_comp`, `pp_export_sequence`, the pipelines), instead of the bare disconnect
@@ -148,8 +151,10 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   other change before failing; the parent is now checked first. `ae_apply_effect` and
   `ae_set_effect_param` on a camera or light failed with a null error; they now say which
   kinds of layer take effects (null layers included). Job and pipeline errors from After
-  Effects scripts kept only the bare host message. `ae_apply_effect`'s `matchName` and
-  `ae_set_effect_param`'s `value` had no description.
+  Effects scripts kept only the bare host message, and `pipeline_ps_to_ae`'s own step checks
+  named no next step. `ae_export_mogrt` with `overwrite: false` over an existing file reported
+  the old file as written; it now refuses before saving or exporting anything.
+  `ae_apply_effect`'s `matchName` and `ae_set_effect_param`'s `value` had no description.
 
 **Docs**
 
@@ -178,7 +183,9 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   tool errors and failed job steps) and its registration example (now an After Effects tool on
   `evaluateAe` and the `withToolContext` server), AE-03 / AE-04 / AE-14 / AE-01 / X-01 notes,
   `00_PREAMBLE.md` (the shared-core list gains `tools/raw-script.ts`; After Effects tools call
-  `evaluateAe` and register through `withToolContext`; the error-test harness), the README
+  `evaluateAe` and register through `withToolContext`; the error-test harness; every After
+  Effects throw carries its own next step and quotes names with `__q`, also in
+  `CONTRIBUTING.md` Errors), the README
   (what a tool error says; the security note now says which errors remove keys and tokens),
   `docs/protocol.md`, and spike 06 (how error lines are read; the live probes still pending).
   The After Effects prompts cite `after-effects.ts` by symbol instead of by line number, which

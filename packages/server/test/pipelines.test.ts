@@ -38,20 +38,27 @@ describe("pipelines compose the single-app commands as one job", () => {
   let calls: Call[];
   let aeFails: boolean;
   let aeScriptFails: boolean;
+  let psNoPath: boolean;
+  let aeNoId: boolean;
   let jobs: JobRegistry;
 
   beforeEach(async () => {
     calls = [];
     aeFails = false;
     aeScriptFails = false;
+    psNoPath = false;
+    aeNoId = false;
     jobs = new JobRegistry({ workRoot: join(tmpdir(), `acm-pipe-${process.pid}`) });
     const server = new McpServer({ name: "t", version: "0" });
-    const photoshop = fakeBridge("photoshop", calls, (c): JsonValue => (c.name === "ps.export" ? { path: (c.params as { path: string }).path, format: "png" } : { ok: true }));
+    const photoshop = fakeBridge("photoshop", calls, (c): JsonValue =>
+      c.name === "ps.export" ? { path: psNoPath ? "" : (c.params as { path: string }).path, format: "png" } : { ok: true },
+    );
     const afterEffects = fakeBridge("after_effects", calls, (c): JsonValue => {
       if (aeFails) throw new Error("AE said no");
       // The host's report for the import's `if (!f.exists)` line (body line 2).
       if (aeScriptFails) throw new ScriptError("after_effects", "No file at X", AE_PRELUDE_LINES + 3, { code: "HOST_ERROR" });
-      return c.script?.includes("importFile") ? { id: 42, name: "photoshop-export.png" } : { index: 1, name: "layer" };
+      if (c.script?.includes("importFile")) return aeNoId ? { name: "photoshop-export.png" } : { id: 42, name: "photoshop-export.png" };
+      return { index: 1, name: "layer" };
     });
     const premiere = fakeBridge("premiere", calls, () => ({ ok: true }));
     const illustrator = fakeBridge("illustrator", calls, () => ({ ok: true }));
@@ -114,6 +121,22 @@ describe("pipelines compose the single-app commands as one job", () => {
     expect(view.error.message).toMatch(/^Script failed in After Effects at body line 2 \(script line \d+\): No file at X — /);
     expect(view.error.message).toContain(">>> 2: if (!f.exists)");
     expect(view.error.message).not.toContain("(pipeline_");
+  });
+
+  it("ps → ae: a step that gets nothing usable from the step before says what to do next (F8)", async () => {
+    psNoPath = true;
+    const noPath = JSON.parse(text(await client.callTool({ name: "pipeline_ps_to_ae", arguments: { compId: 1 } }))) as { error: { step: string; message: string } };
+    expect(noPath.error.step).toBe("Import into After Effects");
+    expect(noPath.error.message).toBe(
+      "No export path from the previous step: Photoshop reported no file — export with ps_export, then import that file with ae_import_footage.",
+    );
+    psNoPath = false;
+    aeNoId = true;
+    const noId = JSON.parse(text(await client.callTool({ name: "pipeline_ps_to_ae", arguments: { compId: 1 } }))) as { error: { step: string; message: string } };
+    expect(noId.error.step).toBe("Add layer to comp");
+    expect(noId.error.message).toBe(
+      "The imported footage has no id — find it with ae_list_footage, then add it with ae_add_layer (kind footage, itemId).",
+    );
   });
 
   it("wait:false returns a jobId that cc_job_wait resolves", async () => {

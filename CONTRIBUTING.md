@@ -104,8 +104,10 @@ timeouts, and `AppDisconnectedError` — a panel that dropped mid-call, which re
 have partly run" plus how to reconnect) into readable tool errors; a failed job step gets the
 same disconnect text (`jobErrorMessage`). Error text always says what happened **and what to
 do next**; for expected failures `throw new Error("<what happened> — <what to do next>")`.
-(Earlier drafts planned a code prefix such as `SCRIPT_ERROR:`; that was not adopted — the
-actionable message is the contract.) Two kinds of tool errors carry JSON: failed or cancelled
+In After Effects every throw carries its own ` — <what to do next>` and quotes each name with
+`__q`; the server looks for that dash only outside quoted names. (Earlier drafts planned a
+code prefix such as `SCRIPT_ERROR:`; that was not adopted — the actionable message is the
+contract.) Two kinds of tool errors carry JSON: failed or cancelled
 jobs (the job view from `jobResult` in tools/jobs.ts) and the raw-script tools, where
 JSON-versus-plain-text is the dispatch signal (see the next section).
 

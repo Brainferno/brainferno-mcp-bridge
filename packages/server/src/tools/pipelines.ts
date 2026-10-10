@@ -79,7 +79,7 @@ export function registerPipelineTools(server: McpServer, deps: PipelineDeps): vo
             recoveryTool: "ae_import_footage",
             run: async (ctx, prev) => {
               const path = str(obj(prev[0])["path"]);
-              if (!path) throw new Error("No export path from the previous step.");
+              if (!path) throw new Error("No export path from the previous step: Photoshop reported no file — export with ps_export, then import that file with ae_import_footage.");
               ctx.log(`importing ${path}`);
               return evaluateAe(deps.afterEffects, importFootageScript(path), { timeoutClass: "slow" });
             },
@@ -90,7 +90,7 @@ export function registerPipelineTools(server: McpServer, deps: PipelineDeps): vo
             when: () => a.compId !== undefined,
             run: async (_ctx, prev) => {
               const itemId = obj(prev[1])["id"];
-              if (typeof itemId !== "number") throw new Error("The imported footage has no id.");
+              if (typeof itemId !== "number") throw new Error("The imported footage has no id — find it with ae_list_footage, then add it with ae_add_layer (kind footage, itemId).");
               return evaluateAe(deps.afterEffects, addLayerScript({ compId: a.compId!, kind: "footage", itemId, ...(a.layerName !== undefined ? { name: a.layerName } : {}) }), { timeoutClass: "slow" });
             },
           },
