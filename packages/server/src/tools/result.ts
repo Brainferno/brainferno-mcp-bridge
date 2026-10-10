@@ -14,7 +14,7 @@ import {
 } from "../bridge/types.js";
 import type { PreviewMode } from "../config.js";
 import { log } from "../logging.js";
-import { MESSAGE_LIMIT, capCodePoints, oneLine, redactKnown } from "./echo.js";
+import { capCodePoints, oneLine, redactKnown, shownMessage } from "./echo.js";
 
 let previewMode: PreviewMode = "both";
 
@@ -95,8 +95,9 @@ export function scriptErrorText(error: ScriptError): string {
   if (d.tool !== undefined) head += ` (${d.tool}${d.args !== undefined && d.args !== "{}" ? `, args ${d.args}` : ""})`;
   const at = whereText(d, error.scriptLine);
   if (at !== "") head += ` ${at}`;
-  // Redact first: oneLine changes whitespace, and a secret holding a tab or a line break must still match.
-  let text = `${head}: ${capCodePoints(oneLine(redactKnown(error.message)), MESSAGE_LIMIT)}`;
+  // Redacted first (oneLine changes whitespace, and a secret holding a tab or a line break must still
+  // match), then cut: the same text enrichAeError judged for a next step.
+  let text = `${head}: ${shownMessage(error.message)}`;
   if (d.next !== undefined) text = `${text.replace(/\.$/, "")} — ${d.next}.`;
   if (d.suggestions !== undefined && d.suggestions.length > 0) text += ` Did you mean ${orList(d.suggestions.map(suggestionText))}?`;
   if (d.note !== undefined) text += ` ${oneLine(redactKnown(d.note))}`;

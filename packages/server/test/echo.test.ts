@@ -21,6 +21,7 @@ const ILST = `ilst_${HEX64}`;
 const B64URL32 = "AbCdEfGhIjKlMnOpQrStUvWxYz012345"; // a generated httpToken shape, with a digit
 const UUID = "1b4e28ba-2fa1-11d2-883f-0016d3cca427";
 const TOKEN40 = "Zq3vT8kLm2Np5Rs7Wx9Yb4Cd6Ef1Gh0Jk2Lm4No"; // 40 chars, letters and digits
+const TOKEN20 = "Zq7Lm2Xp9Rt4Vw8Ys3Bn"; // 20 chars, letters and digits
 
 afterEach(() => setRedactionSecrets([]));
 
@@ -132,6 +133,22 @@ describe("redact (R1-R4: echoed arguments and code excerpts)", () => {
     expect(redactKnown(`12 "${"n".repeat(52)}${HEX64.slice(0, 8)}...", 13 "Main"`)).toBe(`12 "${"n".repeat(52)}[redacted]...", 13 "Main"`);
   });
 
+  it("R1 with a cut length: a cut name that holds a whole secret still loses the start of the next one (H2)", () => {
+    setRedactionSecrets([TOKEN20, HEX64], { cut: 60, mark: "..." });
+    // "<token> / <key>" cut at 60 keeps the whole token and 37 characters of the key.
+    expect(redactKnown(`12 "${TOKEN20} / ${HEX64.slice(0, 37)}...", 13 "Main"`)).toBe('12 "[redacted] / [redacted]...", 13 "Main"');
+    // One secret twice, then 14 characters of a third copy.
+    expect(redactKnown(`12 "${TOKEN20} copy ${TOKEN20}${TOKEN20.slice(0, 14)}..."`)).toBe('12 "[redacted] copy [redacted][redacted]..."');
+    // Escaped as __q writes a name: the written tail is checked too.
+    const quoted = `say"${TOKEN20}`;
+    setRedactionSecrets([quoted, HEX64], { cut: 60, mark: "..." });
+    expect(redactKnown(`12 "say\\"${TOKEN20} ${HEX64.slice(0, 35)}..."`)).toBe('12 "[redacted] [redacted]..."');
+    // Fewer than 8 characters of the second secret at the cut stay, as for a single one.
+    setRedactionSecrets([TOKEN20, HEX64], { cut: 60, mark: "..." });
+    const short = `12 "${TOKEN20} ${"n".repeat(32)}${HEX64.slice(0, 7)}..."`;
+    expect(redactKnown(short)).toBe(`12 "[redacted] ${"n".repeat(32)}${HEX64.slice(0, 7)}..."`);
+  });
+
   it("R1 with a cut length: finds the same quoted names as before in an ordinary host message, escapes and all (G1)", () => {
     setRedactionSecrets([HEX64], { cut: 60 });
     // __q's quoting: a quote and a backslash escaped inside the name; nothing escaped outside one.
@@ -179,6 +196,21 @@ describe("redaction cost (G1)", () => {
       within(`${name}: echoArgs`, () => echoArgs({ compId: 99, layerIndex: 1, text }));
       within(`${name}: excerptLine`, () => excerptLine(`var t = ${jsStringLiteral(text)};`));
     }
+  });
+
+  it("quotes a line whose quote is never closed, escaped quotes after it, in time linear in its length (H1)", () => {
+    // Every escaped quote looks like the start of a literal; a literal that is never closed is code.
+    const line = `x = "${'a\\"'.repeat(66_000)}`;
+    within("excerptLine: a quote never closed", () => expect(excerptLine(line)).toBe(`x = "${'a\\"'.repeat(38)}a…(+${line.length - 120} chars)`));
+  });
+
+  it("checks about 200 KB of quoted names that look cut in time linear in its length (H1)", () => {
+    // Each is as long as a name the host cut, and its kept text is the first character of a secret, over and over.
+    setRedactionSecrets([HEX64, TOKEN40], { cut: 60, mark: "..." });
+    const names = `"${"0".repeat(60)}...", `.repeat(3_000);
+    within("redactKnown: names that look cut", () => expect(redactKnown(names)).toBe(names));
+    within("echoArgs: names that look cut", () => echoArgs({ compId: 99, layerIndex: 1, text: names }));
+    within("excerptLine: names that look cut", () => excerptLine(`var t = ${jsStringLiteral(names)};`));
   });
 
   it("keeps a long run of spaces on one line in linear time, and collapses only a run that holds a control character", () => {

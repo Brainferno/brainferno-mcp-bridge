@@ -31,6 +31,8 @@ const REDACTED = "[redacted]";
 let secrets: string[] = [];
 /** Every form of every whole secret: what the tail of a name the host cut is checked against. */
 let secretForms: string[] = [];
+/** The first character of each of secretForms: a tail that starts with none of them starts no secret. */
+let secretStarts: ReadonlySet<string> = new Set();
 /** How the host cuts the names it quotes; null when the caller gave no cut length. */
 let nameCut: { readonly length: number; readonly mark: string } | null = null;
 
@@ -76,6 +78,7 @@ export function setRedactionSecrets(values: readonly (string | undefined)[], opt
   }
   secrets = [...all].sort((a, b) => b.length - a.length);
   secretForms = [...whole];
+  secretStarts = new Set(secretForms.map((f) => f.charAt(0)));
   nameCut = options.cut === undefined ? null : { length: options.cut, mark: options.mark ?? "..." };
 }
 
@@ -113,6 +116,10 @@ const QUOTED_UNIT = /\\[\s\S]|[\s\S]/g;
  * then the cut mark keeps only the start of a secret that came after other text in the name, so
  * neither the secret nor its registered prefix matches. The longest tail of the kept text (at least
  * 8 units) that starts any form of a secret is replaced; the text before it and the mark stay.
+ *
+ * It runs on the host's text before R1 (redactKnown): R1 writes "[redacted]" over a whole secret,
+ * which changes the span's length, so a second secret starting later in the same name would go
+ * unchecked. The secrets the span still holds whole are R1's to replace.
  */
 function redactCutTails(text: string): string {
   const cut = nameCut;
@@ -125,11 +132,23 @@ function redactCutTails(text: string): string {
     if (units.length !== want) return span;
     const decoded = units.map((u) => (u.length === 2 ? u.charAt(1) : u));
     if (decoded.slice(cut.length).join("") !== cut.mark) return span;
+    // The kept text, decoded and as written, built once: each tail is a slice of it, and only a
+    // tail that starts with the first character of some form is compared (a host message can hold
+    // thousands of these spans).
+    const kept = decoded.slice(0, cut.length).join("");
+    const starts: number[] = [];
+    let written = "";
+    for (let k = 0; k < cut.length; k++) {
+      starts.push(written.length);
+      written += units[k]!;
+    }
     for (let k = 0; k + MIN_SECRET_LENGTH <= cut.length; k++) {
-      const tail = decoded.slice(k, cut.length).join("");
-      const written = units.slice(k, cut.length).join("");
-      if (secretForms.some((f) => f.startsWith(tail) || f.startsWith(written))) {
-        return `"${units.slice(0, k).join("")}${REDACTED}${units.slice(cut.length).join("")}"`;
+      const at = starts[k]!;
+      if (!secretStarts.has(kept.charAt(k)) && !secretStarts.has(written.charAt(at))) continue;
+      const tail = kept.slice(k);
+      const writtenTail = written.slice(at);
+      if (secretForms.some((f) => f.startsWith(tail) || f.startsWith(writtenTail))) {
+        return `"${written.slice(0, at)}${REDACTED}${units.slice(cut.length).join("")}"`;
       }
     }
     return span;
@@ -143,9 +162,9 @@ const ILLUSTRATOR_KEY = /ilst_[A-Za-z0-9_-]{16,}/g;
 /** R4: a long opaque run. */
 const OPAQUE_RUN = /[A-Za-z0-9_-]{32,}/g;
 
-/** R1-R3: for project-derived text (host messages, notes, suggestion names). */
+/** R1-R3: for project-derived text (host messages, notes, suggestion names). The cut-name tails go first (see redactCutTails). */
 export function redactKnown(text: string): string {
-  return redactCutTails(redactSecrets(text)).replace(BEARER, `Bearer ${REDACTED}`).replace(ILLUSTRATOR_KEY, REDACTED);
+  return redactSecrets(redactCutTails(text)).replace(BEARER, `Bearer ${REDACTED}`).replace(ILLUSTRATOR_KEY, REDACTED);
 }
 
 /** R1-R4: for echoed arguments and code excerpts. */
@@ -194,6 +213,15 @@ export function capCodePoints(text: string, max: number): string {
   return cps.length <= max ? text : `${cps.slice(0, max).join("")}…(+${cps.length - max} chars)`;
 }
 
+/**
+ * What an error paragraph shows of a host message (scriptErrorText): redacted (R1-R3) on the full
+ * text, on one line, cut at MESSAGE_LIMIT code points. Whether the message says what to do next is
+ * judged on this text, so a step the cut drops does not count.
+ */
+export function shownMessage(message: string): string {
+  return capCodePoints(oneLine(redactKnown(message)), MESSAGE_LIMIT);
+}
+
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
 /** A string as the echo shows it: redacted on the full text, bidi controls dropped, cut, escaped. */
@@ -238,7 +266,6 @@ export function echoArgs(args: unknown): string {
   return capCodePoints(echoValue(args, 1), ECHO_LIMITS.total);
 }
 
-const LITERAL = /"(?:[^"\\]|\\.)*"/g;
 const SIMPLE_DECODE: Record<string, string> = { n: "\n", r: "\r", t: "\t", b: "\b", f: "\f", v: "\v" };
 
 /** The value of a double-quoted literal written with jsStringLiteral's escape set (any other `\c` reads as c). */
@@ -260,13 +287,16 @@ function excerptLiteral(literal: string): string {
 /**
  * One line of generated script, safe to show (X1-X5): each double-quoted literal is decoded,
  * redacted (R1-R4), cut at 80 code points and re-encoded; the code between literals is
- * redacted; the rebuilt line is cut at 120 code points and kept on one line.
+ * redacted; the rebuilt line is cut at 120 code points and kept on one line. A quote that is never
+ * closed starts no literal: the rest of the line is code. The literals are QUOTED_SPAN's spans,
+ * found in time linear in the line's length.
  */
 export function excerptLine(code: string): string {
   const line = code.trim();
   let out = "";
   let last = 0;
-  for (const m of line.matchAll(LITERAL)) {
+  for (const m of line.matchAll(QUOTED_SPAN)) {
+    if (m[1] === undefined) break; // a quote never closed: the rest is code
     out += redact(line.slice(last, m.index)) + excerptLiteral(m[0]);
     last = m.index + m[0].length;
   }
