@@ -65,7 +65,11 @@ export interface ScriptErrorDetails {
   readonly suggestions?: readonly ScriptSuggestion[];
   /** One sentence added after the suggestions (e.g. "That effect is installed, but …"). */
   readonly note?: string;
-  /** What to do next, set only when the host message does not already say (it contains no " — "). No trailing period. */
+  /**
+   * What to do next, set only when the paragraph would not show the message's own step: it has none
+   * (no " — " outside quoted names), or the paragraph cuts the message before it (then this is that
+   * step). No trailing period.
+   */
   readonly next?: string;
 }
 

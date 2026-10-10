@@ -117,9 +117,12 @@ const QUOTED_UNIT = /\\[\s\S]|[\s\S]/g;
  * neither the secret nor its registered prefix matches. The longest tail of the kept text (at least
  * 8 units) that starts any form of a secret is replaced; the text before it and the mark stay.
  *
- * It runs on the host's text before R1 (redactKnown): R1 writes "[redacted]" over a whole secret,
- * which changes the span's length, so a second secret starting later in the same name would go
- * unchecked. The secrets the span still holds whole are R1's to replace.
+ * redactKnown runs it on the host's text before R1, and again after. Before: R1 writes "[redacted]"
+ * over a whole secret, which changes the span's length, so a second secret starting later in the
+ * same name would go unchecked. After: a secret holding a '"' that stands raw earlier in the text (a
+ * path, an expression error; nothing quotes it) opens a span of its own, so until R1 removes it the
+ * quotes after it pair up wrongly and a cut name reads as text between two spans. The secrets the
+ * span still holds whole are R1's to replace.
  */
 function redactCutTails(text: string): string {
   const cut = nameCut;
@@ -162,9 +165,14 @@ const ILLUSTRATOR_KEY = /ilst_[A-Za-z0-9_-]{16,}/g;
 /** R4: a long opaque run. */
 const OPAQUE_RUN = /[A-Za-z0-9_-]{32,}/g;
 
-/** R1-R3: for project-derived text (host messages, notes, suggestion names). The cut-name tails go first (see redactCutTails). */
+/**
+ * R1-R3: for project-derived text (host messages, notes, suggestion names). The cut-name tails go
+ * before R1 and again after it (see redactCutTails); the second pass runs only when R1 changed the text.
+ */
 export function redactKnown(text: string): string {
-  return redactSecrets(redactCutTails(text)).replace(BEARER, `Bearer ${REDACTED}`).replace(ILLUSTRATOR_KEY, REDACTED);
+  const tails = redactCutTails(text);
+  const whole = redactSecrets(tails);
+  return (whole === tails ? whole : redactCutTails(whole)).replace(BEARER, `Bearer ${REDACTED}`).replace(ILLUSTRATOR_KEY, REDACTED);
 }
 
 /** R1-R4: for echoed arguments and code excerpts. */
@@ -213,13 +221,18 @@ export function capCodePoints(text: string, max: number): string {
   return cps.length <= max ? text : `${cps.slice(0, max).join("")}…(+${cps.length - max} chars)`;
 }
 
+/** A host message as an error paragraph reads it before the cut: redacted (R1-R3) on the full text, then on one line. */
+export function messageText(message: string): string {
+  return oneLine(redactKnown(message));
+}
+
 /**
- * What an error paragraph shows of a host message (scriptErrorText): redacted (R1-R3) on the full
- * text, on one line, cut at MESSAGE_LIMIT code points. Whether the message says what to do next is
- * judged on this text, so a step the cut drops does not count.
+ * What an error paragraph shows of a host message (scriptErrorText): messageText, cut at
+ * MESSAGE_LIMIT code points. The next step After Effects errors get is judged on the same text
+ * (after-effects.ts nextStep), so a step the cut drops does not count as shown.
  */
 export function shownMessage(message: string): string {
-  return capCodePoints(oneLine(redactKnown(message)), MESSAGE_LIMIT);
+  return capCodePoints(messageText(message), MESSAGE_LIMIT);
 }
 
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;

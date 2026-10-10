@@ -81,7 +81,7 @@ const appName = (appId: string): string => APPS[appId as keyof typeof APPS]?.dis
  *  - the panel answered UNKNOWN_COMMAND (any app): the panel is older than this server;
  *  - not enriched (`details.where` unset): exactly the pre-AE-16 text, byte for byte;
  *  - enriched (After Effects tools, AE-16): one paragraph — tool and arguments, where the line
- *    falls, the host message (secrets redacted, capped), the next step when the message has none,
+ *    falls, the host message (secrets redacted, capped), the next step when that shows none,
  *    "did you mean", a note, and the failing code.
  */
 export function scriptErrorText(error: ScriptError): string {

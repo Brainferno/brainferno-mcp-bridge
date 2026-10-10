@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AppDisconnectedError, EvalTimeoutError, ScriptError, type AppBridge, type JsonValue } from "../src/bridge/types.js";
 import { JobRegistry } from "../src/jobs.js";
@@ -14,6 +14,7 @@ import {
   AE_NAME_CUT,
   AE_PRELUDE_LINES,
   EFFECT_MISS,
+  EFFECT_NAME_MAX,
   EffectCatalog,
   HOST_LINE_GUARD,
   LIST_COMPOSITIONS,
@@ -337,6 +338,24 @@ describe("__comp (missing compositions)", () => {
       expect(text).toContain('the project has 2: 12 "[redacted] / [redacted]...", 13 "[redacted] copy [redacted][redacted]..."');
       expect(text).not.toContain(HEX64.slice(0, 8));
       expect(text).not.toContain(TOKEN20.slice(0, 8));
+    } finally {
+      setRedactionSecrets([]);
+    }
+  });
+
+  it("a secret holding a quote, raw earlier in the message, does not hide a name the host cut after it (I6)", () => {
+    // Raw text (a path, an expression error) is not quoted, so a '"' in a secret there opens a quoted
+    // span: until R1 removes the secret, the quotes after it pair up wrongly and the cut name reads as
+    // text between names.
+    const QUOTED = 'pa"ss12345678';
+    setRedactionSecrets([QUOTED, HEX64], { cut: AE_NAME_CUT, mark: AE_CUT_MARK });
+    try {
+      const kept = `${"n".repeat(AE_NAME_CUT - 8)}${HEX64.slice(0, 8)}`;
+      const message = `No file at C:\\${QUOTED}\\x.aep; layer 1 "${kept}${AE_CUT_MARK}" (solid) ${DASH} pass another path.`;
+      const text = scriptErrorText(enrichAeError(new ScriptError("after_effects", message, AE_PRELUDE_LINES + 4), LIST_COMPOSITIONS) as ScriptError);
+      expect(text).toContain(`No file at C:\\[redacted]\\x.aep; layer 1 "${"n".repeat(AE_NAME_CUT - 8)}[redacted]${AE_CUT_MARK}" (solid) ${DASH} pass another path.`);
+      expect(text).not.toContain(HEX64.slice(0, 8));
+      expect(text).not.toContain("ss12345678");
     } finally {
       setRedactionSecrets([]);
     }
@@ -855,6 +874,10 @@ describe("effects and parameters", () => {
     const head = 'Parameter not found on effect "E": "Shape 3"; parameters: ';
     expect(aeListSuggestions(`${head}["Shape 1", "Shape 2"]; repeated: ["Shape 1"] ${DASH} x`)).toEqual(["Shape 2"]);
     expect(aeListSuggestions(`${head}["Shape 1", "Shape 22"]; repeated: ["Shape 1"] ${DASH} x`)).toEqual([]);
+    // Every name at the smallest distance decides, not the one that sorts first among them: in either
+    // order, the repeated name keeps the farther one out (Shape 22 and Shape 11 are two edits away).
+    expect(aeListSuggestions(`${head}["Shape 1", "Shape 2", "Shape 22"]; repeated: ["Shape 1"] ${DASH} x`)).toEqual(["Shape 2"]);
+    expect(aeListSuggestions(`${head}["Shape 1", "Shape 2", "Shape 11"]; repeated: ["Shape 2"] ${DASH} x`)).toEqual(["Shape 1"]);
   });
 
   it("writes whole match names when a copy's is not the effect's match name and a number, still the name asked about first (G2)", () => {
@@ -1342,38 +1365,89 @@ describe("enrichAeError", () => {
     expect(next(`Expression error: Error: x"a ${DASH} fix the expression; the property keeps its previous one.`)).toBeUndefined();
   });
 
-  it("reads a long host message and a long argument, and writes the paragraph, in time linear in their length (G1, H1)", () => {
+  it("reads a long host message and a long argument, and writes the paragraph, in time linear in their length (G1, H1, I1, I3)", async () => {
     // As buildRuntime registers the server's secrets: with __q's cut, which turns on the cut-name scan.
     setRedactionSecrets([HEX64, TOKEN40], { cut: AE_NAME_CUT, mark: AE_CUT_MARK });
     try {
+      /** A case: its input at n UTF-16 units, built outside the timing, then the timed call that gives the paragraph. */
+      type Case = (n: number) => () => string | Promise<string>;
       // An expression that throws a long string: After Effects' own message carries it whole, the call
       // echoes it as an argument, and the code excerpt quotes the line that holds it.
-      const crafted: [string, (n: number) => string][] = [
-        ["escaped quotes after a quote never closed", (n) => `x"${'a\\"'.repeat(n / 3)}`],
-        ["a long run of spaces", (n) => `x${" ".repeat(n)}y`],
-        // A parameter miss whose query and listed name are long and one edit apart: ranking measures their edit distance.
-        ["a parameter miss with long names", (n) => `: "${"a".repeat(n / 2)}"; parameters: ["${"a".repeat(n / 2 - 1)}b"]`],
-        // Each starts a property-path miss that is looked for up to the end of the text.
-        ["property-path misses", (n) => 'segment "a" not found '.repeat(n / 22)],
-        // Each is a quoted name as long as one After Effects cut, its kept text the first character of a key.
-        ["names that look cut", (n) => `"${"0".repeat(AE_NAME_CUT)}${AE_CUT_MARK}", `.repeat(n / 67)],
-      ];
-      for (const [label, make] of crafted) {
-        // 20 KB first: a cost that grows faster than the length fails there within seconds, instead of running on for minutes at 200 KB.
-        for (const size of [20_000, 200_000]) {
-          const thrown = make(size);
+      const expression =
+        (make: (n: number) => string): Case =>
+        (n) => {
+          const thrown = make(n);
           const script = setExpressionScript(12, 1, "position", undefined, thrown);
           const at = AE_PRELUDE_LINES + 1 + bodyLineOf(script, "var e = ");
           const message = `Expression error: Error: ${thrown} ${DASH} fix the expression; the property keeps its previous one.`;
           const args = { compId: 12, layerIndex: 1, property: "position", expression: thrown };
-          const started = performance.now();
-          const e = runAsToolCall({ tool: "ae_set_expression", args }, () => enrichAeError(new ScriptError("after_effects", message, at), script)) as ScriptError;
-          const text = scriptErrorText(e);
-          expect(performance.now() - started, `${label}, ${size} units`).toBeLessThan(500);
-          expect(message.length, label).toBeGreaterThan(size);
-          expect(e.details.where).toBe("body");
-          expect(e.details.excerpt!.join("\n"), label).toContain(">>> 4: var e = ");
+          return () => scriptErrorText(runAsToolCall({ tool: "ae_set_expression", args }, () => enrichAeError(new ScriptError("after_effects", message, at), script)) as ScriptError);
+        };
+      // ae_apply_effect with a name no installed effect has: its miss path compares, folds and ranks the
+      // name against the installed list (cached, as after a first miss).
+      const effectMiss =
+        (make: (n: number) => string): Case =>
+        (n) => {
+          const matchName = make(n);
+          const script = applyEffectScript(12, 1, matchName);
+          const at = AE_PRELUDE_LINES + 1 + bodyLineOf(script, "canAddProperty");
+          const message = `${EFFECT_MISS}"${matchName.slice(0, AE_NAME_CUT)}${AE_CUT_MARK}" (layer 1 "BG" (solid)) ${DASH} use an installed effect's match name, e.g. 'ADBE Gaussian Blur 2', or its display name.`;
+          const args = { compId: 12, layerIndex: 1, matchName };
+          const { catalog } = fixedCatalog(EFFECTS);
+          return () =>
+            runAsToolCall({ tool: "ae_apply_effect", args }, async () =>
+              scriptErrorText((await withEffectSuggestions(catalog, enrichAeError(new ScriptError("after_effects", message, at), script), matchName)) as ScriptError),
+            );
+        };
+      // The message is cut; its own step follows the cut (I4).
+      const ownStep = (text: string) => {
+        expect(text).toContain(`chars) ${DASH} fix the expression; the property keeps its previous one. Code: `);
+        expect(text).toContain(" | >>> 4: var e = ");
+      };
+      const cases: [string, Case, (text: string) => void][] = [
+        ["escaped quotes after a quote never closed", expression((n) => `x"${'a\\"'.repeat(n / 3)}`), ownStep],
+        ["a long run of spaces", expression((n) => `x${" ".repeat(n)}y`), ownStep],
+        // A parameter miss whose query and listed name are long and one edit apart: ranking measures their edit distance.
+        ["a parameter miss with long names", expression((n) => `: "${"a".repeat(n / 2)}"; parameters: ["${"a".repeat(n / 2 - 1)}b"]`), ownStep],
+        // Each starts a property-path miss that is looked for up to the end of the text.
+        ["property-path misses", expression((n) => 'segment "a" not found '.repeat(n / 22)), ownStep],
+        // Each is a quoted name as long as one After Effects cut, its kept text the first character of a key.
+        ["names that look cut", expression((n) => `"${"0".repeat(AE_NAME_CUT)}${AE_CUT_MARK}", `.repeat(n / 67)), ownStep],
+        // Combining marks in descending class order: NFC (fold) reorders such a run in time quadratic in its length.
+        [
+          "an effect name of combining marks",
+          effectMiss((n) => `a${"\u0301".repeat(n / 2)}${"\u0316".repeat(n / 2)}`),
+          (text) => {
+            expect(text).toContain(`: ${EFFECT_MISS}"a`);
+            expect(text).not.toContain("Did you mean");
+          },
+        ],
+      ];
+      for (const [label, prepare, check] of cases) {
+        // Each size is 10 times the last, so linear work takes about 10 times as long and quadratic work
+        // about 100 times: a run may take at most 40 times the one before it, however fast or slow the
+        // machine. The smallest size goes first, so a cost that grows faster than the length fails
+        // within seconds instead of running on for minutes at 200 KB. The fastest of 5 runs counts (a
+        // GC pause or a busy CI runner does not), and a run before is credited with at least 2 ms
+        // (timer noise on a fast machine cannot fail a linear case).
+        let before = 0;
+        for (const size of [2_000, 20_000, 200_000]) {
+          const run = prepare(size);
+          let fastest = Number.POSITIVE_INFINITY;
+          let text = "";
+          for (let i = 0; i < 5; i++) {
+            const started = performance.now();
+            text = await run();
+            fastest = Math.min(fastest, performance.now() - started);
+          }
+          if (before > 0) {
+            expect(fastest, `${label}: ${size} units took ${fastest.toFixed(1)} ms, ${size / 10} took ${before.toFixed(1)} ms`).toBeLessThan(40 * Math.max(before, 2));
+          }
+          before = fastest;
+          expect(text, label).toMatch(/ at body line \d+ /);
           expect(text, label).toMatch(/…\(\+\d+ chars\)/);
+          expect(text, label).toContain("Code: ");
+          check(text);
         }
       }
     } finally {
@@ -1381,31 +1455,90 @@ describe("enrichAeError", () => {
     }
   });
 
-  it("adds the generic next step when the paragraph cuts a message before its own (H3)", () => {
-    const body = (script: string): ScriptError => {
+  it("puts the message's own step back after the cut when the paragraph cuts a message, wherever the cut falls (H3, I4)", () => {
+    const fails = (script: string, setup: (host: AeHost) => void = (h) => fileStubs(h)): ScriptError => {
       const host = aeHost();
-      fileStubs(host);
+      setup(host);
       return enrichAeError(scriptError(failIn(host, script)), script) as ScriptError;
     };
+    /** The paragraph's message part ends in the cut, then `step`, then the code. */
+    const afterCut = (step: string): RegExp => new RegExp(`…\\(\\+\\d+ chars\\) ${DASH} ${step.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\. Code: `);
+    const OPEN = "pass the absolute path of an existing .aep file";
     // ae_open_project with a path longer than the paragraph shows (Windows takes long paths).
-    const long = body(openProjectScript(`C:\\${"a-long-folder-name\\".repeat(95)}project.aep`));
+    const long = fails(openProjectScript(`C:\\${"a-long-folder-name\\".repeat(95)}project.aep`));
     expect(long.message.length).toBeGreaterThan(MESSAGE_LIMIT);
-    expect(long.message.endsWith(`${DASH} pass the absolute path of an existing .aep file.`)).toBe(true);
-    expect(long.details.next).toBe(NEXT_BODY);
-    // The paragraph: the message cut, then the step, then the code.
-    expect(scriptErrorText(long)).toMatch(new RegExp(`…\\(\\+\\d+ chars\\) ${DASH} ${NEXT_BODY.replace(/[()]/g, "\\$&")}\\. Code: `));
+    expect(long.message.endsWith(`${DASH} ${OPEN}.`)).toBe(true);
+    expect(long.details.next).toBe(OPEN);
+    expect(scriptErrorText(long)).toMatch(afterCut(OPEN));
     // A path the paragraph shows whole keeps the message's own step and gets no other.
-    const short = body(openProjectScript("C:\\projects\\project.aep"));
+    const short = fails(openProjectScript("C:\\projects\\project.aep"));
     expect(short.details.next).toBeUndefined();
-    expect(scriptErrorText(short)).toContain(`project.aep ${DASH} pass the absolute path of an existing .aep file. Code: `);
-    // An expression that throws a long string: its message's step is past the cut too.
-    const at = AE_PRELUDE_LINES + 4;
-    const message = `Expression error: Error: ${"x".repeat(MESSAGE_LIMIT)} ${DASH} fix the expression; the property keeps its previous one.`;
-    expect((enrichAeError(new ScriptError("after_effects", message, at), LIST_COMPOSITIONS) as ScriptError).details.next).toBe(NEXT_BODY);
+    expect(scriptErrorText(short)).toContain(`project.aep ${DASH} ${OPEN}. Code: `);
+
+    // Every length from one the paragraph shows whole to one it cuts before the dash: the cut falls
+    // after the step's period, on it, inside the step, right after the dash, on it and before it.
+    // The message part shows the step once, whole: in the message while the cut leaves it so, after
+    // the cut otherwise.
+    const script = openProjectScript("C:\\p.aep");
+    const at = AE_PRELUDE_LINES + 1 + bodyLineOf(script, "No file at");
+    const frame = `No file at C:\\.aep ${DASH} ${OPEN}.`;
+    const message = (length: number): string => `No file at C:\\${"p".repeat(length - frame.length)}.aep ${DASH} ${OPEN}.`;
+    expect(fails(openProjectScript(`C:\\${"p".repeat(1450)}.aep`)).message).toBe(message(1450 + frame.length));
+    for (let length = MESSAGE_LIMIT - 2; length <= MESSAGE_LIMIT + OPEN.length + 8; length++) {
+      const e = enrichAeError(new ScriptError("after_effects", message(length), at), script) as ScriptError;
+      const text = scriptErrorText(e);
+      const shown = text.slice(0, text.indexOf(" Code: "));
+      expect(shown.split(OPEN).length - 1, `${length}: ${shown.slice(-200)}`).toBe(1);
+      if (length <= MESSAGE_LIMIT) {
+        expect(e.details.next, String(length)).toBeUndefined();
+        expect(text, String(length)).toContain(`.aep ${DASH} ${OPEN}. Code: `);
+      } else if (length === MESSAGE_LIMIT + 1) {
+        // Only the period is cut: the step still shows whole.
+        expect(e.details.next, String(length)).toBeUndefined();
+        expect(text, String(length)).toContain(`.aep ${DASH} ${OPEN}…(+1 chars) Code: `);
+      } else {
+        expect(e.details.next, String(length)).toBe(OPEN);
+        expect(text, String(length)).toMatch(afterCut(OPEN));
+      }
+    }
+
+    // ae_export_mogrt into a folder it cannot write: a long folder, and one holding " — " too. The
+    // code excerpt is cut as well, so the step is shown only after the message.
+    const notWritten = (h: AeHost) => {
+      fileStubs(h);
+      Object.assign(h.app, { beginSuppressDialogs: () => undefined, endSuppressDialogs: () => undefined });
+      Object.assign(h.app.project, { file: {}, save: () => undefined });
+      h.comp(12).exportAsMotionGraphicsTemplate = () => false;
+    };
+    const WRITE = "pass a folder you can write to, then retry";
+    for (const folder of [`C:/${"f".repeat(1380)}`, `/Users/me/Clients/Acme ${DASH} Final/${"a-long-folder-name/".repeat(95)}`]) {
+      const e = fails(exportMogrtScript(12, folder, "LT", true), notWritten);
+      expect(e.message.length).toBeGreaterThan(MESSAGE_LIMIT);
+      expect(e.message.endsWith(`${DASH} ${WRITE}.`)).toBe(true);
+      expect(e.details.next).toBe(WRITE);
+      expect(scriptErrorText(e)).toMatch(afterCut(WRITE));
+    }
+
+    // An expression that throws a long string, with a " — " of its own: the message's step is the last clause.
+    const body = AE_PRELUDE_LINES + 4;
+    const FIX = "fix the expression; the property keeps its previous one";
+    for (const thrown of ["x".repeat(MESSAGE_LIMIT), `Value ${DASH} too big: ${"x".repeat(2000)}`]) {
+      const e = enrichAeError(new ScriptError("after_effects", `Expression error: Error: ${thrown} ${DASH} ${FIX}.`, body), LIST_COMPOSITIONS) as ScriptError;
+      expect(e.details.next).toBe(FIX);
+      expect(scriptErrorText(e)).toMatch(afterCut(FIX));
+    }
+
+    // A long message with no step of its own gets the generic one: none at all, a " — " only inside a
+    // quoted name, or a last clause far longer than any step a tool writes (other text, not a step).
+    const generic = (message: string) => (enrichAeError(new ScriptError("after_effects", message, body), LIST_COMPOSITIONS) as ScriptError).details.next;
+    expect(generic(`After Effects error: ${"x".repeat(2000)}`)).toBe(NEXT_BODY);
+    expect(generic(`Unable to find "Intro ${DASH} Final" in ${"x".repeat(2000)}`)).toBe(NEXT_BODY);
+    expect(generic(`Unable to evaluate ${DASH} ${"x".repeat(2000)}`)).toBe(NEXT_BODY);
+
     // The cut is counted in code points, after redaction: a step that the paragraph still shows counts.
     const fits = `Expression error: Error: ${"\u{1F600}".repeat(MESSAGE_LIMIT - 120)} ${DASH} fix the expression.`;
     expect(fits.length).toBeGreaterThan(MESSAGE_LIMIT);
-    expect((enrichAeError(new ScriptError("after_effects", fits, at), LIST_COMPOSITIONS) as ScriptError).details.next).toBeUndefined();
+    expect((enrichAeError(new ScriptError("after_effects", fits, body), LIST_COMPOSITIONS) as ScriptError).details.next).toBeUndefined();
   });
 
   it("a host failure inside a helper gets a next step that fits the helper, never one that blames the arguments (R20)", () => {
@@ -1572,6 +1705,38 @@ describe("withEffectSuggestions (M20)", () => {
     const plain = new Error("x");
     expect(await withEffectSuggestions(c.catalog, plain, "x")).toBe(plain);
   });
+
+  it("folds and ranks no name longer than EFFECT_NAME_MAX, and still checks it exactly first (I1)", async () => {
+    // NFC reorders a run of combining marks in time quadratic in its length: the name must never reach fold().
+    const lengths: number[] = [];
+    const normalize = String.prototype.normalize;
+    const spy = vi.spyOn(String.prototype, "normalize").mockImplementation(function (this: string, form?: string) {
+      lengths.push(this.length);
+      return normalize.call(this, form);
+    });
+    try {
+      // One past the limit; NFC would put the marks in order, and the name would then fold to an installed one.
+      const installed: InstalledEffect = { matchName: "VEND Long", displayName: `a${"\u0316\u0301".repeat(EFFECT_NAME_MAX / 2)}` };
+      const requested = `a${"\u0301\u0316".repeat(EFFECT_NAME_MAX / 2)}`;
+      expect(requested.length).toBe(EFFECT_NAME_MAX + 1);
+      const miss = missFor(`"${requested.slice(0, AE_NAME_CUT)}${AE_CUT_MARK}"`);
+      for (const rules of [STRICT, LENIENT]) {
+        expect(await withEffectSuggestions(fixedCatalog([...EFFECTS, installed]).catalog, miss, requested, rules)).toBe(miss);
+      }
+      // Compared exactly, an installed name that long is still found: that folds nothing.
+      const out = (await withEffectSuggestions(fixedCatalog([...EFFECTS, installed]).catalog, miss, installed.displayName, STRICT)) as ScriptError;
+      expect(out.details.suggestions).toEqual([{ name: "VEND Long", label: installed.displayName }]);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(Math.max(0, ...lengths)).toBeLessThanOrEqual(EFFECT_NAME_MAX);
+    // One unit shorter, the same name is folded: the case-folded display-name rule finds the effect.
+    const near = `a${"\u0301\u0316".repeat(EFFECT_NAME_MAX / 2 - 1)}\u0301`;
+    const installedNear: InstalledEffect = { matchName: "VEND Near", displayName: `a${"\u0316\u0301".repeat(EFFECT_NAME_MAX / 2 - 1)}\u0301` };
+    expect(near.length).toBe(EFFECT_NAME_MAX);
+    const found = (await withEffectSuggestions(fixedCatalog([...EFFECTS, installedNear]).catalog, missFor("x"), near, STRICT)) as ScriptError;
+    expect(found.details.suggestions).toEqual([{ name: "VEND Near", label: installedNear.displayName }]);
+  });
 });
 
 describe("EffectCatalog (M18, M19, M22)", () => {
@@ -1677,6 +1842,18 @@ describe("EffectCatalog (M18, M19, M22)", () => {
     await h.catalog.candidates("x");
     expect(h.sent).toHaveLength(1);
   });
+
+  it("the filtered read folds and sends no name longer than EFFECT_NAME_MAX: no installed name is near one (I1)", async () => {
+    const h = harness([async () => Promise.reject(new EvalTimeoutError("after_effects", 10_000)), async () => LIST]);
+    await expect(h.catalog.candidates("x")).rejects.toBeInstanceOf(EvalTimeoutError);
+    h.bump();
+    expect(await h.catalog.candidates(`a${"\u0301\u0316".repeat(EFFECT_NAME_MAX / 2)}`)).toEqual([]);
+    expect(h.sent).toHaveLength(1);
+    // At the limit, the filtered read runs.
+    const atLimit = "x".repeat(EFFECT_NAME_MAX);
+    expect(await h.catalog.candidates(atLimit)).toHaveLength(2);
+    expect(h.sent[1]).toBe(filteredEffectsScript(atLimit, suggestionThreshold(atLimit)));
+  });
 });
 
 // ---- the other evaluate sites: ae_render_frame and job steps (R3, R5) ---------------
@@ -1737,6 +1914,26 @@ describe("ae_render_frame and ae_render_comp's job step keep the tool context (R
     expect(value?.description).toMatch(/number/i);
     expect(value?.description).toMatch(/\[r, g, b\]/);
     expect(value?.description).toMatch(/string/i);
+    await s.close();
+  });
+
+  it("ae_apply_effect takes an effect name up to EFFECT_NAME_MAX units and refuses a longer one before After Effects sees it (I1)", async () => {
+    // Far above any name After Effects has: the fixture's longest match or display name is a few dozen characters.
+    expect(Math.max(...AE_EFFECT_ITEMS.flatMap((e) => [e.matchName.length, e.displayName.length])) * 10).toBeLessThan(EFFECT_NAME_MAX);
+    const sent: string[] = [];
+    const s = await session(async (script) => {
+      sent.push(script);
+      return { index: 1, name: "x", matchName: "x", params: [] };
+    });
+    const tool = (await s.tools()).find((t) => t.name === "ae_apply_effect");
+    const matchName = (tool!.inputSchema["properties"] as Record<string, { maxLength?: number; description?: string }>)["matchName"];
+    expect(matchName?.maxLength).toBe(EFFECT_NAME_MAX);
+    expect(matchName?.description).toContain(`at most ${EFFECT_NAME_MAX} characters`);
+    const call = (name: string) => s.call("ae_apply_effect", { compId: 12, layerIndex: 1, matchName: name }).then((r) => r.isError === true, () => true);
+    expect(await call("x".repeat(EFFECT_NAME_MAX))).toBe(false);
+    expect(sent).toHaveLength(1);
+    expect(await call("x".repeat(EFFECT_NAME_MAX + 1))).toBe(true);
+    expect(sent).toHaveLength(1);
     await s.close();
   });
 

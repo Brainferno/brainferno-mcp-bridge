@@ -76,9 +76,9 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   it failed (`at body line N (script line M)` with the failing line and its neighbours,
   `in helper __x`, or `outside this tool's own code` for an error the panel hit while
   converting the result) and what to do next; the old `(line N)` was a line of the generated
-  script. Every error the tools raise carries its own next step; a generic one is added only
-  to an error After Effects raised itself, or to a message too long to show whole (a long file
-  path, a long expression error) whose own step falls past the cut, and it fits where that
+  script. Every error the tools raise ends with its own next step; a message too long to show
+  whole (a long file path, a long expression error) is cut, and its own step follows the cut.
+  A generic step is added only to an error After Effects raised itself, and it fits where that
   happened (inside a shared helper it no longer blames the arguments you passed). A ` — `
   inside a quoted name never counts as a next step. Echoed arguments are cut (80 characters
   per string, 5 items per array, 300 overall), lose any bidi override, and never show the
@@ -110,9 +110,12 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   slow); a name that differs from an installed one only in case gets that exact match name, and
   an installed effect After Effects would not add to the layer gets a note instead of guesses.
   Property, effect and parameter misses suggest from the names they list, leaving out a name
-  that repeats, in the list or past it, since it cannot pick one item; when such a name is the
-  nearest one to the name asked for (`Z Positon` on Card Dance), no name farther from it is
-  suggested either, and the advice lists its match names first.
+  that repeats, in the list or past it, since it cannot pick one item; when such a name is as
+  near the name asked for as any (`Z Positon` on Card Dance), no name farther from it is
+  suggested either: you most likely meant it, and the advice says how to reach it where the
+  tool has a way (by match name for effect and layer-style parameters, by the effect's index,
+  or by renaming where After Effects allows it). `ae_apply_effect` takes an effect name of at
+  most 1024 characters.
 - After Effects scripts are sent as pure ASCII (AE-16): non-ASCII characters travel as `\uXXXX`
   escapes; the result is the same text.
 - All apps (AE-16): a panel older than the server (`UNKNOWN_COMMAND`) now says to update or
