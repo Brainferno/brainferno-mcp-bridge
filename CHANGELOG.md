@@ -77,10 +77,12 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   `in helper __x`, or `outside this tool's own code` for an error the panel hit while
   converting the result) and what to do next; the old `(line N)` was a line of the generated
   script. Every error the tools raise carries its own next step; a generic one is added only
-  to an error After Effects raised itself, and it fits where that happened (inside a shared
-  helper it no longer blames the arguments you passed). A ` — ` inside a quoted name never
-  counts as a next step. Echoed arguments are cut (80 characters per string, 5 items per
-  array, 300 overall), lose any bidi override, and never show the server's keys or tokens;
+  to an error After Effects raised itself, or to a message too long to show whole (a long file
+  path, a long expression error) whose own step falls past the cut, and it fits where that
+  happened (inside a shared helper it no longer blames the arguments you passed). A ` — `
+  inside a quoted name never counts as a next step. Echoed arguments are cut (80 characters
+  per string, 5 items per array, 300 overall), lose any bidi override, and never show the
+  server's keys or tokens;
   neither does the host's message, even where After Effects cut a listed name part-way
   through one, except where that cut falls less than 8 characters into a key: those (at most
   7) characters stay, too few to recognise as a key. No error-code prefix. Other apps' script
@@ -108,7 +110,9 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   slow); a name that differs from an installed one only in case gets that exact match name, and
   an installed effect After Effects would not add to the layer gets a note instead of guesses.
   Property, effect and parameter misses suggest from the names they list, leaving out a name
-  that repeats, in the list or past it, since it cannot pick one item.
+  that repeats, in the list or past it, since it cannot pick one item; when such a name is the
+  nearest one to the name asked for (`Z Positon` on Card Dance), no name farther from it is
+  suggested either, and the advice lists its match names first.
 - After Effects scripts are sent as pure ASCII (AE-16): non-ASCII characters travel as `\uXXXX`
   escapes; the result is the same text.
 - All apps (AE-16): a panel older than the server (`UNKNOWN_COMMAND`) now says to update or

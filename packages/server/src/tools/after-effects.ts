@@ -12,11 +12,11 @@ import { EvalTimeoutError, ScriptError, type AppBridge, type EvalOptions, type J
 import type { JobRegistry } from "../jobs.js";
 import { log } from "../logging.js";
 import { currentToolCall, withToolContext } from "./call-context.js";
-import { QUOTED_SPAN, echoArgs, excerptLine } from "./echo.js";
+import { MESSAGE_LIMIT, QUOTED_SPAN, echoArgs, excerptLine, shownMessage } from "./echo.js";
 import { runOrQueue, waitParam, type ProgressExtra } from "./jobs.js";
 import { lineCount } from "./raw-script.js";
 import { guard, imageResult, jsonResult } from "./result.js";
-import { closestNames, fold, rank, stripAeVendor, suggestionThreshold } from "./suggest.js";
+import { fold, rank, stripAeVendor, suggestionThreshold } from "./suggest.js";
 
 /**
  * After Effects is ExtendScript-only (ES3): the scripts below deliberately use
@@ -57,10 +57,10 @@ const rgb = (hex: string): string => {
 const HELPERS = String.raw`
   // Length budgets (UTF-16 units). The server keeps the first 1500 code points of a message. A miss
   // that lists a group's children (__miss) is at most __MSG units; the 100 left under the cap are
-  // for redaction, which writes "[redacted]" (10) over a secret as short as 8. Any other message
-  // these scripts write lists one kind of thing within __BUDGET beside a few quoted names (__q: at
-  // most 125 units each), so it stays under 1000. Either way the server cuts none of it, and the
-  // "what to do next" clause at the end is kept.
+  // for redaction, which writes "[redacted]" (10) over a secret as short as 8. A message built only
+  // from names __q quoted (at most 125 units each) and lists within __BUDGET stays under 1000. The
+  // server cuts neither, so their "what to do next" clause is kept. One that holds a raw file path
+  // or After Effects' own expression error has no bound: cut, it gets a next step from the server.
   var __MSG = 1400;
   var __BUDGET = 600;
   var __PATH_BUDGET = 300;
@@ -536,9 +536,10 @@ const AE_NO_ARG_ECHO: ReadonlySet<string> = new Set(["ae_run_script"]);
 
 /**
  * What to say next when the host message does not. Every throw the builders and helpers raise
- * carries its own " — <next step>", so these reach only errors After Effects raised itself.
- * A bad id, index or path always gets a helper's own message, so a host error inside a helper
- * never blames the arguments.
+ * carries its own " — <next step>", so these reach errors After Effects raised itself, and a
+ * builder's message the paragraph cuts before its step (one holding a long raw path or a long
+ * expression error). A bad id, index or path always gets a helper's own message, so a host error
+ * inside a helper never blames the arguments.
  */
 const AE_NEXT_STEP = {
   body: "check the values the line marked >>> uses (ae_get_comp and ae_get_layer show what exists), then retry",
@@ -560,17 +561,20 @@ function aeNextStep(at: AeErrorLocation): string {
 }
 
 /**
- * Whether the host message already says what to do next: a " — " outside the names it quotes
- * (__q's quoting, or a host's own). A quote that is never closed quotes nothing.
+ * Whether the text an error paragraph shows of the host message (shownMessage: redacted, on one
+ * line, cut at MESSAGE_LIMIT) already says what to do next: a " — " outside the names it quotes
+ * (__q's quoting, or a host's own). A quote that is never closed quotes nothing; a step past the
+ * cut is not shown, so it does not count.
  */
-function saysNext(message: string): boolean {
-  return message.replace(QUOTED_SPAN, (span: string, inner: string | undefined) => (inner === undefined ? span : '""')).includes(" — ");
+function saysNext(shown: string): boolean {
+  return shown.replace(QUOTED_SPAN, (span: string, inner: string | undefined) => (inner === undefined ? span : '""')).includes(" — ");
 }
 
 /**
  * Adds AE-16's details to an After Effects ScriptError raised by `script`: where the line falls,
  * the code around a body line, the tool and its arguments (from the tool-call context), "did you
- * mean" names from a list the host message carries, and a next step when the message has none.
+ * mean" names from a list the host message carries, and a next step when what the paragraph shows
+ * of the message has none.
  * Anything else is returned unchanged; message, appId and scriptLine never change.
  */
 export function enrichAeError(error: unknown, script: string): unknown {
@@ -584,7 +588,7 @@ export function enrichAeError(error: unknown, script: string): unknown {
     ...(at.kind === "helper" ? { helper: at.helper } : {}),
     ...(call !== undefined ? { tool: call.tool, ...(call.args !== undefined ? { args: echoArgs(call.args) } : {}) } : {}),
     ...(names.length > 0 ? { suggestions: names.map((name) => ({ name })) } : {}),
-    ...(saysNext(error.message) ? {} : { next: aeNextStep(at) }),
+    ...(saysNext(shownMessage(error.message)) ? {} : { next: aeNextStep(at) }),
   });
 }
 
@@ -610,8 +614,11 @@ const LIST_MISSES: readonly RegExp[] = [
   new RegExp(`^No composition named ${JSON_STRING}; compositions: (?=\\[)`),
 ];
 
+/** The most UTF-16 units of a name __q writes, decoded: AE_NAME_CUT, then the mark. */
+const QUOTED_NAME_MAX = AE_NAME_CUT + CUT_MARK.length;
+
 /** __q cuts names at AE_NAME_CUT UTF-16 units and appends "...": such a name can never resolve. */
-const isCutName = (s: string): boolean => s.length === AE_NAME_CUT + CUT_MARK.length && s.endsWith(CUT_MARK);
+const isCutName = (s: string): boolean => s.length === QUOTED_NAME_MAX && s.endsWith(CUT_MARK);
 
 function parseJsonString(literal: string): string | null {
   try {
@@ -648,11 +655,11 @@ function readJsonStringArray(text: string, start: number): { items: string[]; en
   return null;
 }
 
-/** The names that appear once: a name that repeats in a list names several items, and a lookup by it reaches only the first. */
-function onlyUnique(names: readonly string[]): string[] {
+/** The names that appear more than once in a list: such a name names several items, and a lookup by it reaches only the first. */
+function repeatsIn(names: readonly string[]): string[] {
   const seen = new Map<string, number>();
   for (const n of names) seen.set(n, (seen.get(n) ?? 0) + 1);
-  return names.filter((n) => seen.get(n) === 1);
+  return [...seen].filter(([, count]) => count > 1).map(([n]) => n);
 }
 
 /** What __kids writes after a list when names repeat among all the children, listed or not; then the count __list adds when it cut. */
@@ -675,21 +682,40 @@ function repeatedNames(message: string, end: number): string[] | null {
  * Ranks the names a host message lists against the name it could not find, leaving out cut names,
  * names that repeat in the list and names the host says repeat among children it did not list;
  * [] when the message is not one of these misses or does not parse.
+ *
+ * A repeated name is never offered, since it cannot pick one item. When one is the nearest of all
+ * the names (listed, or named as repeated), a name farther from the query than it is not offered
+ * either: the advice already lists that name's match names first, and a farther name would point
+ * away from what the caller most likely meant. Names as near as it stay, and when the nearest name
+ * does not repeat, every suggestion stays.
+ *
+ * Bounded before any parsing, because reading a long text costs time that grows faster than its
+ * length (the path pattern looks for its list from every "segment" to the end of the text; an edit
+ * distance costs the product of the two names' lengths), and a host message can carry long client
+ * text (an expression error). No message the helpers write is longer than MESSAGE_LIMIT (__miss
+ * keeps to __MSG, ae_queue_render's list stays under 1000), and __q writes no name longer than
+ * QUOTED_NAME_MAX: anything longer is not one of these misses.
  */
 export function aeListSuggestions(message: string): string[] {
+  if (message.length > MESSAGE_LIMIT) return [];
   for (const re of LIST_MISSES) {
     const m = re.exec(message);
     if (m === null) continue;
     const query = parseJsonString(m[1]!);
     const names = readJsonStringArray(message, m.index + m[0].length);
-    if (query === null || names === null || /^\d+$/.test(query) || isCutName(query)) return [];
-    const repeated = repeatedNames(message, names.end);
-    if (repeated === null) return [];
-    return closestNames(
-      query,
-      onlyUnique(names.items).filter((n) => !isCutName(n) && !repeated.includes(n)),
-      { limit: 3, normalize: stripAeVendor },
-    );
+    if (query === null || names === null || /^\d+$/.test(query) || query.length > QUOTED_NAME_MAX || isCutName(query)) return [];
+    const past = repeatedNames(message, names.end);
+    if (past === null) return [];
+    const repeated = new Set([...past, ...repeatsIn(names.items)]);
+    const pool = [...new Set([...names.items, ...past])].filter((n) => n !== query && n.length <= QUOTED_NAME_MAX && !isCutName(n));
+    const ranked = rank(query, pool, (n) => [n], { limit: pool.length, normalize: stripAeVendor });
+    const nearest = ranked[0];
+    if (nearest === undefined) return [];
+    const nearestRepeats = repeated.has(nearest.item);
+    return ranked
+      .filter((r) => !repeated.has(r.item) && (!nearestRepeats || r.distance <= nearest.distance))
+      .slice(0, 3)
+      .map((r) => r.item);
   }
   return [];
 }
