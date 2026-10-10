@@ -1046,6 +1046,22 @@ describe("After Effects error context (AE-16)", () => {
     await s.close();
   });
 
+  it("a secret after other text in a composition name leaves no part of itself where the host cut the name (F1)", async () => {
+    // The shape of the generated panel token: 64 hex characters.
+    const secret = "9f2c4e7a1b3d5f60718293a4b5c6d7e8f9012a3b4c5d6e7f8091a2b3c4d5e6f7";
+    const ordinary = "Instagram_Story_1080x1920_v02_FINAL_extended_cut_for_client_review";
+    const s = await startSession({ httpToken: secret });
+    const panel = await connectPanel(s.bridge.port(), "after_effects");
+    vmPanel(panel, aeHost({ comps: [{ id: 12, name: `tok ${secret}` }, { id: 13, name: `bridge token: ${secret}` }, { id: 14, name: ordinary }] }));
+    const text = textOf(await s.c.callTool({ name: "ae_get_comp", arguments: { compId: 99 } }));
+    expect(text).toContain('12 "tok [redacted]...", 13 "bridge token: [redacted]..."');
+    expect(text).not.toContain(secret.slice(0, 8));
+    // An ordinary long name, cut by the host, is shown as cut.
+    expect(text).toContain(`14 "${ordinary.slice(0, 60)}..."`);
+    panel.close();
+    await s.close();
+  });
+
   it("labels each of two concurrent failures with its own tool", async () => {
     const s = await startSession({});
     const panel = await connectPanel(s.bridge.port(), "after_effects");

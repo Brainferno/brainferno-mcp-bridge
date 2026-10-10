@@ -97,6 +97,9 @@ function scriptError(r: { message: string; line: number | null }): ScriptError {
   return new ScriptError("after_effects", r.message, r.line ?? undefined, { code: "HOST_ERROR" });
 }
 
+/** Names as __list writes them (no name here needs escaping). */
+const list = (names: readonly string[]): string => JSON.stringify(names).replace(/","/g, '", "');
+
 
 describe("prelude contract (U1, A1, A5)", () => {
   it("puts the first body line right after AE_PRELUDE_LINES prelude lines", () => {
@@ -164,6 +167,32 @@ describe("prelude contract (U1, A1, A5)", () => {
       expect(text).not.toContain("QuietSecretValue");
     } finally {
       setRedactionSecrets([]);
+    }
+  });
+
+  it("a secret holding a control character and a quote or backslash, listed and near-missed, is redacted in the list and in 'did you mean' (F2)", () => {
+    for (const [secret, asked] of [
+      ['pass"Word\tXYZ12', 'pass"Word XYZ1'],
+      ["pass\\Word\tXYZ12", "pass\\Word XYZ1"],
+    ] as const) {
+      setRedactionSecrets([secret], { cut: AE_NAME_CUT });
+      try {
+        // A shape group named with the secret, one edit from the segment asked for.
+        const shapes: ProjectSpec = { comps: [{ id: 12, name: "Main", layers: [{ kind: "shape", name: "S", shapes: [secret, "Shape 1"] }] }] };
+        const script = getKeyframesScript(12, 1, "position", ["ADBE Root Vectors Group", asked]);
+        const path = scriptErrorText(enrichAeError(scriptError(fail(script, shapes)), script) as ScriptError);
+        expect(path).toContain('children here: ["[redacted]", "Shape 1"]');
+        expect(path).toContain('Did you mean "[redacted]"?');
+        expect(path).not.toContain("XYZ12");
+        // ae_queue_render's composition list.
+        const queue = queueRenderScript(asked, "C:/r/a.mov", undefined);
+        const comps = scriptErrorText(enrichAeError(scriptError(fail(queue, { comps: [MAIN, { id: 15, name: secret }] })), queue) as ScriptError);
+        expect(comps).toContain('compositions: ["Main", "[redacted]"]');
+        expect(comps).toContain('Did you mean "[redacted]"?');
+        expect(comps).not.toContain("XYZ12");
+      } finally {
+        setRedactionSecrets([]);
+      }
     }
   });
 });
@@ -314,6 +343,7 @@ describe("__prop (property paths, acceptance 2)", () => {
       { kind: "solid", name: "Painted", effects: ["ADBE Paint"], strokes: ["Brush 1", "Brush 2"] },
       { kind: "shape", name: "Empty Shape" },
       { kind: "solid", name: "Cards", effects: ["ADBE Card Dance"] },
+      { kind: "solid", name: "Particles", effects: ["ADBE Playgnd"] },
     ],
   };
   const spec = { comps: [FX] };
@@ -374,8 +404,8 @@ describe("__prop (property paths, acceptance 2)", () => {
     expect(r.message).not.toContain("ADBE Vector Group");
     const twins = path(5, ["ADBE Root Vectors Group", "Shape 3"]);
     expect(twins.message).toBe(
-      'Property path not found on layer 5 "Twins" (shape): segment "Shape 3" not found under ["ADBE Root Vectors Group"]; children here: ["Shape 1", "Shape 1"] ' +
-        `${DASH} some of these names repeat, so a path cannot tell those apart; rename them in After Effects so each is unique, then pass one.`,
+      'Property path not found on layer 5 "Twins" (shape): segment "Shape 3" not found under ["ADBE Root Vectors Group"]; children here: ["Shape 1", "Shape 1"]; ' +
+        `repeated: ["Shape 1"] ${DASH} a path cannot tell repeated names apart; rename them in After Effects so each is unique, then pass one.`,
     );
     expect(twins.message).not.toContain("use one of these names");
     // "Shape 1" is one edit from "Shape 3", but it names two groups: never a suggestion (R6).
@@ -384,20 +414,36 @@ describe("__prop (property paths, acceptance 2)", () => {
     expect(scriptErrorText(enriched)).not.toContain("Did you mean");
   });
 
-  it("repeated names in a group users cannot rename point to the match names, listed in the same order (R18)", () => {
+  it("repeated names in a group users cannot rename point to each repeated name's match names, in order (R18, F5)", () => {
     const display = ["Rows", "Columns", "X Position", "Source", "Multiplier", "Offset", "Y Position", "Source", "Multiplier", "Offset"];
-    const matchNames = display.map((_, i) => `ADBE Card Dance-${String(i + 1).padStart(4, "0")}`);
+    const mn = (i: number) => `ADBE Card Dance-${String(i).padStart(4, "0")}`;
     const clause =
-      `${DASH} some of these names repeat, so a name cannot pick between them; pass the match name instead ` +
-      `(the same list by match name: ${JSON.stringify(matchNames).replace(/","/g, '", "')}).`;
+      `${DASH} a repeated name reaches only the first of them; pass the match name instead (by match name: ` +
+      `"Source": ${list([mn(4), mn(8)])}; "Multiplier": ${list([mn(5), mn(9)])}; "Offset": ${list([mn(6), mn(10)])}).`;
     const r = path(10, ["ADBE Effect Parade", "Card Dance", "Sorce"]);
     expect(r.message).toBe(
       'Property path not found on layer 10 "Cards" (solid): segment "Sorce" not found under ["ADBE Effect Parade", "Card Dance"]; ' +
-        `children here: ${JSON.stringify(display).replace(/","/g, '", "')} ${clause}`,
+        `children here: ${list(display)}; repeated: ["Source", "Multiplier", "Offset"] ${clause}`,
     );
     expect(r.message).not.toContain("rename");
     // "Source" is close, but it names two parameters: no suggestion (R6).
     expect(aeListSuggestions(r.message)).toEqual([]);
+  });
+
+  it("finds a repeat past the listed window, names what repeats, and gives every copy's match name (F5)", () => {
+    const shown = ["Cannon", "Position", "Barrel Radius", "Particles Per Second", "Direction", "Direction Random Spread", "Velocity", "Velocity Random Spread", "Color", "Particle Radius"];
+    const r = path(11, ["ADBE Effect Parade", "Particle Playground", "Positon"]);
+    // Only the first 10 children are listed; the second "Position", "Color" and "Particle Radius" are 21-23.
+    expect(r.message).toBe(
+      'Property path not found on layer 11 "Particles" (solid): segment "Positon" not found under ["ADBE Effect Parade", "Particle Playground"]; ' +
+        `children here: ${list(shown)} (+13 more); repeated: ["Position", "Color", "Particle Radius"] ` +
+        `${DASH} a repeated name reaches only the first of them; pass the match name instead (by match name: ` +
+        '"Position": ["ADBE Playgnd-0002", "ADBE Playgnd-0021"]; "Color": ["ADBE Playgnd-0009", "ADBE Playgnd-0022"]; ' +
+        '"Particle Radius": ["ADBE Playgnd-0010", "ADBE Playgnd-0023"]).',
+    );
+    // "Position" is one edit away and listed once, but it names two parameters: no suggestion.
+    expect(aeListSuggestions(r.message)).toEqual([]);
+    expect(r.message).not.toContain("use one of these names");
   });
 
   it("an empty group says it is empty and never offers to end the path at it (R11)", () => {
@@ -590,14 +636,47 @@ describe("effects and parameters", () => {
     const r = fail(setEffectParamScript(12, 1, 1, "Sorce", 5), cards);
     expect(r.message).toMatch(
       new RegExp(
-        `^Parameter not found on effect "Card Dance": "Sorce"; parameters: \\["Rows", .*"Source", .*"Source", .*\\] ${DASH} some of these names repeat, so a name cannot pick between them; ` +
-          `pass the match name instead \\(the same list by match name: \\["ADBE Card Dance-0001", .*"ADBE Card Dance-0010"\\]\\)\\.$`,
+        `^Parameter not found on effect "Card Dance": "Sorce"; parameters: \\["Rows", .*"Source", .*"Source", .*\\]; repeated: \\["Source", "Multiplier", "Offset"\\] ` +
+          `${DASH} a repeated name reaches only the first of them; pass the match name instead \\(by match name: "Source": \\["ADBE Card Dance-0004", "ADBE Card Dance-0008"\\]; .*\\)\\.$`,
       ),
     );
     expect(r.message).not.toContain("rename");
     expect(aeListSuggestions(r.message)).toEqual([]);
     // The match name the message offers resolves.
     expect(aeHost(cards).eval(setEffectParamScript(12, 1, 1, "ADBE Card Dance-0008", 5)).ok).toBe(true);
+  });
+
+  it("setEffectParamScript: a parameter that repeats past the 20 listed still counts, and every copy's match name is given (F5)", () => {
+    const particles: ProjectSpec = { comps: [{ id: 12, name: "Main", layers: [{ kind: "solid", name: "Particles", effects: ["ADBE Playgnd"] }] }] };
+    const r = fail(setEffectParamScript(12, 1, 1, "Positon", 5), particles);
+    expect(r.message).toMatch(
+      new RegExp(
+        `; parameters: \\["Cannon", .*"Gravity"\\] \\(\\+3 more\\); repeated: \\["Position", "Color", "Particle Radius"\\] ${DASH} ` +
+          'a repeated name reaches only the first of them; pass the match name instead \\(by match name: "Position": \\["ADBE Playgnd-0002", "ADBE Playgnd-0021"\\]; ',
+      ),
+    );
+    // A positional list of match names cut at 300 characters stopped before the 21st; these never do.
+    expect(r.message).toContain('"Particle Radius": ["ADBE Playgnd-0010", "ADBE Playgnd-0023"]).');
+    expect(aeListSuggestions(r.message)).toEqual([]);
+    // A close name that does not repeat is still suggested.
+    expect(aeListSuggestions(fail(setEffectParamScript(12, 1, 1, "Gravty", 5), particles).message)).toEqual(["Gravity"]);
+    // The match name offered for the second copy reaches it, not the first.
+    const host = aeHost(particles);
+    expect(host.eval(setEffectParamScript(12, 1, 1, "ADBE Playgnd-0021", 7)).ok).toBe(true);
+    const fx = host.comp(12).layer(1).property("ADBE Effect Parade").property(1);
+    expect([fx.property(2).value, fx.property(21).value]).toEqual([0, 7]);
+  });
+
+  it("setEffectParamScript: an effect name that repeats past the 20 listed effects still counts (F5)", () => {
+    const others = [
+      "ADBE Gaussian Blur 2", "ADBE Box Blur2", "ADBE Bilateral", "ADBE Camera Lens Blur", "CC Cross Blur", "CC Radial Blur", "CC Radial Fast Blur",
+      "CC Vector Blur", "ADBE Channel Blur", "ADBE Compound Blur", "ADBE Motion Blur", "ADBE Fast Blur", "ADBE Radial Blur", "ADBE Sharpen",
+      "ADBE Smart Blur", "ADBE Unsharp Mask", "ADBE Lens Blur", "ADBE Fast Box Blur", "ADBE Noise",
+    ];
+    const glows: ProjectSpec = { comps: [{ id: 12, name: "Main", layers: [{ kind: "solid", name: "BG", effects: ["ADBE Glo2", ...others, "ADBE Glo2"] }] }] };
+    const r = fail(setEffectParamScript(12, 1, "Glw", "Glow Radius", 5), glows);
+    expect(r.message).toContain(`(+1 more); repeated: ["Glow"] ${DASH} a repeated name reaches only the first of them; pass the effect's index (1 = first) instead.`);
+    expect(aeListSuggestions(r.message)).toEqual([]);
   });
 
   it("applyEffectScript on a camera, and an unknown effect at the canAddProperty body line", () => {
@@ -831,7 +910,18 @@ describe("every throw says what to do next, so none needs the generic step (R7, 
         Object.assign(h.app.project, { file: {}, save: () => undefined });
         h.comp(12).exportAsMotionGraphicsTemplate = () => false;
       },
-      message: `After Effects did not write C:/m/LT.mogrt (export returned false) ${DASH} if that file already exists, pass overwrite: true; otherwise pass a folder you can write to, then retry.`,
+      message:
+        `After Effects did not write C:/m/LT.mogrt (export returned false): the folder is not writable, or the export failed ${DASH} ` +
+        "pass a folder you can write to, then retry.",
+    },
+    {
+      name: "mogrt: already there, overwrite false",
+      script: exportMogrtScript(12, "C:/m", "LT", false),
+      setup: (h) => {
+        fileStubs(h, { exists: true });
+        Object.assign(h.app.project, { file: {} });
+      },
+      message: `A file already exists at C:/m/LT.mogrt ${DASH} pass overwrite: true (the default) or another outputPath.`,
     },
     {
       name: "queue render: unknown name",
@@ -869,6 +959,28 @@ describe("every throw says what to do next, so none needs the generic step (R7, 
   it("a listed parameter or composition name gets 'did you mean' (R17)", () => {
     expect(aeListSuggestions(fail(setLayerStyleParamScript(12, 1, "dropShadow", "Distnce", 5), STYLED).message)).toEqual(["Distance"]);
     expect(aeListSuggestions(fail(queueRenderScript("Mian", "C:/r/main.mov", undefined)).message)).toEqual(["Main"]);
+  });
+
+  it("ae_export_mogrt with overwrite false refuses an existing file before it saves or exports anything; overwrite true exports over it (F6)", () => {
+    const setup = (h: AeHost, calls: string[]) => {
+      fileStubs(h, { exists: true });
+      Object.assign(h.app, { beginSuppressDialogs: () => calls.push("suppress"), endSuppressDialogs: () => undefined });
+      Object.assign(h.app.project, { file: {}, save: () => calls.push("save") });
+      h.comp(12).exportAsMotionGraphicsTemplate = () => calls.push("export") > 0;
+    };
+    const refused: string[] = [];
+    const host = aeHost();
+    setup(host, refused);
+    const r = failIn(host, exportMogrtScript(12, "C:/m", "LT", false));
+    expect(r.message).toMatch(/^A file already exists at C:\/m\/LT\.mogrt/);
+    expect(refused).toEqual([]);
+    expect(host.comp(12).motionGraphicsTemplateName).toBeUndefined();
+
+    const written: string[] = [];
+    const over = aeHost();
+    setup(over, written);
+    expect(over.eval(exportMogrtScript(12, "C:/m", "LT", true))).toEqual({ ok: true, value: { compName: "Main", name: "LT", outputPath: "C:/m/LT.mogrt", controllerCount: null } });
+    expect(written).toEqual(["suppress", "save", "export"]);
   });
 
   it("renderCompHeadless's own failures say what to do next too", async () => {
@@ -910,6 +1022,16 @@ describe("aeListSuggestions", () => {
     expect(aeListSuggestions(`${head}["Shape 1", "Shape 1", "Shape 2"] — some of these names repeat`)).toEqual(["Shape 2"]);
     expect(aeListSuggestions('Effect not found on layer 1 "BG" (solid): "Glw"; effects on this layer: ["Glow", "Glow"] — some names repeat; pass the index')).toEqual([]);
     expect(aeListSuggestions('Parameter not found on effect "Glow": "Colr"; parameters: ["Color", "Size", "Color"] — x')).toEqual([]);
+  });
+
+  it("leaves out a name the host says repeats, though it is listed once; gives nothing when that list is cut or does not parse (F5)", () => {
+    const head = 'Property path not found on layer 5 "S" (shape): segment "Shape 3" not found under ["ADBE Root Vectors Group"]; children here: ';
+    expect(aeListSuggestions(`${head}["Shape 1", "Shape 2"] — use one of these names.`)).toEqual(["Shape 1", "Shape 2"]);
+    expect(aeListSuggestions(`${head}["Shape 1", "Shape 2"]; repeated: ["Shape 2"] — x`)).toEqual(["Shape 1"]);
+    expect(aeListSuggestions(`${head}["Shape 1", "Shape 2"] (+30 more); repeated: ["Shape 2"] — x`)).toEqual(["Shape 1"]);
+    // The host could not list every repeated name: any listed name might be one.
+    expect(aeListSuggestions(`${head}["Shape 1", "Shape 2"]; repeated: ["Shape 2"] (+1 more) — x`)).toEqual([]);
+    expect(aeListSuggestions(`${head}["Shape 1", "Shape 2"]; repeated: ["Shape 2" — x`)).toEqual([]);
   });
 
   it("parses ae_queue_render's composition list (R17)", () => {

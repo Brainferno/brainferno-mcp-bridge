@@ -11,6 +11,7 @@ import {
   redact,
   redactKnown,
   setRedactionSecrets,
+  stripBidi,
 } from "../src/tools/echo.js";
 
 const EMOJI = String.fromCodePoint(0x1f600);
@@ -88,6 +89,40 @@ describe("redact (R1-R4: echoed arguments and code excerpts)", () => {
     expect(redactKnown("conf...")).toBe("conf...");
   });
 
+  it("R1 with a cut length: a name the host cut inside a secret that follows other text keeps no part of the secret (F1)", () => {
+    setRedactionSecrets([HEX64], { cut: 60 });
+    // "tok " + HEX64 cut at 60 units keeps 56 characters of the secret; "bridge token: " + HEX64 keeps 46.
+    expect(redactKnown(`the project has 1: 12 "tok ${HEX64.slice(0, 56)}..." — pass one.`)).toBe('the project has 1: 12 "tok [redacted]..." — pass one.');
+    expect(redactKnown(`["bridge token: ${HEX64.slice(0, 46)}...", "Main"]`)).toBe('["bridge token: [redacted]...", "Main"]');
+
+    // A secret no longer than the cut that straddles it registers no prefix of its own.
+    setRedactionSecrets([TOKEN40], { cut: 60 });
+    expect(redactKnown(`12 "${"n".repeat(30)}${TOKEN40.slice(0, 30)}..."`)).toBe(`12 "${"n".repeat(30)}[redacted]..."`);
+
+    // The host's quoting: a quote and a backslash escaped, a control character a space.
+    const quoted = `pa"ss\\word\tXYZ-${"q".repeat(12)}`;
+    setRedactionSecrets([quoted], { cut: 60 });
+    const lead = "m".repeat(46); // leaves 14 units of the secret: pa"ss\word XYZ
+    expect(redactKnown(`12 "${lead}pa\\"ss\\\\word XYZ..."`)).toBe(`12 "${lead}[redacted]..."`);
+  });
+
+  it("R1 with a cut length: only the tail of a name the host cut, at least 8 characters long, and never an ordinary name (F1)", () => {
+    setRedactionSecrets([HEX64, TOKEN40, "configured-secret-value"], { cut: 60 });
+    // An ordinary long name, cut by the host, stays as it is.
+    const ordinary = `the project has 2: 12 "${"Instagram_Story_1080x1920_v02_FINAL_extended_cut_for_client_review".slice(0, 60)}...", 13 "Main"`;
+    expect(redactKnown(ordinary)).toBe(ordinary);
+    // A name the host did not cut (another length) is the project's own text.
+    const uncut = `12 "${"n".repeat(51)}${HEX64.slice(0, 8)}..."`;
+    expect(redactKnown(uncut)).toBe(uncut);
+    // Fewer than 8 characters of a secret at the cut are not a match.
+    const short = `12 "${"n".repeat(53)}${HEX64.slice(0, 7)}..."`;
+    expect(redactKnown(short)).toBe(short);
+    // Without a cut length there is no cut to look at.
+    setRedactionSecrets([HEX64]);
+    const plain = `12 "tok ${HEX64.slice(0, 56)}..."`;
+    expect(redactKnown(plain)).toBe(plain);
+  });
+
   it("R2: redacts only a credential-shaped Bearer value (M14)", () => {
     expect(redact("The ring bearer walks in")).toBe("The ring bearer walks in");
     expect(redact("Bearer abc")).toBe("Bearer abc");
@@ -132,6 +167,13 @@ describe("echoArgs (E1-E6)", () => {
     expect(out).not.toMatch(/mysec|valuez/);
     expect(out).toBe(`{s: "${"x".repeat(75)}[reda…(+5 chars)"}`);
     expect(echoArgs({ comment: HEX64 })).toBe('{comment: "[redacted]"}');
+  });
+
+  it("drops bidi embeddings, overrides and isolates from string values and keys, so the echo cannot reorder the paragraph after it (F4)", () => {
+    expect(echoArgs({ compId: 12, text: "abc‮def⁦g⁩" })).toBe('{compId: 12, text: "abcdefg"}');
+    expect(echoArgs({ "k⁦": 1, list: ["‪x‬"] })).toBe('{"k": 1, list: ["x"]}');
+    expect(echoArgs({ s: "‏א Café" })).toBe('{s: "‏א Café"}'); // marks and RTL letters stay
+    expect(stripBidi("a‪b‫c‬d‭e‮f⁦g⁧h⁨i⁩j")).toBe("abcdefghij");
   });
 
   it("E2: numbers, booleans and null as JSON; non-finite as null; undefined keys skipped", () => {

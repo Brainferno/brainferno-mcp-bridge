@@ -70,6 +70,16 @@ describe("scriptErrorText (AE-16)", () => {
     );
   });
 
+  it("UNKNOWN_COMMAND keeps the panel's text on one line and redacts it first (F9)", () => {
+    const secret = "abc \tDEF\r\nghijkl";
+    setRedactionSecrets([secret]);
+    const e = new ScriptError("premiere", `panel does not implement\r\npp.x\u001b[2J‮ (${secret})`, undefined, { code: "UNKNOWN_COMMAND" });
+    expect(scriptErrorText(e)).toBe(
+      "The Premiere Pro panel does not support this command (panel does not implement pp.x [2J ([redacted])) — it is older than this server; " +
+        "update the brainferno-mcp-bridge panel (or reload it after updating), then retry.",
+    );
+  });
+
   it("enriched body: tool, where, message, next step, code excerpt", () => {
     const e = new ScriptError("after_effects", "boom", 352, {
       code: "HOST_ERROR",
@@ -146,6 +156,8 @@ describe("scriptErrorText (AE-16)", () => {
   });
 
   it("redacts before it reflows: a secret holding a tab is still found in the message, note and suggestions (R8)", () => {
+    // A lone tab reflows to exactly the registered blanked form (one space), so this case passes in
+    // either order; the next test is the one that pins the order.
     const secret = "abc\tDEFghijkl";
     setRedactionSecrets([secret]);
     const e = new ScriptError("after_effects", `Unable to find "${secret}" here`, 5, {
@@ -156,6 +168,35 @@ describe("scriptErrorText (AE-16)", () => {
     const text = scriptErrorText(e);
     expect(text).not.toContain("DEFghijkl");
     expect(text).toBe('Script failed in After Effects: Unable to find "[redacted]" here Did you mean "[redacted]" (the [redacted] one)? note [redacted]');
+  });
+
+  it("redacts before it reflows, where reflowing would change the secret: whitespace beside a control character, CRLF, a bidi override (R8, F3)", () => {
+    // oneLine turns " \t" and "\r\n" into one space each and drops U+202E; the registered forms keep
+    // a space per control character and keep U+202E. So only redact-then-reflow finds these, in each
+    // of the message, the note, a suggestion's name and its label.
+    for (const [secret, tail] of [
+      ["abc \tDEF\r\nghijkl", "ghijkl"],
+      ["abc‮DEFghijkl", "DEFghijkl"],
+    ] as const) {
+      setRedactionSecrets([secret]);
+      const parts = {
+        message: new ScriptError("after_effects", `x ${secret} y`, 5, { where: "unknown" }),
+        note: new ScriptError("after_effects", "m", 5, { where: "unknown", note: `note ${secret}` }),
+        name: new ScriptError("after_effects", "m", 5, { where: "unknown", suggestions: [{ name: secret }] }),
+        label: new ScriptError("after_effects", "m", 5, { where: "unknown", suggestions: [{ name: "A", label: `the ${secret} one` }] }),
+      };
+      const expected = {
+        message: "Script failed in After Effects: x [redacted] y",
+        note: "Script failed in After Effects: m note [redacted]",
+        name: 'Script failed in After Effects: m Did you mean "[redacted]"?',
+        label: 'Script failed in After Effects: m Did you mean "A" (the [redacted] one)?',
+      };
+      for (const part of ["message", "note", "name", "label"] as const) {
+        const text = scriptErrorText(parts[part]);
+        expect(text, `${part}: ${JSON.stringify(secret)}`).not.toContain(tail);
+        expect(text, `${part}: ${JSON.stringify(secret)}`).toBe(expected[part]);
+      }
+    }
   });
 
   it("escapes a suggestion name the way the host lists do, so a quote in it cannot fake another name (R9)", () => {
