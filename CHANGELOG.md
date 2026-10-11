@@ -99,16 +99,21 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   what can be done: rename them where After Effects allows it, otherwise pass the effect's
   index or the match name. Each repeated parameter is listed with the match names of its
   copies (just the numbers when, as on an effect, each is the effect's match name and a
-  number: Card Dance's eight Offsets read `"ADBE Card Dance-" + the number: "Offset": [0012,
-  0016, …]`), the one nearest the name asked for first; any that do not fit are counted.
+  number: Card Dance's eight Offsets read `"APC CardDanceCam-" + the number: "Offset": [0022,
+  0028, …]`), the one nearest the name asked for first; any that do not fit are counted. A
+  child with an empty name (Card Dance ends each of its 12 topics with one) is left out of
+  lists by name, their counts and the repeated names, since no one can pass that name.
   `ae_set_text`, `ae_add_mask` and the layer-style tools name the layer and kind, and the
   layer-style tools say which tool adds a style or lists the ones there. Lists are cut by
   length so a message that lists names fits the server's cap whole, advice included.
 - "Did you mean" (AE-16): `ae_apply_effect` suggests up to 3 installed effects
   (`ADBE Gausian Blur 2` → `ADBE Gaussian Blur 2`), reading the installed list once per session
   on the first miss and again after the panel reconnects (a filtered read when the full list is
-  slow); a name that differs from an installed one only in case gets that exact match name, and
-  an installed effect After Effects would not add to the layer gets a note instead of guesses.
+  slow); a name that differs from an installed match name or display name only in case gets
+  that name as After Effects spells it, with a note that case counts, and an installed effect
+  After Effects would not add to the layer, by match name or display name, gets a note instead
+  of guesses (verified live on After Effects 26.5: match names are case-sensitive, and display
+  names are accepted).
   Property, effect and parameter misses suggest from the names they list, leaving out a name
   that repeats, in the list or past it, since it cannot pick one item; when such a name is as
   near the name asked for as any (`Z Positon` on Card Dance), no name farther from it is
@@ -189,8 +194,9 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   `es3Violations` in the new `test/es3.ts`) and drops its stale notes (CONTRIBUTING's
   `jsStringLiteral` text, tool counts and the `ae_queue_render` gap before X-03).
 - AE-16: the AE-16 prompt corrections (no error-code prefix, no font promise, the fake-panel
-  frame with `code: "HOST_ERROR"`, stale line cites; status in review; the cross-app texts to
-  call out for the architect), `IMPLEMENTATION_PLAN.md` superseded notes on error codes,
+  frame with `code: "HOST_ERROR"`, stale line cites; status in review, live verification done;
+  the cross-app texts to call out for the architect), `IMPLEMENTATION_PLAN.md` superseded notes
+  on error codes,
   `CONTRIBUTING.md` Errors (`ScriptError.details`, `scriptErrorText`, the disconnect text in
   tool errors and failed job steps) and its registration example (now an After Effects tool on
   `evaluateAe` and the `withToolContext` server), AE-03 / AE-04 / AE-14 / AE-01 / X-01 notes,
@@ -199,7 +205,9 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   Effects throw carries its own next step and quotes names with `__q`, also in
   `CONTRIBUTING.md` Errors), the README
   (what a tool error says; the security note now says which errors remove keys and tokens),
-  `docs/protocol.md`, and spike 06 (how error lines are read; the live probes still pending).
+  `docs/protocol.md`, and spike 06 (how error lines are read, and the live probes on After
+  Effects 26.5 on 2026-10-10 with their two follow-ups; `docs/HANDOFF.md` records that
+  verification too).
   The After Effects prompts cite `after-effects.ts` by symbol instead of by line number, which
   AE-16 shifted (AE-02 to AE-10, AE-14).
 

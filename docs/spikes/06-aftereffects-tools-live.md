@@ -45,15 +45,49 @@ Driven entirely from Claude Code through the hub and the Brainferno MCP Bridge C
   Every After Effects script therefore starts with `HOST_LINE_GUARD` (100) blank lines, so a
   host.jsx line can never land on a helper or a body line. After Effects scripts also travel as
   pure ASCII since AE-16 (`\uXXXX` escapes; same text in the host).
-- **AE-16 live probes — pending.** The unit tests cover the vm stand-in; these need After
-  Effects 26.5 (spec §13) and decide two constants and three message claims before merge:
-  `app.effects` count, read time and which read mode ran (full or filtered); whether
-  `PropertyType.PROPERTY` exists and what `.property()` on a leaf does; whether the Effect
-  Parade, Mask Parade and Layer Styles groups are null on cameras and lights; `canAddProperty`
-  case sensitivity and display-name acceptance (`EFFECT_NAMES_CASE_SENSITIVE`,
-  `EFFECT_DISPLAY_NAMES_ACCEPTED`, and the "or display name" claim in `ae_apply_effect`); the
-  line After Effects reports for a native error inside an `else if` branch; the comp-width and
-  solid-width setters' range errors.
+- **AE-16 live probes — verified on After Effects 26.5 (Windows 11, 2026-10-10).** Typed `ae_*`
+  tools only (no raw-script gate), on a new project, with a server built before the Card Dance
+  change below: every probe passed except the empty-name noise that change fixes.
+  Probe 21 (a disconnect, optional) was skipped, as the unit tests cover its text; with debug
+  logging off, the effect list's re-read after the panel was reopened (probe 20) was not seen,
+  though the suggestions still came back. What they settled:
+  - `PropertyType.PROPERTY` exists: a path that goes on past a leaf
+    (`["ADBE Transform Group", "ADBE Position", "X"]`) says the segment "is a property, not a
+    group" and to end the path there.
+  - `canAddProperty` is case-sensitive for match names ("adbe gaussian blur 2" was refused, so
+    `EFFECT_NAMES_CASE_SENSITIVE` stays `true`; a display name in the wrong case was not tried)
+    and takes display names ("Gaussian Blur" was
+    applied as `ADBE Gaussian Blur 2`, so `EFFECT_DISPLAY_NAMES_ACCEPTED` is now `true` and the
+    "or display name" in `ae_apply_effect` holds).
+  - Cameras and lights: the Effect Parade and Mask Parade are null on both, and
+    `ae_get_layer_styles`, `ae_apply_effect`, `ae_set_effect_param` and `ae_add_mask` give their
+    camera-and-light messages.
+  - A native error in a statement inside an `else if` branch reports that statement's own line
+    (`ae_add_layer` solid of width 40000: body line 7, the `else if` line just above it in the
+    excerpt).
+  - The range errors come from After Effects with curly quotes (non-ASCII text from the host):
+    `c.width = 40000` gives "Unable to set “width”. Value 40000 out of range 1 to 30000", and
+    `addSolid` gives "Unable to call “addSolid” because of parameter 3. Value 40000 out of range 1
+    to 30000". The width stayed 1920 and no layer was added.
+  - Card Dance's match name is `APC CardDanceCam`, not `ADBE Card Dance`. It has 80 parameters:
+    `APC CardDanceCam-` and 4 digits (not in list order), then "Compositing Options",
+    `ADBE Effect Built In Params` (Gaussian Blur ends with it too). 12 of them have an empty name,
+    the end of each topic (0027, 0037 … 0097, 0117, 0133, 0149, 0159). They took room in the
+    children list and showed in "repeated:" as `""` with 12 numbers, a name no one can pass, so the
+    helpers now leave them out of lists by name. `test/ae-host.ts` holds this layout; the change
+    itself is unit-tested only, not re-run live.
+  - Undo: after all the probes the Edit menu read "Undo Apply effect", the last call that
+    succeeded. Calls that failed before changing anything (the lookups, the empty-group and
+    effect-name misses, the width and `addSolid` range errors) left no undo entry; a call that
+    fails after an earlier statement changed something keeps its one undo group (see the
+    `ae_set_comp_props` note below). The display-name refusal note that
+    `EFFECT_DISPLAY_NAMES_ACCEPTED = true` selects was not triggered live.
+  - Follow-ups: a parameter typo gets no "did you mean" when the parameter is past the 20 names
+    the list shows ("Light Intensty": Light Intensity is Card Dance's 69th), since suggestions rank
+    only the names the host listed. The `app.effects` read took under 3 s (no slow-read line in the
+    log; full read mode), but its count and time were not recorded: debug logging was off.
+    Not AE-16, seen on the way: `ae_set_comp_props` sets its fields in order, so a name set before a
+    width that fails stays until undone (one undo group; Ctrl-Z restores it).
 - aerender reads the project **from disk**: `ae_render_comp` saves first, and needs a project
   that has been saved once (`ae_save_project` with a path).
 

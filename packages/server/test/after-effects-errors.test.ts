@@ -13,7 +13,9 @@ import {
   AE_CUT_MARK,
   AE_NAME_CUT,
   AE_PRELUDE_LINES,
+  EFFECT_DISPLAY_NAMES_ACCEPTED,
   EFFECT_MISS,
+  EFFECT_NAMES_CASE_SENSITIVE,
   EFFECT_NAME_MAX,
   EffectCatalog,
   HOST_LINE_GUARD,
@@ -61,7 +63,7 @@ import { lineCount } from "../src/tools/raw-script.js";
 import { scriptErrorText } from "../src/tools/result.js";
 import { closestNames, rank, stripAeVendor, suggestionThreshold, fold } from "../src/tools/suggest.js";
 import { AE_EFFECTS, AE_EFFECT_ITEMS } from "./ae-effects-fixture.js";
-import { CARD_DANCE, HOST_JSX_PATH, MAIN, aeHost, type AeHost, type CompSpec, type EvalReply, type HostOptions, type ProjectSpec } from "./ae-host.js";
+import { CARD_DANCE, CARD_DANCE_MATCH, HOST_JSX_PATH, MAIN, aeHost, type AeHost, type CompSpec, type EvalReply, type HostOptions, type ProjectSpec } from "./ae-host.js";
 import { ES5_CALLS, es5Calls } from "./es3.js";
 
 const SUFFIX = "\n})()";
@@ -106,27 +108,29 @@ const list = (names: readonly string[]): string => JSON.stringify(names).replace
 
 /** Match names as __repMatch writes them when each is the effect's match name, "-" and a number: [0010, 0014]. */
 const numbers = (...indexes: number[]): string => `[${indexes.map((i) => String(i).padStart(4, "0")).join(", ")}]`;
-/** Card Dance's repeated names, in the order __kids finds them (by their second copy). */
+/** Card Dance's parameter names as a list shows them: its 12 empty names (topic ends) are left out. */
+const CARD_NAMES = CARD_DANCE.map(([name]) => name).filter((name) => name !== "");
+/** Card Dance's repeated names, in the order __kids finds them (by their second copy); the empty name is not one. */
 const CARD_REPEATED = ["Source", "Multiplier", "Offset", "X Rotation", "Y Rotation", "Z Rotation", "Z Position", "Focal Length"];
-/** Where each repeats (CARD_DANCE): Source, Multiplier and Offset once per transformation, 4 apart. */
+/** Where each repeats: the numbers After Effects 26.5 gave live (2026-10-10). Source, Multiplier and Offset 6 apart. */
 const CARD_COPIES: Readonly<Record<string, string>> = {
-  Source: numbers(10, 14, 18, 22, 26, 30, 34, 38),
-  Multiplier: numbers(11, 15, 19, 23, 27, 31, 35, 39),
-  Offset: numbers(12, 16, 20, 24, 28, 32, 36, 40),
-  "X Rotation": numbers(21, 42),
-  "Y Rotation": numbers(25, 43),
-  "Z Rotation": numbers(29, 44),
-  "Z Position": numbers(17, 46),
-  "Focal Length": numbers(47, 54),
+  Source: numbers(18, 24, 30, 36, 42, 48, 54, 60),
+  Multiplier: numbers(20, 26, 32, 38, 44, 50, 56, 62),
+  Offset: numbers(22, 28, 34, 40, 46, 52, 58, 64),
+  "X Rotation": numbers(49, 68),
+  "Y Rotation": numbers(59, 70),
+  "Z Rotation": numbers(69, 72),
+  "Z Position": numbers(39, 76),
+  "Focal Length": numbers(78, 92),
 };
 /** The advice after a Card Dance list: every repeated name with every copy's number, in `order`. */
 const cardAdvice = (order: readonly string[]): string =>
-  `${DASH} a repeated name reaches only the first of them; pass the match name instead (by match name, "ADBE Card Dance-" + the number: ` +
+  `${DASH} a repeated name reaches only the first of them; pass the match name instead (by match name, "${CARD_DANCE_MATCH}-" + the number: ` +
   `${order.map((n) => `"${n}": ${CARD_COPIES[n]}`).join("; ")}).`;
 /** CARD_REPEATED with `first` moved to the front. */
 const nameFirst = (first: string): string[] => [first, ...CARD_REPEATED.filter((n) => n !== first)];
 /** Comp 12 with one layer, "Cards", carrying Card Dance. */
-const CARDS: ProjectSpec = { comps: [{ id: 12, name: "Main", layers: [{ kind: "solid", name: "Cards", effects: ["ADBE Card Dance"] }] }] };
+const CARDS: ProjectSpec = { comps: [{ id: 12, name: "Main", layers: [{ kind: "solid", name: "Cards", effects: [CARD_DANCE_MATCH] }] }] };
 
 
 describe("prelude contract (U1, A1, A5)", () => {
@@ -408,7 +412,7 @@ describe("__prop (property paths, acceptance 2)", () => {
       { kind: "solid", name: "Masked", masks: ["Mask 1", "Mask 2"] },
       { kind: "solid", name: "Painted", effects: ["ADBE Paint"], strokes: ["Brush 1", "Brush 2"] },
       { kind: "shape", name: "Empty Shape" },
-      { kind: "solid", name: "Cards", effects: ["ADBE Card Dance"] },
+      { kind: "solid", name: "Cards", effects: [CARD_DANCE_MATCH] },
       { kind: "solid", name: "Particles", effects: ["ADBE Playgnd"] },
     ],
   };
@@ -482,10 +486,11 @@ describe("__prop (property paths, acceptance 2)", () => {
 
   it("repeated names in a group users cannot rename point to every copy's match name, the name asked about first (R18, F5, G2)", () => {
     const r = path(10, ["ADBE Effect Parade", "Card Dance", "Sorce"]);
-    // Each match name is "ADBE Card Dance-" and a number, so only the numbers are written.
+    // Each match name is "APC CardDanceCam-" and a number, so only the numbers are written. The 68
+    // named parameters are counted; the 12 empty-named ones are not.
     expect(r.message).toBe(
       'Property path not found on layer 10 "Cards" (solid): segment "Sorce" not found under ["ADBE Effect Parade", "Card Dance"]; ' +
-        `children here: ${list(CARD_DANCE.slice(0, 10))} (+53 more); repeated: ${list(CARD_REPEATED)} ${cardAdvice(nameFirst("Source"))}`,
+        `children here: ${list(CARD_NAMES.slice(0, 10))} (+58 more); repeated: ${list(CARD_REPEATED)} ${cardAdvice(nameFirst("Source"))}`,
     );
     expect(r.message).not.toContain("rename");
     // "Source" is close, but it names two parameters: no suggestion (R6).
@@ -643,7 +648,7 @@ describe("message length: a miss that lists children fits under the server's cap
    * between the effect and the repeated parameters, whose match names take `form`.
    */
   function extreme(form: Form, depth: number): { host: AeHost; path: string[] } {
-    const host = aeHost({ comps: [{ id: 12, name: "Main", layers: [{ kind: "solid", name: Q, effects: ["ADBE Card Dance"] }] }] });
+    const host = aeHost({ comps: [{ id: 12, name: "Main", layers: [{ kind: "solid", name: Q, effects: [CARD_DANCE_MATCH] }] }] });
     const fx = host.comp(12).layer(1).property("ADBE Effect Parade").property(1);
     fx.name = Q;
     const leafProto = fx.kids[0];
@@ -807,16 +812,16 @@ describe("effects and parameters", () => {
   it("setEffectParamScript: repeated parameter names point to the match names, never to renaming (R18)", () => {
     const r = fail(setEffectParamScript(12, 1, 1, "Sorce", 5), CARDS);
     expect(r.message).toBe(
-      `Parameter not found on effect "Card Dance": "Sorce"; parameters: ${list(CARD_DANCE.slice(0, 20))} (+43 more); ` +
+      `Parameter not found on effect "Card Dance": "Sorce"; parameters: ${list(CARD_NAMES.slice(0, 20))} (+48 more); ` +
         `repeated: ${list(CARD_REPEATED)} ${cardAdvice(nameFirst("Source"))}`,
     );
     expect(r.message).not.toContain("rename");
     expect(aeListSuggestions(r.message)).toEqual([]);
-    // The match name the message offers for the second Source resolves to it, not to the first.
+    // The match name the message offers for the second Source (parameter 15) resolves to it, not to the first (10).
     const host = aeHost(CARDS);
-    expect(host.eval(setEffectParamScript(12, 1, 1, "ADBE Card Dance-0014", 5)).ok).toBe(true);
+    expect(host.eval(setEffectParamScript(12, 1, 1, `${CARD_DANCE_MATCH}-0024`, 5)).ok).toBe(true);
     const fx = host.comp(12).layer(1).property("ADBE Effect Parade").property(1);
-    expect([fx.property(10).value, fx.property(14).value]).toEqual([0, 5]);
+    expect([fx.property(10).value, fx.property(15).value]).toEqual([0, 5]);
   });
 
   it("the full Card Dance: the name asked about comes first and every repeated name keeps every copy, so the eighth Offset can be passed (G2)", () => {
@@ -824,14 +829,75 @@ describe("effects and parameters", () => {
     for (const script of scripts) {
       const r = fail(script, CARDS);
       expect(r.message.endsWith(`; repeated: ${list(CARD_REPEATED)} ${cardAdvice(nameFirst("Offset"))}`), r.message).toBe(true);
-      expect(r.message).toContain('"Offset": [0012, 0016, 0020, 0024, 0028, 0032, 0036, 0040]; "Source": ');
+      expect(r.message).toContain('"Offset": [0022, 0028, 0034, 0040, 0046, 0052, 0058, 0064]; "Source": ');
       // None of it is cut: the paragraph carries the whole host message.
       expect(scriptErrorText(enrichAeError(scriptError(r), script) as ScriptError)).toContain(r.message);
     }
+    // The eighth Offset is parameter 47.
     const host = aeHost(CARDS);
-    expect(host.eval(setEffectParamScript(12, 1, 1, "ADBE Card Dance-0040", 7)).ok).toBe(true);
+    expect(host.eval(setEffectParamScript(12, 1, 1, `${CARD_DANCE_MATCH}-0064`, 7)).ok).toBe(true);
     const fx = host.comp(12).layer(1).property("ADBE Effect Parade").property(1);
-    expect([fx.property(12).value, fx.property(40).value]).toEqual([0, 7]);
+    expect([fx.property(12).value, fx.property(47).value]).toEqual([0, 7]);
+  });
+
+  it("the stand-in is Card Dance as After Effects 26.5 lists it, and the copies the tests pin are its own (live, 2026-10-10)", () => {
+    expect(CARD_DANCE).toHaveLength(80);
+    expect(CARD_DANCE.at(-1)).toEqual(["Compositing Options", "ADBE Effect Built In Params"]);
+    const blanks = CARD_DANCE.filter(([name]) => name === "").map(([, mn]) => mn.slice(CARD_DANCE_MATCH.length + 1));
+    expect(blanks).toEqual(["0027", "0037", "0047", "0057", "0067", "0077", "0087", "0097", "0117", "0133", "0149", "0159"]);
+    expect(CARD_NAMES).toHaveLength(68);
+    expect(CARD_DANCE.findIndex(([name]) => name === "Light Intensity") + 1).toBe(69);
+    for (const name of CARD_REPEATED) {
+      const copies = CARD_DANCE.filter(([n]) => n === name).map(([, mn]) => Number(mn.slice(CARD_DANCE_MATCH.length + 1)));
+      expect(numbers(...copies), name).toBe(CARD_COPIES[name]);
+    }
+  });
+
+  it("Card Dance's 12 empty-named parameters are in no list, no count, no repeat and no advice: nobody can pass that name (L2)", () => {
+    // What After Effects 26.5 showed before: "" twice among the 20 listed, "" in "repeated:" with 12 numbers.
+    const r = fail(setEffectParamScript(12, 1, 1, "Ofset", 5), CARDS);
+    expect(r.message).toBe(
+      `Parameter not found on effect "Card Dance": "Ofset"; parameters: ${list(CARD_NAMES.slice(0, 20))} (+48 more); ` +
+        `repeated: ${list(CARD_REPEATED)} ${cardAdvice(nameFirst("Offset"))}`,
+    );
+    for (const script of [setEffectParamScript(12, 1, 1, "Ofset", 5), getKeyframesScript(12, 1, "position", ["ADBE Effect Parade", "Card Dance", "Ofset"])]) {
+      const m = fail(script, CARDS).message;
+      expect(m, m).not.toContain('""');
+      expect(m.length).toBeLessThanOrEqual(1400);
+      // "Offset" is one edit away but repeats, so nothing farther is offered either (H4); never "".
+      expect(aeListSuggestions(m)).toEqual([]);
+    }
+    // In the match-name vocabulary every parameter has a name to pass, the topic ends included.
+    const byMatch = fail(setEffectParamScript(12, 1, 1, "ADBE Nothing", 5), CARDS);
+    expect(byMatch.message).toBe(
+      `Parameter not found on effect "Card Dance": "ADBE Nothing"; parameters: ${list(CARD_DANCE.slice(0, 20).map(([, mn]) => mn))} (+60 more) ${DASH} use one of these names.`,
+    );
+    expect(byMatch.message).toContain(`"${CARD_DANCE_MATCH}-0027"`);
+  });
+
+  it("a group whose children all have an empty name lists none of them and says to pass a match name, never that it is empty (L2)", () => {
+    const blank = (host: AeHost) => {
+      for (const p of host.comp(12).layer(1).property("ADBE Effect Parade").property(1).kids) p.name = "";
+    };
+    const host = aeHost(spec);
+    blank(host);
+    const param = failIn(host, setEffectParamScript(12, 1, 1, "Blurriness", 5));
+    expect(param.message).toBe(`Parameter not found on effect "Gaussian Blur": "Blurriness"; parameters: [] ${DASH} none of the 3 has a name; pass a match name instead.`);
+    const pathHost = aeHost(spec);
+    blank(pathHost);
+    const path = failIn(pathHost, getKeyframesScript(12, 1, "position", ["ADBE Effect Parade", "Gaussian Blur", "Blurriness"]));
+    expect(path.message).toBe(
+      'Property path not found on layer 1 "BG" (solid): segment "Blurriness" not found under ["ADBE Effect Parade", "Gaussian Blur"]; ' +
+        `children here: [] ${DASH} none of the 3 has a name; pass a match name instead.`,
+    );
+    for (const m of [param.message, path.message]) {
+      expect(m).not.toContain("empty");
+      expect(aeListSuggestions(m)).toEqual([]);
+    }
+    // By match name they are all there.
+    expect(failIn(pathHost, getKeyframesScript(12, 1, "position", ["ADBE Effect Parade", "Gaussian Blur", "ADBE Nothing"])).message).toContain(
+      'children here: ["ADBE Gaussian Blur 2-0001", "ADBE Gaussian Blur 2-0002", "ADBE Gaussian Blur 2-0003"]',
+    );
   });
 
   it("a near miss of a repeated name lists that name first: equal but for case, then by the leading characters it shares (G2)", () => {
@@ -848,7 +914,7 @@ describe("effects and parameters", () => {
     fx.property(2).name = "Offset Random";
     fx.property(3).name = "Offset Random";
     expect(failIn(host, setEffectParamScript(12, 1, 1, "offset", 5)).message).toContain(
-      `+ the number: "Offset": ${CARD_COPIES.Offset}; "Offset Random": [0002, 0003]; "Source": `,
+      `+ the number: "Offset": ${CARD_COPIES.Offset}; "Offset Random": [0004, 0006]; "Source": `,
     );
   });
 
@@ -882,9 +948,10 @@ describe("effects and parameters", () => {
 
   it("writes whole match names when a copy's is not the effect's match name and a number, still the name asked about first (G2)", () => {
     const host = aeHost(CARDS);
-    host.comp(12).layer(1).property("ADBE Effect Parade").property(1).property(40).matchName = "VEND Card Offset";
+    // Parameter 47 is the eighth Offset.
+    host.comp(12).layer(1).property("ADBE Effect Parade").property(1).property(47).matchName = "VEND Card Offset";
     const r = failIn(host, setEffectParamScript(12, 1, 1, "Ofset", 5));
-    const matchNames = (name: string): string[] => CARD_DANCE.flatMap((n, i) => (n === name ? [`ADBE Card Dance-${String(i + 1).padStart(4, "0")}`] : []));
+    const matchNames = (name: string): string[] => CARD_DANCE.filter(([n]) => n === name).map(([, mn]) => mn);
     const offsets = [...matchNames("Offset").slice(0, 7), "VEND Card Offset"];
     // Whole match names take more room: the names that do not fit are counted.
     expect(r.message.endsWith(`pass the match name instead (by match name: "Offset": ${list(offsets)}; "Source": ${list(matchNames("Source"))} (+6 more)).`), r.message).toBe(true);
@@ -1291,6 +1358,15 @@ describe("aeListSuggestions", () => {
     expect(aeListSuggestions(`Parameter not found on effect "Glow": "Glw"; parameters: ["Glow", "${long}"] ${DASH} x`)).toEqual(["Glow"]);
   });
 
+  it("never offers the empty name, listed or named as repeated: nobody can pass it (L2)", () => {
+    // A short query is within the threshold (2) of "": without the rule it would be offered, even first.
+    const head = 'Parameter not found on effect "E": "Ab"; parameters: ';
+    expect(aeListSuggestions(`${head}["", "Ac"] ${DASH} x`)).toEqual(["Ac"]);
+    expect(aeListSuggestions(`${head}["", "Abcd"] ${DASH} x`)).toEqual(["Abcd"]);
+    expect(aeListSuggestions(`${head}["", "Zzzzz"] ${DASH} x`)).toEqual([]);
+    expect(aeListSuggestions(`${head}["Ac", "Zzzzz"]; repeated: [""] ${DASH} x`)).toEqual(["Ac"]);
+  });
+
   it("parses ae_queue_render's composition list (R17)", () => {
     expect(aeListSuggestions('No composition named "Mian"; compositions: ["Main", "LT"] — pass one of these names exactly')).toEqual(["Main"]);
   });
@@ -1639,31 +1715,60 @@ function fakeBridge(evaluate: (script: string) => Promise<JsonValue>, epoch?: ()
 }
 
 describe("withEffectSuggestions (M20)", () => {
+  /** The rules After Effects 26.5 showed live (probe 13): what withEffectSuggestions uses when given none. */
+  const LIVE = { caseSensitive: true, displayNamesAccepted: true };
+  /** Display names refused: the rule assumed before the live probes, kept so the other branch stays covered. */
   const STRICT = { caseSensitive: true, displayNamesAccepted: false };
   const LENIENT = { caseSensitive: false, displayNamesAccepted: true };
   const REFUSED = "That effect is installed, but After Effects would not add it to this layer.";
+  const CASE_NOTE = "Names must match exactly, case included.";
 
-  it("an installed match name gets the layer-refusal note, under either rule", async () => {
-    for (const rules of [STRICT, LENIENT]) {
+  it("ships the rules the live probes found: case-sensitive, display names accepted (After Effects 26.5, probe 13)", async () => {
+    // 13a: "adbe gaussian blur 2" was refused; 13b: "Gaussian Blur" was applied.
+    expect({ caseSensitive: EFFECT_NAMES_CASE_SENSITIVE, displayNamesAccepted: EFFECT_DISPLAY_NAMES_ACCEPTED }).toEqual(LIVE);
+    const paragraph = async (requested: string): Promise<string> => {
+      const script = applyEffectScript(12, 1, requested);
+      const host = aeHost({ comps: [{ id: 12, name: "Main", layers: [{ kind: "solid", name: "BG" }] }] });
+      // This layer takes no effect, the way After Effects refuses one a layer cannot take.
+      host.comp(12).layer(1).property("ADBE Effect Parade").canAddProperty = () => false;
+      const miss = enrichAeError(scriptError(failIn(host, script)), script);
+      return scriptErrorText((await withEffectSuggestions(fixedCatalog(EFFECTS).catalog, miss, requested)) as ScriptError);
+    };
+    // An installed display name After Effects refused: the layer would not take it (it takes display names).
+    const display = await paragraph("Gaussian Blur");
+    expect(display).toContain(`or its display name. ${REFUSED}`);
+    expect(display).not.toContain("Did you mean");
+    // A display name with a case slip: that exactly cased name, and why.
+    expect(await paragraph("gaussian blur")).toContain(`Did you mean "Gaussian Blur"? ${CASE_NOTE}`);
+    // A match name with a case slip: that exactly cased match name, and why.
+    expect(await paragraph("adbe gaussian blur 2")).toContain(`Did you mean "ADBE Gaussian Blur 2" (Gaussian Blur)? ${CASE_NOTE}`);
+  });
+
+  it("an installed match name gets the layer-refusal note, under any rule", async () => {
+    for (const rules of [LIVE, STRICT, LENIENT]) {
       const out = (await withEffectSuggestions(fixedCatalog(EFFECTS).catalog, missFor("ADBE Gaussian Blur 2"), "ADBE Gaussian Blur 2", rules)) as ScriptError;
       expect(out.details.note).toBe('"ADBE Gaussian Blur 2" (Gaussian Blur) is installed, but After Effects would not add it to this layer.');
       expect(out.details.suggestions).toBeUndefined();
     }
   });
 
-  it("a display name: the match name to pass, or the refusal note when display names are accepted", async () => {
+  it("a display name: the refusal note, since display names are accepted; the match name to pass under the old assumption", async () => {
+    for (const rules of [undefined, LIVE, LENIENT]) {
+      const accepted = (await withEffectSuggestions(fixedCatalog(EFFECTS).catalog, missFor("Gaussian Blur"), "Gaussian Blur", rules)) as ScriptError;
+      expect(accepted.details).toMatchObject({ note: REFUSED });
+      expect(accepted.details.suggestions).toBeUndefined();
+    }
     const strict = (await withEffectSuggestions(fixedCatalog(EFFECTS).catalog, missFor("Gaussian Blur"), "Gaussian Blur", STRICT)) as ScriptError;
     expect(strict.details.suggestions).toEqual([{ name: "ADBE Gaussian Blur 2", label: "Gaussian Blur" }]);
     expect(strict.details.note).toBe(`That effect is installed; pass its match name ${DASH} if that also fails, this layer cannot take it.`);
-    const lenient = (await withEffectSuggestions(fixedCatalog(EFFECTS).catalog, missFor("Gaussian Blur"), "Gaussian Blur", LENIENT)) as ScriptError;
-    expect(lenient.details).toMatchObject({ note: REFUSED });
-    expect(lenient.details.suggestions).toBeUndefined();
   });
 
   it("a case-folded hit: the exact name and a case note, or the refusal note when case does not matter", async () => {
-    const strict = (await withEffectSuggestions(fixedCatalog(EFFECTS).catalog, missFor("adbe gaussian blur 2"), "adbe gaussian blur 2", STRICT)) as ScriptError;
-    expect(strict.details.suggestions).toEqual([{ name: "ADBE Gaussian Blur 2", label: "Gaussian Blur" }]);
-    expect(strict.details.note).toBe("Names must match exactly, case included.");
+    for (const rules of [undefined, LIVE, STRICT]) {
+      const out = (await withEffectSuggestions(fixedCatalog(EFFECTS).catalog, missFor("adbe gaussian blur 2"), "adbe gaussian blur 2", rules)) as ScriptError;
+      expect(out.details.suggestions).toEqual([{ name: "ADBE Gaussian Blur 2", label: "Gaussian Blur" }]);
+      expect(out.details.note).toBe(CASE_NOTE);
+    }
     const lenient = (await withEffectSuggestions(fixedCatalog(EFFECTS).catalog, missFor("adbe gaussian blur 2"), "adbe gaussian blur 2", { ...STRICT, caseSensitive: false })) as ScriptError;
     expect(lenient.details.note).toBe(REFUSED);
   });
@@ -1680,10 +1785,13 @@ describe("withEffectSuggestions (M20)", () => {
       const out = (await withEffectSuggestions(fixedCatalog(EFFECTS).catalog, missFor("gaussian blur"), "gaussian blur", rules)) as ScriptError;
       expect({ suggestions: out.details.suggestions, note: out.details.note }, JSON.stringify(rules)).toEqual({ suggestions: want.suggestions, note: want.note });
     }
+    // The shipped rules (LIVE, the third row) are what a call without rules gets.
+    const shipped = (await withEffectSuggestions(fixedCatalog(EFFECTS).catalog, missFor("gaussian blur"), "gaussian blur")) as ScriptError;
+    expect({ suggestions: shipped.details.suggestions, note: shipped.details.note }).toEqual({ suggestions: [{ name: "Gaussian Blur" }], note: CASE_NOTE });
   });
 
   it("a typo gets up to 3 ranked names (acceptance 4)", async () => {
-    for (const rules of [STRICT, LENIENT]) {
+    for (const rules of [LIVE, STRICT, LENIENT]) {
       const out = (await withEffectSuggestions(fixedCatalog(EFFECTS).catalog, missFor("ADBE Gausian Blur 2"), "ADBE Gausian Blur 2", rules)) as ScriptError;
       expect(out.details.suggestions).toEqual([
         { name: "ADBE Gaussian Blur 2", label: "Gaussian Blur" },
@@ -1720,22 +1828,28 @@ describe("withEffectSuggestions (M20)", () => {
       const requested = `a${"\u0301\u0316".repeat(EFFECT_NAME_MAX / 2)}`;
       expect(requested.length).toBe(EFFECT_NAME_MAX + 1);
       const miss = missFor(`"${requested.slice(0, AE_NAME_CUT)}${AE_CUT_MARK}"`);
-      for (const rules of [STRICT, LENIENT]) {
+      for (const rules of [LIVE, STRICT, LENIENT]) {
         expect(await withEffectSuggestions(fixedCatalog([...EFFECTS, installed]).catalog, miss, requested, rules)).toBe(miss);
       }
-      // Compared exactly, an installed name that long is still found: that folds nothing.
-      const out = (await withEffectSuggestions(fixedCatalog([...EFFECTS, installed]).catalog, miss, installed.displayName, STRICT)) as ScriptError;
-      expect(out.details.suggestions).toEqual([{ name: "VEND Long", label: installed.displayName }]);
+      // Compared exactly, an installed name that long is still found: that folds nothing. It is a
+      // display name, which After Effects takes, so the layer refused it.
+      const out = (await withEffectSuggestions(fixedCatalog([...EFFECTS, installed]).catalog, miss, installed.displayName)) as ScriptError;
+      expect(out).not.toBe(miss);
+      expect(out.details.note).toBe(REFUSED);
+      const strict = (await withEffectSuggestions(fixedCatalog([...EFFECTS, installed]).catalog, miss, installed.displayName, STRICT)) as ScriptError;
+      expect(strict.details.suggestions).toEqual([{ name: "VEND Long", label: installed.displayName }]);
     } finally {
       spy.mockRestore();
     }
     expect(Math.max(0, ...lengths)).toBeLessThanOrEqual(EFFECT_NAME_MAX);
-    // One unit shorter, the same name is folded: the case-folded display-name rule finds the effect.
+    // One unit shorter, the same name is folded: the case-folded display-name rule finds the effect,
+    // and gives that display name as After Effects spells it.
     const near = `a${"\u0301\u0316".repeat(EFFECT_NAME_MAX / 2 - 1)}\u0301`;
     const installedNear: InstalledEffect = { matchName: "VEND Near", displayName: `a${"\u0316\u0301".repeat(EFFECT_NAME_MAX / 2 - 1)}\u0301` };
     expect(near.length).toBe(EFFECT_NAME_MAX);
-    const found = (await withEffectSuggestions(fixedCatalog([...EFFECTS, installedNear]).catalog, missFor("x"), near, STRICT)) as ScriptError;
-    expect(found.details.suggestions).toEqual([{ name: "VEND Near", label: installedNear.displayName }]);
+    const found = (await withEffectSuggestions(fixedCatalog([...EFFECTS, installedNear]).catalog, missFor("x"), near)) as ScriptError;
+    expect(found.details.suggestions).toEqual([{ name: installedNear.displayName }]);
+    expect(found.details.note).toBe(CASE_NOTE);
   });
 });
 

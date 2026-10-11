@@ -106,27 +106,56 @@ export const MAIN: CompSpec = {
 
 const PropertyType = { PROPERTY: 6212, INDEXED_GROUP: 6214, NAMED_GROUP: 6213 } as const;
 
+/** Card Dance's match name in After Effects 26.5 (read live, 2026-10-10). */
+export const CARD_DANCE_MATCH = "APC CardDanceCam";
+
+const cardDance = (name: string, n: number): readonly [string, string] => [name, `${CARD_DANCE_MATCH}-${String(n).padStart(4, "0")}`];
+
 /**
- * Card Dance's parameters as After Effects lists them (63; the match name of parameter i is
- * "ADBE Card Dance-" and i in 4 digits): eight transformations (X/Y/Z Position, X/Y/Z Rotation,
- * X/Y Scale), each a header then Source, Multiplier and Offset, and later the camera's X/Y/Z
- * Rotation, Z Position and Focal Length again. So 8 names repeat: Source, Multiplier and Offset 8
- * times each (Offset is 12, 16, ... 40), the other five twice.
+ * Card Dance's 80 parameters as After Effects 26.5 lists them (read live, 2026-10-10), as [name,
+ * match name], names exactly as After Effects spells them ("Upper Left  Corner" has two spaces).
+ * Each match name is "APC CardDanceCam-" and a 4-digit number that does not follow the list's order
+ * (the first Offset is 0022, the eighth 0064), except the last, "Compositing Options", whose match
+ * name is "ADBE Effect Built In Params" (Gaussian Blur ends with it too). Each of the 12 topics (the
+ * eight transformations, Camera Position, Corner Pins, Lighting, Material) ends with a parameter
+ * whose name is empty. Besides the empty name, 8 names repeat: Source, Multiplier and Offset 8 times
+ * each, X/Y/Z Rotation, Z Position and Focal Length twice.
  */
-export const CARD_DANCE: readonly string[] = [
-  "Rows & Columns", "Rows", "Columns", "Back Layer", "Gradient Layer 1", "Gradient Layer 2", "Rotation Order", "Transformation Order",
-  ...["X Position", "Y Position", "Z Position", "X Rotation", "Y Rotation", "Z Rotation", "X Scale", "Y Scale"].flatMap((axis) => [axis, "Source", "Multiplier", "Offset"]),
-  "Camera System", "X Rotation", "Y Rotation", "Z Rotation", "X, Y Position", "Z Position", "Focal Length", "Transform Order",
-  "Upper Left Corner", "Upper Right Corner", "Lower Left Corner", "Lower Right Corner", "Auto Focal Length", "Focal Length",
-  "Light Type", "Light Intensity", "Light Color", "Light Position", "Light Depth", "Ambient Light",
-  "Diffuse Reflection", "Specular Reflection", "Highlight Sharpness",
+export const CARD_DANCE: readonly (readonly [name: string, matchName: string])[] = [
+  cardDance("Rows & Columns", 2), cardDance("Rows", 4), cardDance("Columns", 6), cardDance("Back Layer", 8),
+  cardDance("Gradient Layer 1", 10), cardDance("Gradient Layer 2", 12), cardDance("Rotation Order", 14), cardDance("Transformation Order", 16),
+  // The eight transformations: a topic, its Source, Multiplier and Offset, then the topic's empty-named end.
+  ...(
+    [
+      ["X Position", 19, 18, 27],
+      ["Y Position", 29, 24, 37],
+      ["Z Position", 39, 30, 47],
+      ["X Rotation", 49, 36, 57],
+      ["Y Rotation", 59, 42, 67],
+      ["Z Rotation", 69, 48, 77],
+      ["X Scale", 79, 54, 87],
+      ["Y Scale", 89, 60, 97],
+    ] as const
+  ).flatMap(([topic, at, source, end]) => [cardDance(topic, at), cardDance("Source", source), cardDance("Multiplier", source + 2), cardDance("Offset", source + 4), cardDance("", end)]),
+  cardDance("Camera System", 66),
+  cardDance("Camera Position", 112), cardDance("X Rotation", 68), cardDance("Y Rotation", 70), cardDance("Z Rotation", 72), cardDance("X,Y Position", 74),
+  cardDance("Z Position", 76), cardDance("Focal Length", 78), cardDance("Transform Order", 80), cardDance("", 117),
+  cardDance("Corner Pins", 114), cardDance("Upper Left  Corner", 82), cardDance("Upper Right Corner", 84), cardDance("Lower Left  Corner", 86),
+  cardDance("Lower Right Corner", 88), cardDance("Auto Focal Length", 90), cardDance("Focal Length", 92), cardDance("", 133),
+  cardDance("Lighting", 116), cardDance("Light Type", 102), cardDance("Light Intensity", 94), cardDance("Light Color", 96), cardDance("Light Position", 98),
+  cardDance("Light Depth", 100), cardDance("Ambient Light", 104), cardDance("", 149),
+  cardDance("Material", 118), cardDance("Diffuse Reflection", 106), cardDance("Specular Reflection", 108), cardDance("Highlight Sharpness", 110), cardDance("", 159),
+  ["Compositing Options", "ADBE Effect Built In Params"],
 ];
 
-/** Parameters (display names) of the effects the tests address; any other effect has one "Amount". */
-const EFFECT_PARAMS: Record<string, readonly string[]> = {
+/**
+ * Parameters of the effects the tests address: display names (parameter i's match name is the
+ * effect's, "-" and i in 4 digits) or [name, match name]; any other effect has one "Amount".
+ */
+const EFFECT_PARAMS: Record<string, readonly (string | readonly [string, string])[]> = {
   "ADBE Gaussian Blur 2": ["Blurriness", "Blur Dimensions", "Repeat Edge Pixels"],
   "ADBE Glo2": ["Glow Based On", "Glow Threshold", "Glow Radius", "Glow Intensity"],
-  "ADBE Card Dance": CARD_DANCE,
+  [CARD_DANCE_MATCH]: CARD_DANCE,
   // A cut-down stand-in for Particle Playground (Cannon, Grid): each name that repeats has one copy
   // among the first 10 and the other past the 20th, so a repeat check that saw only a listed window
   // (10 in a path, 20 in ae_set_effect_param) would miss it.
@@ -238,7 +267,7 @@ export function aeHost(spec: ProjectSpec = { comps: [MAIN] }, options: HostOptio
             group("ADBE Paint Group", "Strokes", strokes.map((n) => group("ADBE Paint Atom", n, [])), PropertyType.INDEXED_GROUP),
             leaf(`${mn}-0001`, "Paint on Transparent"),
           ]
-        : (EFFECT_PARAMS[mn] ?? ["Amount"]).map((p, i) => leaf(`${mn}-${String(i + 1).padStart(4, "0")}`, p)),
+        : (EFFECT_PARAMS[mn] ?? ["Amount"]).map((p, i) => (typeof p === "string" ? leaf(`${mn}-${String(i + 1).padStart(4, "0")}`, p) : leaf(p[1], p[0]))),
       PropertyType.NAMED_GROUP,
     );
   const effectParade = (names: string[], strokes: string[] = []): any => {
