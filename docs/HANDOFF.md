@@ -40,6 +40,21 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
     runner-failure classification (it keys on PowerShell's `New-Object` / COM error text and
     osascript's trailing error number — check the real texts) and the macOS `with timeout of`
     wrapper around `do javascript`.
+- **AE-16 (After Effects error quality).** A failed `ae_*` call names the tool and its arguments,
+  where its line falls (a body line with the code around it, a shared helper, or outside the
+  tool's code), what exists where a lookup missed, what to do next, and "did you mean" names
+  (`evaluateAe` and `HELPERS` in `packages/server/src/tools/after-effects.ts`).
+  - **Verified live on After Effects 26.5 (Windows 11, 2026-10-10)** with the typed tools only
+    (the optional disconnect probe skipped). The probes settled the open host facts:
+    `PropertyType.PROPERTY` exists; `canAddProperty` is case-sensitive for match names and takes
+    display names (`EFFECT_DISPLAY_NAMES_ACCEPTED` is now `true`); cameras and lights have no
+    Effect Parade or Mask Parade; a failing statement inside an `else if` branch reports its own
+    line; calls that failed before changing anything left no undo entry. Card Dance is
+    `APC CardDanceCam`, with 12 empty-named parameters that showed up as noise in the lists.
+  - **Still unit-tested only:** leaving those empty names out of lists by name (changed after the
+    live run), and the display-name refusal note that `EFFECT_DISPLAY_NAMES_ACCEPTED = true`
+    selects. Details and the two follow-ups (no "did you mean" past the 20 names a list shows; the
+    `app.effects` count and read time not recorded): `docs/spikes/06-aftereffects-tools-live.md`.
 - **macOS run on 2026-08-28** (macOS 26, Adobe 2026 apps, Node 26): panels, Illustrator via
   osascript, previews, ffmpeg all fine as written. Two real bugs fixed — the aerender path
   (`Folder.appPackage` is the `.app` itself on macOS) and Media Encoder (nested console bundle,

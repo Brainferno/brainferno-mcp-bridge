@@ -52,7 +52,7 @@ export const AE_EFFECTS: readonly (readonly [matchName: string, displayName: str
   ["ADBE Spill2", "Advanced Spill Suppressor"], ["ADBE Drop Shadow", "Drop Shadow"], ["ADBE Bevel Alpha", "Bevel Alpha"],
   ["ADBE Bevel Edges", "Bevel Edges"], ["ADBE Radial Shadow", "Radial Shadow"], ["ADBE 3D Glasses", "3D Glasses"],
   ["CC Cylinder", "CC Cylinder"], ["CC Sphere", "CC Sphere"], ["CC Spotlight", "CC Spotlight"],
-  ["CC Particle World", "CC Particle World"], ["CC Particle Systems II", "CC Particle Systems II"], ["ADBE Card Dance", "Card Dance"],
+  ["CC Particle World", "CC Particle World"], ["CC Particle Systems II", "CC Particle Systems II"], ["APC CardDanceCam", "Card Dance"],
   ["ADBE Caustics", "Caustics"], ["ADBE Foam", "Foam"], ["ADBE Playgnd", "Particle Playground"],
   ["ADBE Shatter", "Shatter"], ["ADBE Wave World", "Wave World"], ["CC Rainfall", "CC Rainfall"],
   ["CC Snowfall", "CC Snowfall"], ["CC Bubbles", "CC Bubbles"], ["CC Drizzle", "CC Drizzle"],

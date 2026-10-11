@@ -187,15 +187,19 @@ const HELPERS = String.raw`
     return String(segment).substring(0, 5) !== "ADBE ";
   }
   function __kids(g, max, byName) {
-    // Up to max child names (match names unless byName), how many children g has, and the names
-    // that repeat among every child (up to __SCAN), listed or not. __miss names those after the
-    // list ("; repeated: [...]"): the server reads that list and never suggests a name in it.
-    var names = [], rep = [], seen = {}, n = 0, i, s, key;
-    try { n = g.numProperties; } catch (e) { n = 0; }
-    if (!(n > 0)) { n = 0; }
-    for (i = 1; i <= n && i <= __SCAN; i++) {
+    // Up to max child names (match names unless byName), how many children g has (all), and the
+    // names that repeat among every child (up to __SCAN), listed or not. __miss names those after
+    // the list ("; repeated: [...]"): the server reads that list and never suggests a name in it.
+    // An empty name (each topic of an effect such as Card Dance ends with one) is no name anyone can
+    // pass: it is left out of the list, the repeats and n, the count the list gives (n counts the
+    // children past __SCAN, which are not read).
+    var names = [], rep = [], seen = {}, all = 0, blank = 0, i, s, key;
+    try { all = g.numProperties; } catch (e) { all = 0; }
+    if (!(all > 0)) { all = 0; }
+    for (i = 1; i <= all && i <= __SCAN; i++) {
       s = null;
       try { s = String(byName ? g.property(i).name : g.property(i).matchName); } catch (e) { s = null; }
+      if (s === "") { blank++; s = null; }
       if (s !== null) {
         key = "#" + s;
         if (!Object.prototype.hasOwnProperty.call(seen, key)) { seen[key] = 1; }
@@ -203,7 +207,7 @@ const HELPERS = String.raw`
         if (names.length < max) { names.push(s); }
       }
     }
-    return { n: n, names: names, rep: rep, dup: rep.length > 0, byName: byName };
+    return { n: all - blank, all: all, names: names, rep: rep, dup: rep.length > 0, byName: byName };
   }
   function __miss(lead, k, g, seg, next) {
     // lead, then k's list of g's children, the names that repeat among them, and next (what to do
@@ -246,7 +250,7 @@ const HELPERS = String.raw`
     // Each repeated name, in rep's order, with the match names of its copies, in at most room or
     // __BUDGET units (the first name always): ': "Source": ["X-0004", "X-0008"]; "Offset": [...]'.
     // When each is g's match name, "-" and a number of up to 8 digits (as an effect's parameters
-    // are), only the numbers are written: ', "ADBE Card Dance-" + the number: "Source": [0010, 0014]'.
+    // are), only the numbers are written: ', "APC CardDanceCam-" + the number: "Source": [0018, 0024]'.
     var at = {}, n = 0, pre = null, bare = true, budget = room < __BUDGET ? room : __BUDGET, more, out, shown = 0, i, j, c, key, mn, copies, s;
     for (i = 0; i < rep.length; i++) { at["#" + rep[i]] = []; }
     try { pre = String(g.matchName) + "-"; } catch (e) { pre = null; }
@@ -282,6 +286,8 @@ const HELPERS = String.raw`
     // names (named after the list): the user can rename what __named covers; elsewhere each
     // repeated name's match names tell its copies apart, the one nearest seg first.
     var head = " \u2014 a repeated name reaches only the first of them; pass the match name instead (by match name";
+    // Children there, but every name empty: the list is empty, and only a match name reaches one.
+    if (k.n === 0) { return " \u2014 none of the " + k.all + " has a name; pass a match name instead."; }
     if (!k.dup) { return " \u2014 use one of these names."; }
     if (__named(g)) { return " \u2014 a path cannot tell repeated names apart; rename them in After Effects so each is unique, then pass one."; }
     if (!k.byName) { return " \u2014 a repeated name reaches only the first of them; use one of these names."; }
@@ -314,7 +320,7 @@ const HELPERS = String.raw`
           }
           at = i === 0 ? "at the top of the layer" : "under " + __list(path.slice(0, i), i, __PATH_BUDGET);
           k = __kids(p, i === 0 ? 20 : 10, __byName(p, path[i]));
-          if (k.n === 0) {
+          if (k.all === 0) {
             pmn = "";
             try { pmn = String(p.matchName); } catch (e) { pmn = ""; }
             if (pmn === "ADBE Effect Parade") { throw new Error(__pathHead(layer) + "segment " + __q(path[i]) + " not found " + at + ", which is empty \u2014 the layer has no effects; apply one first (ae_apply_effect), or check the path."); }
@@ -702,8 +708,9 @@ function repeatedNames(message: string, end: number): string[] | null {
 
 /**
  * Ranks the names a host message lists against the name it could not find, leaving out cut names,
- * names that repeat in the list and names the host says repeat among children it did not list;
- * [] when the message is not one of these misses or does not parse.
+ * the empty name (no one can pass it; __kids lists none, and rank would offer it for a query of 1
+ * or 2 characters), names that repeat in the list and names the host says repeat among children
+ * it did not list; [] when the message is not one of these misses or does not parse.
  *
  * A repeated name is never offered, since it cannot pick one item. When one is as near the query as
  * any of the names (listed, or named as repeated; alone or tied, whatever order the tie sorts in), a
@@ -731,7 +738,7 @@ export function aeListSuggestions(message: string): string[] {
     const past = repeatedNames(message, names.end);
     if (past === null) return [];
     const repeated = new Set([...past, ...repeatsIn(names.items)]);
-    const pool = [...new Set([...names.items, ...past])].filter((n) => n !== query && n.length <= QUOTED_NAME_MAX && !isCutName(n));
+    const pool = [...new Set([...names.items, ...past])].filter((n) => n !== "" && n !== query && n.length <= QUOTED_NAME_MAX && !isCutName(n));
     const ranked = rank(query, pool, (n) => [n], { limit: pool.length, normalize: stripAeVendor });
     const nearest = ranked[0];
     if (nearest === undefined) return [];
@@ -1258,13 +1265,15 @@ ${effectParade("  ")}
 // ---- installed effects and effect "did you mean" ------------------------------
 
 /**
- * Host facts the live probes decide (AE-16 spec §13, probe 13). The defaults state the unverified
- * assumption; a probe result flips the constant, and the messages follow from it.
- *  - EFFECT_NAMES_CASE_SENSITIVE: canAddProperty rejects a case-folded match name.
- *  - EFFECT_DISPLAY_NAMES_ACCEPTED: canAddProperty/addProperty accept a display name.
+ * Host facts the live probes settled (AE-16 spec §13, probe 13; After Effects 26.5, 2026-10-10).
+ * The messages withEffectSuggestions writes follow from them.
+ *  - EFFECT_NAMES_CASE_SENSITIVE: canAddProperty rejects a case-folded match name ("adbe gaussian
+ *    blur 2" was refused).
+ *  - EFFECT_DISPLAY_NAMES_ACCEPTED: canAddProperty/addProperty accept a display name ("Gaussian
+ *    Blur" was applied as ADBE Gaussian Blur 2), so ae_apply_effect's "or display name" holds.
  */
 export const EFFECT_NAMES_CASE_SENSITIVE = true;
-export const EFFECT_DISPLAY_NAMES_ACCEPTED = false;
+export const EFFECT_DISPLAY_NAMES_ACCEPTED = true;
 
 /** A full app.effects read slower than this switches the catalog to the filtered read for later connections. */
 export const SLOW_EFFECTS_READ_MS = 3000;
@@ -1403,7 +1412,7 @@ export class EffectCatalog {
   }
 }
 
-/** The two probe-decided facts, as a parameter so tests cover both branches without mutating exports. */
+/** The two probe-settled facts, as a parameter so tests cover every branch without mutating exports. */
 export interface EffectNameRules {
   readonly caseSensitive: boolean;
   readonly displayNamesAccepted: boolean;
@@ -1411,10 +1420,13 @@ export interface EffectNameRules {
 const EFFECT_NAME_RULES: EffectNameRules = { caseSensitive: EFFECT_NAMES_CASE_SENSITIVE, displayNamesAccepted: EFFECT_DISPLAY_NAMES_ACCEPTED };
 
 /**
- * ae_apply_effect's miss path: an installed effect After Effects refused gets a note; a display
- * name or a case slip gets the exact match name; a typo gets up to 3 close installed names.
- * Returns `error` unchanged for anything else, or when the installed list cannot be read now. A
- * name longer than EFFECT_NAME_MAX is only compared exactly: it is never folded or ranked.
+ * ae_apply_effect's miss path: an installed effect After Effects refused (by its match name, or by
+ * its display name, which After Effects takes) gets a note that the layer would not take it; a case
+ * slip gets the name as After Effects spells it (the match name, or the display name) and a note
+ * that case counts; a typo gets up to 3 close installed names. Under rules other than the shipped
+ * ones (tests), a display name gets the match name to pass instead. Returns `error` unchanged for
+ * anything else, or when the installed list cannot be read now. A name longer than EFFECT_NAME_MAX
+ * is only compared exactly: it is never folded or ranked.
  */
 export async function withEffectSuggestions(catalog: EffectCatalog, error: unknown, requested: string, rules: EffectNameRules = EFFECT_NAME_RULES): Promise<unknown> {
   if (!(error instanceof ScriptError) || !error.message.startsWith(EFFECT_MISS)) return error;
@@ -1426,7 +1438,7 @@ export async function withEffectSuggestions(catalog: EffectCatalog, error: unkno
   }
   const refused = "That effect is installed, but After Effects would not add it to this layer.";
   const caseNote = "Names must match exactly, case included.";
-  /** A display name that is (or would be, once its case is right) refused: the match name to pass instead. */
+  /** Display names not accepted: a display name (right or wrong only in case) gets the match name to pass instead. */
   const passMatchName = (e: InstalledEffect) =>
     error.withDetails({
       suggestions: [{ name: e.matchName, label: e.displayName }],
