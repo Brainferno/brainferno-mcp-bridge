@@ -118,7 +118,15 @@ export function createMcpServer(rt: Runtime, opts: { remote?: boolean } = {}): M
     illustratorBridge: rt.illustratorBridge,
     illustratorDelegateEnabled: config.illustratorMcpKey !== "",
   });
-  if (on.has("after_effects")) registerAfterEffectsTools(server, bridge.bridgeFor("after_effects"), { jobs, defaultWait: config.defaultWait });
+  if (on.has("after_effects")) {
+    registerAfterEffectsTools(server, bridge.bridgeFor("after_effects"), {
+      jobs,
+      defaultWait: config.defaultWait,
+      rawScriptApps: config.rawScriptApps,
+      remote,
+      allowRemoteRawScripts: config.allowRemoteRawScripts,
+    });
+  }
   if (on.has("premiere")) registerPremiereTools(server, bridge.bridgeFor("premiere"), { jobs, defaultWait: config.defaultWait });
   if (on.has("photoshop")) {
     registerPhotoshopTools(server, bridge.bridgeFor("photoshop"), {

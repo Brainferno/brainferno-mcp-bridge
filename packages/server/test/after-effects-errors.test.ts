@@ -1984,7 +1984,7 @@ describe("ae_render_frame and ae_render_comp's job step keep the tool context (R
     const workRoot = mkdtempSync(join(tmpdir(), "bf-ae16-jobs-"));
     const jobs = new JobRegistry({ workRoot });
     const server = new McpServer({ name: "ae16-jobs", version: "0" });
-    registerAfterEffectsTools(server, fakeBridge(evaluate), { jobs, defaultWait: true });
+    registerAfterEffectsTools(server, fakeBridge(evaluate), { jobs, defaultWait: true, rawScriptApps: [], remote: false, allowRemoteRawScripts: false });
     registerJobTools(server, jobs);
     const [ct, st] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: "ae16-jobs", version: "0" });

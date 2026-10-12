@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-One run-script contract and a gate clients can see (X-01); After Effects errors that say where and why (AE-16).
+One run-script contract and a gate clients can see (X-01); After Effects errors that say where and why (AE-16); `ae_run_script`, a raw After Effects script as one undo step (AE-01).
 
 **Breaking**
 
@@ -42,8 +42,8 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
 **Changed**
 
 - `cc_eval_script` and `ps_batch_play` are always registered and refuse — touching no app —
-  while their gate is closed. The default tool list grows from 127 to 130 (these two plus
-  `cc_get_capabilities`).
+  while their gate is closed; they and `cc_get_capabilities` are now part of the default tool
+  list.
 - `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS` takes `1` (now also `true` in any case, `all` or `*`) for
   every raw-capable app, or a comma list of app ids (`after_effects`, `photoshop`,
   `illustrator`, `audition`; the short names `ae`, `ps`, `ai`, `au` work too). Premiere Pro,
@@ -65,8 +65,11 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   refusal says to rerun the installer and pick the app, or to set `BRAINFERNO_MCP_APPS` to the
   full list of apps, since it replaces the installer's choice rather than adding to it.
   `timeoutMs` is capped at 30 minutes.
-- New audit line for every raw call, run or refused, on both tools (`ps_batch_play` had none):
-  `AUDIT raw-script tool=… app=… sha256=<12 hex> len=… [count=…] via=stdio|http:<8 chars> outcome=run|refused`.
+- `cc_eval_script`'s description points After Effects work to `ae_run_script` (AE-01) and says
+  how to return an object literal: wrap it in parentheses, since a bare `{ a: 1 }` on the last
+  line is a block and returns 1.
+- New audit line for every raw call, run or refused, on every raw-script tool (`ps_batch_play`
+  had none): `AUDIT raw-script tool=… app=… sha256=<12 hex> len=… [count=…] via=stdio|http:<8 chars> outcome=run|refused`.
   It is written at every log level and carries no script text; the first 200 characters of a
   script that runs moved to the `debug` log (`cc_eval_script` used to put them in a `warn`
   line; see Fixed). When the gate is open the server writes one
@@ -139,6 +142,46 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   version.
 - The hub now keeps each panel's `panelVersion`, `hostVersion` and `capabilities` from its
   hello (`BridgeServer.panelInfo`).
+- `ae_run_script` (AE-01): a raw ExtendScript in After Effects as one undo step, for multi-step
+  work the typed `ae_*` tools do not cover. Like `cc_eval_script` it is always listed, refuses
+  — touching no app — unless `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS` includes After Effects (and,
+  for a remote session, `BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS=1`), runs the script through
+  the same wrapper, returns the same envelope and writes one audit line per call.
+  - The whole call runs in one undo group named `undoGroupName` (default `Brainferno script`):
+    one Ctrl-Z undoes everything it changed, including what a script that failed part-way
+    changed. Opening, creating or closing a project, or importing an `.aep`, inside the script
+    is outside that guarantee.
+  - `args` reaches the script as `__args` (`{}` when omitted), sent as a pure-ASCII ES3
+    literal: plain JSON data, at most 32 levels deep. Deeper data, a number that is not finite
+    or a nested `__proto__` key is refused before anything is sent.
+  - `suppressDialogs` (default `true`) suppresses and discards After Effects' script warning
+    and error dialogs, such as those raised while saving or exporting, while the script runs.
+    The description promises no more than that: the missing-font warning shown when a project
+    is opened may still appear.
+  - The tool owns the undo group and the dialog suppression, so a script that names
+    `app.beginUndoGroup`, `app.endUndoGroup`, `app.beginSuppressDialogs` or
+    `app.endSuppressDialogs` — even in a comment or a string — is refused before it is sent.
+    If one of the tool's own end calls fails after the script ran, the envelope reports it in
+    `error.message` (after the script's own error, if it had one) and keeps the script's value
+    and logs.
+  - `alert`, `confirm` and `prompt` fail the call (`line` and `bodyLine` `null`) instead of
+    opening a dialog that would block After Effects.
+  - Plain-text errors mean nothing was sent: raw scripts disabled, a remote session, args
+    refused, a managed call named, After Effects not connected. A JSON envelope means the
+    script was sent and may have partly run; `bodyLine` counts lines of the caller's script,
+    and the host's message is passed on without AE-16's tool-and-arguments context, so the
+    server echoes neither the script nor `args`.
+  - `timeoutMs` (at most 30 minutes) overrides the slow timeout; a timeout stops the wait, not
+    the script.
+  - The audit payload is the JSON of `{ script, args }`; a call whose `args` are nested too
+    deeply to serialize is still audited, once.
+  - `cc_get_capabilities` has an `ae_run_script` row. Unit-tested; not yet verified live on
+    After Effects.
+  - Shared core, for architect review: `server.ts` passes the raw-script gate to
+    `registerAfterEffectsTools`, whose options now require `rawScriptApps`, `remote` and
+    `allowRemoteRawScripts`; `raw-script.ts` gains `auditJson`, an audit payload builder that
+    never throws (otherwise comment edits); `diagnostics.ts` gains the capabilities row and
+    the `cc_eval_script` description sentences (see Changed); `config.ts` changes comments only.
 
 **Fixed**
 
@@ -210,6 +253,15 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   verification too).
   The After Effects prompts cite `after-effects.ts` by symbol instead of by line number, which
   AE-16 shifted (AE-02 to AE-10, AE-14).
+- AE-01: `CONTRIBUTING.md` (architect review: `ae_run_script` among the raw tools, a fourth
+  plain-text cause, `auditJson` in the audit rule, how `__args` enters and what wraps the
+  wrapper), the README (the After Effects section, tool table, raw scripts, what a plain-text
+  error means, security and the audit line), `.env.example`, `docs/HANDOFF.md` (an AE-01
+  bullet: not yet verified live), `00_PREAMBLE.md`, spike 14 and the comments in `config.ts`
+  and `tool-counts.test.ts` updated to match. The AE-01 prompt is in review, with what the
+  build changed (the refused begin/end calls, the dialog scope it promises, the project-switch
+  carve-out, the shims, the gate fields) and acceptance 5 split into the save-and-export check
+  and the open-time missing-font check; its live verification is pending.
 
 ## v0.3.3 — 2026-10-01
 

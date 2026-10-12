@@ -16,7 +16,7 @@ software for use with those Adobe products; it is not made or endorsed by Adobe 
 comp, cuts the sequence, normalizes the audio, renders the file, and shows you previews along
 the way. Every action is one undo step in the app, so you can always step back.
 
-- **130 tools** across six applications, plus an ffmpeg audio lane that works with every
+- **131 tools** across six applications, plus an ffmpeg audio lane that works with every
   Adobe app closed.
 - **Cross-app pipelines**: one request runs Photoshop → After Effects → aerender → Premiere
   → ffmpeg → back onto the timeline, with progress and a clear report if a step fails.
@@ -86,7 +86,7 @@ remove), place an image as a smart object, fill, filters (Gaussian/motion/unshar
 resize, crop. Plus a raw batchPlay escape hatch (`ps_batch_play`) that is always listed but
 refuses until you enable raw scripts for Photoshop — see [Raw scripts](#raw-scripts-opt-in).
 
-### After Effects — 34 tools
+### After Effects — 35 tools
 Project info and file, compositions and footage (list, create, import), import a layered
 PSD or AI file as a composition (one layer each, with PSD layer styles editable), layers of
 every kind (footage, solid, text, null, adjustment), shape layers (rectangle, ellipse, star,
@@ -95,6 +95,9 @@ keyframes with easing, expressions, effects and their parameters, layer styles (
 glows, bevel, stroke… — add, adjust, read, remove), text content/font/color/justification,
 markers, Essential Graphics (expose a control, export a Motion Graphics template),
 single-frame preview, render queue, and headless rendering through `aerender` (the UI stays free).
+Plus a raw ExtendScript tool (`ae_run_script`) that runs a whole script as one undo step and is
+always listed but refuses until you enable raw scripts for After Effects — see
+[Raw scripts](#raw-scripts-opt-in).
 
 ### Premiere Pro — 29 tools
 Project, sequences and items, a full sequence read (every track and clip with times),
@@ -346,7 +349,7 @@ The wire protocol is documented in [`docs/protocol.md`](docs/protocol.md).
 | `cc_get_capabilities` | all | What the server can do for *this* session, without contacting any app: server and protocol versions, local or remote session, the raw-script gate, one row per gated tool (enabled or not, how to enable it, app connected, panel supports it), and each panel's version and host version |
 | `cc_job_status` · `cc_list_jobs` · `cc_job_wait` · `cc_job_cancel` | jobs | Background jobs; `wait` streams progress; long renders/exports take `wait:false` and return a jobId |
 | `ps_*` (22) | Photoshop | Documents (list/create/open/save/export/preview), layers (create/text/props/move/duplicate/delete), layer styles, place image, fill, filters, resize, crop, and the gated `ps_batch_play` (below) — [live run](docs/spikes/05-photoshop-tools-live.md) |
-| `ae_*` (34) | After Effects | Project/comps/footage, PSD/AI import as comp, layers of every kind, shapes and masks, keyframes + easing, expressions, effects + params, layer styles, text, markers, Essential Graphics, frame preview, render queue, headless aerender — [live run](docs/spikes/06-aftereffects-tools-live.md) |
+| `ae_*` (34) | After Effects | The typed tools: project/comps/footage, PSD/AI import as comp, layers of every kind, shapes and masks, keyframes + easing, expressions, effects + params, layer styles, text, markers, Essential Graphics, frame preview, render queue, headless aerender; the gated `ae_run_script` has its own row (below) — [live run](docs/spikes/06-aftereffects-tools-live.md) |
 | `pp_*` (29) | Premiere Pro | Project/sequences/items, get_sequence (tracks + clips), import, create sequence from media, insert/overwrite, ripple remove, move/trim/props, transitions, effects + keyframes, markers, frame preview, export presets, export in-app or to Media Encoder — [live run](docs/spikes/07-premiere-tools-live.md) |
 | `ai_*` (7) | Illustrator | Documents, shapes, text, save, export artboard, preview (panel-less) |
 | `ai_beta_status` · `ai_beta_list_tools` · `ai_beta_call` | Illustrator (Adobe's MCP) | Pass-through to Adobe's 46 Illustrator tools — needs a key ([docs](docs/illustrator-beta.md), [sweep](docs/spikes/12-illustrator-beta-sweep.md)) |
@@ -355,6 +358,7 @@ The wire protocol is documented in [`docs/protocol.md`](docs/protocol.md).
 | `audio_*` (9) | ffmpeg | Probe, R128 measure + two-pass normalize, convert/extract, trim, trim silence, denoise, mix, waveform image |
 | `pipeline_*` (4) | cross-app | `ps_to_ae`, `render_and_import`, `audio_roundtrip`, `ai_to_ps` — one call, one job, failure names the step + recovery tool — [live run](docs/spikes/09-pipelines-live.md) |
 | `cc_eval_script` | After Effects, Illustrator, Audition | Raw ExtendScript escape hatch — always listed; refuses unless enabled (**opt-in**, `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS`) — see `cc_get_capabilities` |
+| `ae_run_script` | After Effects | Raw ExtendScript as one undo step, with `__args` and script dialogs suppressed — always listed; refuses unless enabled for After Effects (**opt-in**, same switch) |
 | `ps_batch_play` | Photoshop | Raw batchPlay descriptors — always listed; refuses unless enabled for Photoshop (**opt-in**, same switch) |
 
 Tools are always advertised for the apps you chose, even when an app is closed — a closed
@@ -363,23 +367,25 @@ raw-script tools follow the same rule: listed, and refusing until they are enabl
 `ai_beta_*` tools stay out of the list until an Illustrator key is configured.
 
 A panel that drops mid-call returns an error saying the call may have partly run and how to
-reconnect; a panel older than the server says to update or reload it. After Effects tool
-errors also name the tool and its arguments (cut short, keys and tokens removed), say where
-the tool's script failed (quoting the failing line and its neighbours when it is the tool's own
-code), and suggest close names for an unknown effect, property or effect parameter.
+reconnect; a panel older than the server says to update or reload it. Errors from the typed
+After Effects tools (`ae_*` other than `ae_run_script`) also name the tool and its arguments
+(cut short, keys and tokens removed), say where the tool's script failed (quoting the failing
+line and its neighbours when it is the tool's own code), and suggest close names for an
+unknown effect, property or effect parameter.
 
 ### Raw scripts (opt-in)
 
 `cc_eval_script` runs your own ExtendScript in After Effects, Illustrator or Audition;
-`ps_batch_play` runs raw batchPlay descriptors in Photoshop. Both are for work the typed tools
-do not cover yet, and both refuse every call until the operator sets
-`BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS` in the server env — `1` (or `all`) for every app with a
-raw-script tool, or a comma list such as `after_effects,photoshop` — and restarts. Remote (*shared*)
-sessions are refused even then unless `BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS=1` is also set.
+`ae_run_script` runs one in After Effects as a single undo step; `ps_batch_play` runs raw
+batchPlay descriptors in Photoshop. They are for work the typed tools do not cover yet, and
+each refuses every call until the operator sets `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS` in the
+server env — `1` (or `all`) for every app with a raw-script tool, or a comma list such as
+`after_effects,photoshop` — and restarts. Remote (*shared*) sessions are refused even then
+unless `BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS=1` is also set.
 `cc_get_capabilities` shows the calling session which tools are enabled and how to enable the
 rest.
 
-Both return the same envelope, keys in this order:
+They all return the same envelope, keys in this order:
 
 ```json
 { "ok": false, "error": { "message": "…", "line": 3, "bodyLine": 3 }, "durationMs": 41, "value": null, "logs": [] }
@@ -389,18 +395,46 @@ Both return the same envelope, keys in this order:
 log lines were dropped. `bodyLine` is the line in your script that failed; it is `null` when
 the error was raised outside your script's own text or the host's line numbering cannot be
 calibrated. `durationMs` is the server's round trip, including any wait
-behind other calls to the same app. In `cc_eval_script` the value of the script's last
-statement is the result (a top-level `return` is a syntax error — wrap such code in an IIFE),
-`__log(msg)` collects up to 200 lines / 20000 characters, and the result must be plain data
-(strings, numbers, booleans, `null`, arrays, plain objects) — a host object such as a layer is
-refused with its path. In `ps_batch_play` the value is batchPlay's results array, and a
-descriptor that Photoshop reports as failed (an `{ "_obj": "error" }` entry) makes the call
-fail, naming the index: the descriptors before it already ran and are not undone.
+behind other calls to the same app. In `cc_eval_script` and `ae_run_script` the value of the
+script's last statement is the result (a top-level `return` is a syntax error — wrap such code
+in an IIFE; to return an object literal, wrap it in parentheses, `({ a: 1 })`, since a bare
+`{ a: 1 }` on the last line is a block), `__log(msg)` collects up to 200 lines / 20000
+characters, and the result must be plain data (strings, numbers, booleans, `null`, arrays,
+plain objects) — a host object such as a layer is refused with its path. In `ps_batch_play`
+the value is batchPlay's results array, and a descriptor that Photoshop reports as failed (an
+`{ "_obj": "error" }` entry) makes the call fail, naming the index: the descriptors before it
+already ran and are not undone.
+
+`ae_run_script` adds what After Effects work needs around the same wrapper:
+
+- **One undo step.** The whole call runs inside one undo group named `undoGroupName` (default
+  `Brainferno script`), so one Ctrl-Z undoes everything the script changed, including what a
+  script that failed part-way changed before it failed. Opening, creating or closing a
+  project, or importing an `.aep`, inside the script resets or breaks After Effects' undo
+  history, so those calls are outside that guarantee.
+- **`args`** reaches the script as `__args` (`{}` when omitted): plain JSON data, at most 32
+  levels deep. Deeper data, a number that is not finite (such as `1e999`) or a nested
+  `__proto__` key is refused before anything is sent; a top-level `__proto__` key is dropped.
+- **Dialogs.** `suppressDialogs` (default on) suppresses and discards After Effects' script
+  warning and error dialogs, such as those raised while saving or exporting, while the script
+  runs; the missing-font warning shown when a project is opened may still appear and block
+  scripting. Modal UI the script opens itself is not covered: `alert`, `confirm` and `prompt`
+  fail the call instead of opening a dialog, and anything else modal (a file or folder picker,
+  a ScriptUI dialog, a menu command that opens a dialog) blocks After Effects and every later
+  call until someone dismisses it.
+- **The tool owns the undo group and dialog suppression**, so a script that names
+  `app.beginUndoGroup`, `app.endUndoGroup`, `app.beginSuppressDialogs` or
+  `app.endSuppressDialogs` — even in a comment or a string — is refused before it is sent. If
+  ending the suppression or closing the undo group fails after the script ran, the envelope
+  reports it in `error.message` (after the script's own error, if it had one) and keeps the
+  script's value and logs.
+- **A timeout stops the wait, not the script:** After Effects keeps running it, and later
+  After Effects calls wait behind it.
 
 **Reading a raw-script error:** a tool error in plain text means nothing was sent to the app
-(raw scripts disabled, app not enabled, app not connected). A tool error whose text is a JSON
-envelope means the script or batch *was* sent and may have partly run — check the document
-before re-running it.
+(raw scripts disabled, app not enabled, app not connected, or args or script refused
+(`ae_run_script`)). A tool error whose text is a JSON envelope means the script or batch *was*
+sent and may have partly run — check the document before re-running it.
 
 ---
 
@@ -449,17 +483,17 @@ override it:
   the hidden renderer it started — never one that was already running.
 - Keys and tokens are stored in `~/.brainferno-mcp-bridge/config.json`, never logged, and never
   written into an error message by the server itself. Script errors from the typed After
-  Effects tools (`ae_*`, and the After Effects steps of jobs and pipelines) also remove them
-  from the host's message, the echoed arguments and the quoted code; where After Effects cut a
-  long name less than 8 characters into a key, those few characters stay. In every app, the
-  text of a panel older than the server (`UNKNOWN_COMMAND`) loses them too and is put on one
-  line. Elsewhere — other apps' script errors, the raw-script envelopes, a render's log tail —
-  the host's own text is passed on unchanged, so a project, document or layer name that
-  contains a key shows as written.
-- Raw scripts (`cc_eval_script`, `ps_batch_play`) run arbitrary code inside your Adobe
-  applications with your user's rights, so they are opt-in and off by default: the tools are
-  listed but refuse every call, touching no app, until `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS`
-  names the app. `1`/`all` opens After Effects, Photoshop, Illustrator and Audition —
+  Effects tools (`ae_*` except `ae_run_script`, and the After Effects steps of jobs and
+  pipelines) also remove them from the host's message, the echoed arguments and the quoted
+  code; where After Effects cut a long name less than 8 characters into a key, those few
+  characters stay. In every app, the text of a panel older than the server
+  (`UNKNOWN_COMMAND`) loses them too and is put on one line. Elsewhere — other apps' script
+  errors, the raw-script envelopes, a render's log tail — the host's own text is passed on
+  unchanged, so a project, document or layer name that contains a key shows as written.
+- Raw scripts (`cc_eval_script`, `ae_run_script`, `ps_batch_play`) run arbitrary code inside
+  your Adobe applications with your user's rights, so they are opt-in and off by default: the
+  tools are listed but refuse every call, touching no app, until
+  `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS` names the app. `1`/`all` opens After Effects, Photoshop, Illustrator and Audition —
   **Illustrator included**: its raw scripts go through the OS scripting lane, which launches
   Illustrator if it is closed. Remote (*shared*)
   sessions stay refused unless `BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS=1`.
@@ -467,8 +501,9 @@ override it:
   at every `BRAINFERNO_MCP_LOG_LEVEL` (the level cannot silence it):
   `[brainferno-mcp-bridge] AUDIT raw-script tool=<tool> app=<app> sha256=<12 hex> len=<n> [count=<n>] via=<via> outcome=<run|refused>`.
   It records the first 12 hex digits of a SHA-256 and the length of the script (for
-  `ps_batch_play`, of the descriptors' JSON, plus their `count`) — never the script itself; on
-  a run its first 200 characters go to the `debug` log only. `via` is `stdio` for a local
+  `ae_run_script`, of the JSON of `{ script, args }`; for `ps_batch_play`, of the descriptors'
+  JSON, plus their `count`) — never the script itself; on a run its first 200 characters go
+  to the `debug` log only. `via` is `stdio` for a local
   session or `http:` plus the first 8 characters of a remote session's id (the same prefix the
   "remote session … opened" log line shows). When the gate is open the server also writes one
   `AUDIT raw scripts ENABLED for …` line at startup, saying whether remote sessions are allowed.

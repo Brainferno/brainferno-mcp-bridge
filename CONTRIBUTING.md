@@ -83,12 +83,12 @@ server.registerTool(
 - Tools are registered unconditionally — a closed app returns the actionable
   `AppNotConnectedError` message, it does not vanish from the tool list. The raw-script
   escape hatches follow the same rule: `cc_eval_script` (After Effects, Illustrator,
-  Audition) and `ps_batch_play` (Photoshop) are always registered and *refuse* — before
-  touching any bridge — unless `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS` names the app (`1`/`all`,
-  or a comma list of app ids) and, for a remote (shared HTTP) session,
-  `BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS=1`. `cc_get_capabilities` reports that gate per
-  tool. The one remaining registration gate is deliberate: the Illustrator-delegate tools
-  register only with a configured key.
+  Audition), `ae_run_script` (After Effects) and `ps_batch_play` (Photoshop) are always
+  registered and *refuse* — before touching any bridge — unless
+  `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS` names the app (`1`/`all`, or a comma list of app ids)
+  and, for a remote (shared HTTP) session, `BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS=1`.
+  `cc_get_capabilities` reports that gate per tool. The one remaining registration gate is
+  deliberate: the Illustrator-delegate tools register only with a configured key.
 
 ## Annotations — set honestly
 
@@ -123,10 +123,10 @@ keys or tokens (`tools/echo.ts`).
 
 ## Raw-script tools — one contract
 
-Every raw-script tool (today `cc_eval_script` and `ps_batch_play`) builds on
+Every raw-script tool (today `cc_eval_script`, `ae_run_script` and `ps_batch_play`) builds on
 `packages/server/src/tools/raw-script.ts` — the envelope, the ES3 wrapper, the gate, the
-refusal texts and the audit line live there once. A new raw tool imports them; it
-re-implements none of them.
+refusal texts and the audit line (with `auditJson`) live there once. A new raw tool imports
+them; it re-implements none of them.
 
 - **Envelope.** Results are `{ ok, error?: { message, line, bodyLine }, durationMs, value,
   logs, logsDropped? }`, built with `makeEnvelope` so the keys keep that order and the verdict
@@ -138,13 +138,14 @@ re-implements none of them.
   returns an `ok` envelope as a normal JSON result and any other as `isError` with the
   envelope as its text.
 - **Error-shape rule.** `isError` with **plain text** = nothing was dispatched (raw scripts
-  disabled, app not enabled, app not connected). `isError` with a **JSON envelope** = the
-  script or batch was dispatched and may have partly run. After dispatch, map `ScriptError`,
-  `EvalTimeoutError`, `AppDisconnectedError` and the os-script lane's `RunnerExitedError`
-  (an `AppNotConnectedError` marked `dispatched`: the runner failed after the script may have
-  reached Illustrator) through `dispatchedFailure`; rethrow a plain `AppNotConnectedError`
-  (not dispatched) so `guard()` returns plain text. When it cannot tell, a lane treats a
-  failure as dispatched. Say this rule in the tool's description.
+  disabled, app not enabled, app not connected, args or script refused (`ae_run_script`)).
+  `isError` with a **JSON envelope** = the script or batch was dispatched and may have partly
+  run. After dispatch, map `ScriptError`, `EvalTimeoutError`, `AppDisconnectedError` and the
+  os-script lane's `RunnerExitedError` (an `AppNotConnectedError` marked `dispatched`: the
+  runner failed after the script may have reached Illustrator) through `dispatchedFailure`;
+  rethrow a plain `AppNotConnectedError` (not dispatched) so `guard()` returns plain text.
+  When it cannot tell, a lane treats a failure as dispatched. Say this rule in the tool's
+  description.
 - **Gate first.** Check `rawGateState(app, rawScriptApps, enabledApps, { remote,
   allowRemote })` before any bridge call; a refusal returns `errorResult(reason)` and calls no
   bridge at all. Refusals, in precedence order: the app's tools are not enabled on this
@@ -152,11 +153,19 @@ re-implements none of them.
   scripts are not allowed.
 - **Audit every call.** Exactly one `auditRawCall` per call, run or refused. It writes
   through `log.audit`, which no log level silences, and records a hash and the length of the
-  payload — never the payload itself.
+  payload — never the payload itself. A payload that is the JSON of structured input (such
+  as `ae_run_script`'s `{ script, args }`) is built with `auditJson`, which never throws: a
+  bare `JSON.stringify` overflows the stack on input nested about 5000 levels deep, which
+  zod and `JSON.parse` accept, and the call would then go unaudited. Build it before the gate
+  check, since a refusal is audited too. (`ps_batch_play` still uses a bare `JSON.stringify`;
+  moving it is an X-01 follow-up.)
 - **ExtendScript enters only through `rawScriptWrapper`.** The caller's script becomes a
   pure-ASCII string literal (built on `jsStringLiteral`) that the ES3 wrapper runs with a
   direct `eval` inside its own inner function; the wrapper collects `__log` output and refuses
-  a result that is not plain data.
+  a result that is not plain data. `ae_run_script`'s args enter only as an ES3 literal built
+  by `aeArgsLiteral` (on `asciiLiteral`) in the outer IIFE, never inside `__src`; the undo
+  group, the dialog suppression and the `alert`/`confirm`/`prompt` shims wrap the wrapper from
+  outside, and a failing end call is added to the envelope's error rather than replacing it.
 - **Illustrator goes through the os-script lane** — the same `OsScriptBridge` instance the
   `ai_*` tools use, so its queue serializes them — never through the socket hub, where
   Illustrator has no panel.

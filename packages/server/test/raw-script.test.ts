@@ -19,6 +19,7 @@ import {
   RAW_SCRIPTS_DISABLED_MESSAGE,
   REMOTE_RAW_SCRIPTS_REFUSED_MESSAGE,
   asciiLiteral,
+  auditJson,
   auditRawCall,
   dispatchedFailure,
   envelopeResult,
@@ -569,6 +570,15 @@ describe("audit", () => {
     auditRawCall({ tool: "ps_batch_play", app: "photoshop", payload: "[]", count: 0, outcome: "refused", via: "http:abcd1234" });
     expect(audit.mock.calls[1]![0]).toMatch(/^raw-script tool=ps_batch_play app=photoshop sha256=[0-9a-f]{12} len=2 count=0 via=http:abcd1234 outcome=refused$/);
     expect(debug).toHaveBeenCalledTimes(1); // no excerpt for a refusal
+  });
+
+  it("auditJson never throws: a value too deep for JSON.stringify gives the fallback's JSON (AE-01)", () => {
+    // z.record(z.unknown()) and JSON.parse both accept this depth; V8's JSON.stringify overflows its stack.
+    let deep: unknown = [];
+    for (let i = 0; i < 10_000; i++) deep = [deep];
+    expect(() => JSON.stringify({ a: deep })).toThrow(RangeError);
+    expect(auditJson({ a: deep }, "F")).toBe('"F"');
+    expect(auditJson({ a: 1 }, "F")).toBe('{"a":1}');
   });
 
   it("escapes the debug excerpt, so a script cannot forge a log line", () => {

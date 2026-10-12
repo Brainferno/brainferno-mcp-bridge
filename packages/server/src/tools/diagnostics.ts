@@ -97,10 +97,10 @@ export function registerDiagnosticTools(
         "Report what this server can do for the calling session, without contacting any application: the server " +
         "and protocol versions; whether this session is local (stdio) or remote (shared HTTP); the raw-script gate " +
         "(BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS: enabled apps, ignored tokens, whether remote sessions are allowed); one " +
-        "row per gated tool (cc_eval_script per ExtendScript app, ps_batch_play, the Illustrator delegate tools) " +
-        "saying whether it is enabled for this session, how to enable it, whether its app is connected and whether " +
-        "the connected panel implements the command; and each panel's version and host version. Call it before " +
-        "relying on a raw-script tool.",
+        "row per gated tool (cc_eval_script per ExtendScript app, ae_run_script, ps_batch_play, the Illustrator " +
+        "delegate tools) saying whether it is enabled for this session, how to enable it, whether its app is " +
+        "connected and whether the connected panel implements the command; and each panel's version and host " +
+        "version. Call it before relying on a raw-script tool.",
       inputSchema: {},
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
@@ -131,6 +131,8 @@ export function registerDiagnosticTools(
           panelSupports: boolean | null;
         }[] = [];
         for (const app of RAW_SCRIPT_APP_IDS) if (enabled.includes(app)) tools.push(rawRow("cc_eval_script", app, "eval"));
+        // AE-01: ae_run_script sends the panel's generic eval command too.
+        if (enabled.includes("after_effects")) tools.push(rawRow("ae_run_script", "after_effects", "eval"));
         if (enabled.includes("photoshop")) tools.push(rawRow("ps_batch_play", "photoshop", "ps.batch_play"));
         if (enabled.includes("illustrator")) {
           for (const tool of DELEGATE_TOOLS) {
@@ -179,12 +181,15 @@ export function registerDiagnosticTools(
       title: "Creative Cloud: evaluate a raw ExtendScript",
       description:
         "Run a raw ExtendScript (ES3: var only — no let/const, arrow functions, template literals or JSON) in After " +
-        "Effects, Illustrator or Audition. An escape hatch for work the typed tools do not cover — prefer a typed tool " +
+        "Effects, Illustrator or Audition. For After Effects, ae_run_script runs a script as one undo step, with " +
+        "__args and dialogs suppressed. An escape hatch for work the typed tools do not cover — prefer a typed tool " +
         "where one exists. Photoshop has ps_batch_play instead; Premiere Pro has no raw-script path.\n" +
         "The completion value of the script's last statement is returned (a top-level `return` is a SyntaxError — " +
-        "wrap such code in an IIFE). Call __log(msg) to collect up to 200 lines / 20000 characters (logsDropped " +
-        "counts the rest). The result must be plain data — strings, numbers, booleans, null, arrays and plain " +
-        "objects; a host object (a layer, a comp, a Date) is refused with its path, so copy the fields you need. " +
+        "wrap such code in an IIFE). To return an object literal, wrap it in parentheses — ({ a: 1 }) — or return it " +
+        "from an IIFE; a bare { a: 1 } on the last line is a block and returns 1. Call __log(msg) to collect up to " +
+        "200 lines / 20000 characters (logsDropped counts the rest). The result must be plain data — strings, " +
+        "numbers, booleans, null, arrays and plain objects; a host object (a layer, a comp, a Date) is refused " +
+        "with its path, so copy the fields you need. " +
         "Variables and functions the script declares stay local to the call; assigning to an undeclared name " +
         "creates a global that persists in the host.\n" +
         "Returns the envelope { ok, error?: { message, line, bodyLine }, durationMs, value, logs, logsDropped? }. " +

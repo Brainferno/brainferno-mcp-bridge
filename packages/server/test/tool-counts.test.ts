@@ -14,7 +14,7 @@ import type { Config } from "../src/config.js";
  * server actually advertises. Nothing enforced these before, so they drifted
  * (README said After Effects had 33 tools; the registry has 34). This test is the
  * guard: it counts the LIVE registry under the default config — what a user sees.
- * The raw-script tools (cc_eval_script, ps_batch_play) and cc_get_capabilities are
+ * The raw-script tools (cc_eval_script, ae_run_script, ps_batch_play) and cc_get_capabilities are
  * part of that default registry: since X-01 they are always listed and refuse while
  * their gate is closed. Only the Illustrator-delegate tools stay out (they register
  * only with a configured key). It fails, printing the right number, when a doc
