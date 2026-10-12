@@ -55,9 +55,9 @@ const litOf = (v: Record<string, unknown>): string => {
 };
 
 // Escapes, so this source stays free of a raw U+2028 (a line terminator in source).
-const LS = " ";
-const U_UML = "ü";
-const E_ACUTE = "é";
+const LS = "\u2028";
+const U_UML = "\u00fc";
+const E_ACUTE = "\u00e9";
 
 const SAMPLES: Record<string, string> = {
   LIST_COMPOSITIONS,
@@ -463,6 +463,8 @@ describe("ae_run_script's builder and args encoder (AE-01)", () => {
   it("encodes args as one pure-ASCII ES3 object literal, every key quoted", () => {
     expect(litOf({})).toBe("{}");
     expect(litOf({ a: [1, -0, 1e21, 5e-324, -5, true, false, null] })).toBe('{"a":[1,-0,1e+21,5e-324,-5,true,false,null]}');
+    // Every digit a double needs to round-trip (R7: AE-01 acceptance 11).
+    expect(litOf({ x: 0.1 + 0.2, y: 1 / 3 })).toBe('{"x":0.30000000000000004,"y":0.3333333333333333}');
     expect(litOf({ default: 1, "": 2, constructor: 3 })).toBe('{"default":1,"":2,"constructor":3}');
     expect(litOf({ s: E_ACUTE })).toBe('{"s":"\\u00e9"}');
     expect(litOf({ s: `q"\\${LS}` })).toBe('{"s":"q\\"\\\\\\u2028"}');
@@ -487,6 +489,18 @@ describe("ae_run_script's builder and args encoder (AE-01)", () => {
     expect(refusalOf({ "two words": { d: new Date(0) } })).toBe(`args["two words"].d is not a plain object — ${TAKES}.`);
     // Every refusal ends with its own " — <next step>".
     expect(RUN_SCRIPT_MANAGED_REFUSAL).toContain(" — ");
+  });
+
+  it("cuts a refusal's key path at 200 characters, keeping its next step (K2c)", () => {
+    const key = "k".repeat(300);
+    const path = `args.${key}`.slice(0, 200);
+    expect(refusalOf({ [key]: Infinity })).toBe(
+      `${path}... is not a finite number (Infinity) — ${TAKES}; send a finite number, or a string the script converts.`,
+    );
+    // A path of exactly 200 characters is not cut; one more and it is.
+    const fits = "k".repeat(195);
+    expect(refusalOf({ [fits]: NaN })).toBe(`args.${fits} is not a finite number (NaN) — ${TAKES}; send a finite number, or a string the script converts.`);
+    expect(refusalOf({ [`${fits}k`]: NaN }).startsWith(`args.${fits}... is not a finite number`)).toBe(true);
   });
 
   it("refuses args nested more than 32 levels at level 32, however deep, without overflowing", () => {

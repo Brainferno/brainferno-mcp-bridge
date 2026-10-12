@@ -25,9 +25,9 @@ the way. Every action is one undo step in the app, so you can always step back.
 - **Runs on your machine.** Nothing leaves your computer unless you turn on *shared* mode
   for other computers on your network (token-protected).
 
-> Status: every tool verified live on Windows and macOS, the two platforms Adobe ships
-> Creative Cloud for (Adobe 2026 apps). The npm badge above is the current version.
-> See [Status](#status).
+> Status: every typed tool verified live on Windows and macOS, the two platforms Adobe ships
+> Creative Cloud for (Adobe 2026 apps); `ae_run_script` is unit-tested and not yet verified
+> live. The npm badge above is the current version. See [Status](#status).
 
 The companion panel inside each app — here in Adobe After Effects and Adobe Photoshop —
 shows the connection, a live log, and a kill switch:
@@ -97,7 +97,7 @@ markers, Essential Graphics (expose a control, export a Motion Graphics template
 single-frame preview, render queue, and headless rendering through `aerender` (the UI stays free).
 Plus a raw ExtendScript tool (`ae_run_script`) that runs a whole script as one undo step and is
 always listed but refuses until you enable raw scripts for After Effects — see
-[Raw scripts](#raw-scripts-opt-in).
+[Raw scripts](#raw-scripts-opt-in). It is unit-tested; not yet verified live.
 
 ### Premiere Pro — 29 tools
 Project, sequences and items, a full sequence read (every track and clip with times),
@@ -358,7 +358,7 @@ The wire protocol is documented in [`docs/protocol.md`](docs/protocol.md).
 | `audio_*` (9) | ffmpeg | Probe, R128 measure + two-pass normalize, convert/extract, trim, trim silence, denoise, mix, waveform image |
 | `pipeline_*` (4) | cross-app | `ps_to_ae`, `render_and_import`, `audio_roundtrip`, `ai_to_ps` — one call, one job, failure names the step + recovery tool — [live run](docs/spikes/09-pipelines-live.md) |
 | `cc_eval_script` | After Effects, Illustrator, Audition | Raw ExtendScript escape hatch — always listed; refuses unless enabled (**opt-in**, `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS`) — see `cc_get_capabilities` |
-| `ae_run_script` | After Effects | Raw ExtendScript as one undo step, with `__args` and script dialogs suppressed — always listed; refuses unless enabled for After Effects (**opt-in**, same switch) |
+| `ae_run_script` | After Effects | Raw ExtendScript as one undo step, with `__args` and script dialogs suppressed — always listed; refuses unless enabled for After Effects (**opt-in**, same switch); unit-tested, not yet verified live |
 | `ps_batch_play` | Photoshop | Raw batchPlay descriptors — always listed; refuses unless enabled for Photoshop (**opt-in**, same switch) |
 
 Tools are always advertised for the apps you chose, even when an app is closed — a closed
@@ -405,7 +405,8 @@ the value is batchPlay's results array, and a descriptor that Photoshop reports 
 `{ "_obj": "error" }` entry) makes the call fail, naming the index: the descriptors before it
 already ran and are not undone.
 
-`ae_run_script` adds what After Effects work needs around the same wrapper:
+`ae_run_script` adds what After Effects work needs around the same wrapper (unit-tested against
+a stand-in for After Effects; not yet verified live):
 
 - **One undo step.** The whole call runs inside one undo group named `undoGroupName` (default
   `Brainferno script`), so one Ctrl-Z undoes everything the script changed, including what a
@@ -418,16 +419,20 @@ already ran and are not undone.
 - **Dialogs.** `suppressDialogs` (default on) suppresses and discards After Effects' script
   warning and error dialogs, such as those raised while saving or exporting, while the script
   runs; the missing-font warning shown when a project is opened may still appear and block
-  scripting. Modal UI the script opens itself is not covered: `alert`, `confirm` and `prompt`
-  fail the call instead of opening a dialog, and anything else modal (a file or folder picker,
-  a ScriptUI dialog, a menu command that opens a dialog) blocks After Effects and every later
-  call until someone dismisses it.
+  scripting. Modal UI the script opens itself is not covered. A bare `alert`, `confirm` or
+  `prompt` written in the script's own text fails the call instead of opening a dialog, and
+  says what to do instead: `__log(msg)` for `alert`; for `confirm` or `prompt`, pass the answer
+  in `args`. Everything else modal still opens and blocks After Effects and every later call
+  until someone dismisses it: `Window.alert`, `$.global.alert` and `this.alert`; a library
+  loaded with `$.evalFile`, or a global helper, that calls `alert`, `confirm` or `prompt`;
+  ScriptUI dialogs; file or folder pickers; a menu command that opens a dialog.
 - **The tool owns the undo group and dialog suppression**, so a script that names
   `app.beginUndoGroup`, `app.endUndoGroup`, `app.beginSuppressDialogs` or
   `app.endSuppressDialogs` — even in a comment or a string — is refused before it is sent. If
   ending the suppression or closing the undo group fails after the script ran, the envelope
   reports it in `error.message` (after the script's own error, if it had one) and keeps the
-  script's value and logs.
+  script's value and logs. If it fails after the call itself failed outside the script (the
+  wrapper or a begin call threw), the note follows that error's message instead.
 - **A timeout stops the wait, not the script:** After Effects keeps running it, and later
   After Effects calls wait behind it.
 
@@ -493,10 +498,10 @@ override it:
 - Raw scripts (`cc_eval_script`, `ae_run_script`, `ps_batch_play`) run arbitrary code inside
   your Adobe applications with your user's rights, so they are opt-in and off by default: the
   tools are listed but refuse every call, touching no app, until
-  `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS` names the app. `1`/`all` opens After Effects, Photoshop, Illustrator and Audition —
-  **Illustrator included**: its raw scripts go through the OS scripting lane, which launches
-  Illustrator if it is closed. Remote (*shared*)
-  sessions stay refused unless `BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS=1`.
+  `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS` names the app. `1`/`all` opens After Effects, Photoshop,
+  Illustrator and Audition — **Illustrator included**: its raw scripts go through the OS
+  scripting lane, which launches Illustrator if it is closed. Remote (*shared*) sessions stay
+  refused unless `BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS=1`.
 - Every raw-script call, run or refused, writes one audit line to the server's stderr log,
   at every `BRAINFERNO_MCP_LOG_LEVEL` (the level cannot silence it):
   `[brainferno-mcp-bridge] AUDIT raw-script tool=<tool> app=<app> sha256=<12 hex> len=<n> [count=<n>] via=<via> outcome=<run|refused>`.
@@ -564,7 +569,8 @@ docs/                build plan, protocol, live-run notes (spikes/), Audition AP
   Tool is not needed; a single signed installer; TLS for shared mode; Audition multitrack
   writes; Media Encoder queue control. The Codex CLI / Gemini CLI lanes are built and
   unit-tested but not yet verified against the live CLIs — that run is
-  `docs/spikes/15-multi-client-lanes.md`.
+  `docs/spikes/15-multi-client-lanes.md`. `ae_run_script` (AE-01) is unit-tested but not yet
+  verified live on After Effects; its live run goes in `docs/spikes/06-aftereffects-tools-live.md`.
 - Roadmap: `docs/BUILD_PLAN.md` (Phase 6).
 
 ## License

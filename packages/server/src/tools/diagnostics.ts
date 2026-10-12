@@ -180,16 +180,16 @@ export function registerDiagnosticTools(
     {
       title: "Creative Cloud: evaluate a raw ExtendScript",
       description:
-        "Run a raw ExtendScript (ES3: var only — no let/const, arrow functions, template literals or JSON) in After " +
-        "Effects, Illustrator or Audition. For After Effects, ae_run_script runs a script as one undo step, with " +
-        "__args and dialogs suppressed. An escape hatch for work the typed tools do not cover — prefer a typed tool " +
-        "where one exists. Photoshop has ps_batch_play instead; Premiere Pro has no raw-script path.\n" +
+        // Claude Code shows a description only up to 2,048 characters (server.test.ts checks every tool's): the ES3
+        // rules and the object-literal note live in the script parameter's text.
+        "Run a raw ExtendScript (ES3) in After Effects, Illustrator or Audition. For After Effects (when its tools are " +
+        "enabled), ae_run_script runs a script as one undo step. An escape hatch for work the typed tools do not " +
+        "cover — prefer a typed tool where one exists. Photoshop has ps_batch_play instead; Premiere Pro has no " +
+        "raw-script path.\n" +
         "The completion value of the script's last statement is returned (a top-level `return` is a SyntaxError — " +
-        "wrap such code in an IIFE). To return an object literal, wrap it in parentheses — ({ a: 1 }) — or return it " +
-        "from an IIFE; a bare { a: 1 } on the last line is a block and returns 1. Call __log(msg) to collect up to " +
-        "200 lines / 20000 characters (logsDropped counts the rest). The result must be plain data — strings, " +
-        "numbers, booleans, null, arrays and plain objects; a host object (a layer, a comp, a Date) is refused " +
-        "with its path, so copy the fields you need. " +
+        "wrap such code in an IIFE). Call __log(msg) to collect up to 200 lines / 20000 characters (logsDropped " +
+        "counts the rest). The result must be plain data — strings, numbers, booleans, null, arrays and plain " +
+        "objects; a host object (a layer, a comp, a Date) is refused with its path, so copy the fields you need. " +
         "Variables and functions the script declares stay local to the call; assigning to an undeclared name " +
         "creates a global that persists in the host.\n" +
         "Returns the envelope { ok, error?: { message, line, bodyLine }, durationMs, value, logs, logsDropped? }. " +
@@ -209,7 +209,10 @@ export function registerDiagnosticTools(
           .string()
           .min(1)
           .describe(
-            "ExtendScript (ES3) source. The value of its last statement is returned; call __log(msg) to collect log lines.",
+            "ExtendScript (ES3: var only — no let/const, arrow functions, template literals or JSON) source. The value " +
+              "of its last statement is returned; call __log(msg) to collect log lines. To return an object literal, " +
+              "wrap it in parentheses — ({ a: 1 }) — or return it from an IIFE; a bare { a: 1 } on the last line is a " +
+              "block and returns 1.",
           ),
         timeoutMs: z
           .number()

@@ -572,13 +572,25 @@ describe("audit", () => {
     expect(debug).toHaveBeenCalledTimes(1); // no excerpt for a refusal
   });
 
-  it("auditJson never throws: a value too deep for JSON.stringify gives the fallback's JSON (AE-01)", () => {
-    // z.record(z.unknown()) and JSON.parse both accept this depth; V8's JSON.stringify overflows its stack.
+  it("auditJson never throws: a value too deep for JSON.stringify gives the fallback (AE-01)", () => {
+    // z.record(z.unknown()) and JSON.parse both accept this depth. 100,000 levels overflow JSON.stringify's
+    // stack on any thread: a worker thread's larger stack takes about 19,000 levels, a main thread's about 4,800.
     let deep: unknown = [];
-    for (let i = 0; i < 10_000; i++) deep = [deep];
-    expect(() => JSON.stringify({ a: deep })).toThrow(RangeError);
-    expect(auditJson({ a: deep }, "F")).toBe('"F"');
-    expect(auditJson({ a: 1 }, "F")).toBe('{"a":1}');
+    for (let i = 0; i < 100_000; i++) deep = [deep];
+    expect(() => JSON.stringify({ a: deep })).toThrow(RangeError); // precondition
+    expect(auditJson({ a: deep }, '"F"')).toBe('"F"');
+    expect(auditJson({ a: 1 }, '"F"')).toBe('{"a":1}');
+  });
+
+  it("auditJson always returns a string: the fallback, as given, for anything JSON.stringify gives no text for (AE-01)", () => {
+    // JSON.stringify returns undefined, without throwing, for these; auditRawCall's hash would then throw.
+    for (const value of [undefined, () => 1, Symbol("s")]) {
+      expect(JSON.stringify(value), String(value)).toBeUndefined(); // precondition
+      expect(auditJson(value, "FALLBACK"), String(value)).toBe("FALLBACK");
+    }
+    expect(auditJson({ b: 1n }, "FALLBACK")).toBe("FALLBACK"); // a BigInt throws a TypeError
+    expect(auditJson(null, "FALLBACK")).toBe("null");
+    expect(auditJson("s", "FALLBACK")).toBe('"s"');
   });
 
   it("escapes the debug excerpt, so a script cannot forge a log line", () => {

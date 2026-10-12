@@ -320,22 +320,27 @@ describe("brainferno-mcp-bridge server", () => {
 
   it("says in cc_eval_script's description both reasons bodyLine can be null", async () => {
     const tools = (await client.listTools()).tools;
-    // AE-01: ae_run_script repeats the sentence verbatim.
-    for (const name of ["cc_eval_script", "ae_run_script"]) {
-      const tool = tools.find((t) => t.name === name);
-      expect(tool?.description, name).toContain(
-        "bodyLine is null when the error was raised outside your script's own text (for example in a $.evalFile'd " +
-          "library, or in a helper an earlier call left as a global) or the host's line numbering cannot be calibrated.",
-      );
-    }
+    const sentence =
+      "bodyLine is null when the error was raised outside your script's own text (for example in a $.evalFile'd " +
+      "library, or in a helper an earlier call left as a global) or the host's line numbering cannot be calibrated.";
+    expect(tools.find((t) => t.name === "cc_eval_script")?.description).toContain(sentence);
+    // AE-01: ae_run_script repeats the sentence verbatim, in its script parameter (R1 keeps its description short).
+    const run = tools.find((t) => t.name === "ae_run_script");
+    expect((run?.inputSchema["properties"] as Record<string, { description?: string }>)["script"]?.description).toContain(sentence);
   });
 
-  it("points cc_eval_script's After Effects callers at ae_run_script and warns about a bare object literal (AE-01, ES-7)", async () => {
+  it("points cc_eval_script's After Effects callers at ae_run_script and warns about a bare object literal (AE-01, ES-7, K3, R11)", async () => {
     const tool = (await client.listTools()).tools.find((t) => t.name === "cc_eval_script");
-    expect(tool?.description).toContain("For After Effects, ae_run_script runs a script as one undo step, with __args and dialogs suppressed.");
-    expect(tool?.description).toContain(
-      "To return an object literal, wrap it in parentheses — ({ a: 1 }) — or return it from an IIFE; a bare { a: 1 } on the last line is a block and returns 1.",
-    );
+    // K3: ae_run_script is listed only when After Effects' tools are; the pointer promises nothing about dialogs.
+    expect(tool?.description).toContain("For After Effects (when its tools are enabled), ae_run_script runs a script as one undo step.");
+    expect(tool?.description).not.toContain("dialogs suppressed");
+    // R11: the object-literal clause lives in the script parameter, which keeps the description under the cut.
+    const objectLiteral =
+      "To return an object literal, wrap it in parentheses — ({ a: 1 }) — or return it from an IIFE; a bare { a: 1 } on the last line is a block and returns 1.";
+    expect(tool?.description).not.toContain(objectLiteral);
+    const script = (tool?.inputSchema["properties"] as Record<string, { description?: string }>)["script"]?.description;
+    expect(script).toContain(objectLiteral);
+    expect(script).toContain("var only — no let/const, arrow functions, template literals or JSON");
   });
 
   it("does not advertise the Illustrator delegate tools without a key", async () => {
@@ -398,6 +403,44 @@ describe("brainferno-mcp-bridge server", () => {
     // AE-16 changes After Effects' text only: other apps' script errors read exactly as before.
     expect((result.content as { text: string }[])[0]!.text).toBe("Script failed in photoshop (line 3): No open document");
     panel.close();
+  });
+});
+
+describe("tool descriptions a client shows whole (AE-01 R1, R11)", () => {
+  /** Claude Code cuts a tool description at 2,048 characters, so text past it never reaches the model. */
+  const DESCRIPTION_CUT = 2048;
+
+  it("keeps every tool's description, and each parameter's, within 2,048 characters as tools/list delivers them", async () => {
+    // Every app, plus an Illustrator key: the full tool list, delegate tools included.
+    const built = buildServer({ ...config, illustratorMcpKey: "ilst_test" });
+    await built.bridge.ready();
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const c = new Client({ name: "test", version: "0.0.0" });
+    await Promise.all([c.connect(clientTransport), built.server.connect(serverTransport)]);
+
+    const { tools } = await c.listTools();
+    const names = tools.map((t) => t.name);
+    // The raw-script tools carry the longest descriptions and their safety text; they must be in the list measured.
+    for (const raw of ["ae_run_script", "cc_eval_script", "ps_batch_play"]) expect(names).toContain(raw);
+    expect(names).toContain("ai_beta_call");
+    const over = tools.filter((t) => (t.description ?? "").length > DESCRIPTION_CUT).map((t) => `${t.name}: ${t.description!.length}`);
+    expect(over).toEqual([]);
+    const overParams = tools.flatMap((t) =>
+      Object.entries((t.inputSchema["properties"] ?? {}) as Record<string, { description?: string }>)
+        .filter(([, p]) => (p.description ?? "").length > DESCRIPTION_CUT)
+        .map(([k, p]) => `${t.name}.${k}: ${p.description!.length}`),
+    );
+    expect(overParams).toEqual([]);
+    // Each raw tool's gate sentence is inside the cut, so the model learns how the tool is enabled.
+    for (const raw of ["ae_run_script", "cc_eval_script"]) {
+      const d = tools.find((t) => t.name === raw)!.description!;
+      expect(d.indexOf("cc_get_capabilities shows the gate"), raw).toBeGreaterThan(0);
+    }
+
+    await c.close();
+    await built.server.close();
+    await built.bridge.close();
+    await built.illustratorDelegate.close();
   });
 });
 
