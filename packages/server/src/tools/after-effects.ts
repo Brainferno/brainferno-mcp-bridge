@@ -2044,10 +2044,10 @@ const AE_MANAGED_CALL = /\b(?:begin|end)(?:UndoGroup|SuppressDialogs)\b/;
  * It promises only what is verified (AE-01 D15).
  */
 export const RUN_SCRIPT_DESCRIPTION =
-  "Run a raw ExtendScript (ES3) in After Effects as ONE undo step: one Ctrl-Z undoes everything the call changed, " +
-  "even when the script failed part-way. Not covered: opening, creating or closing a project, or importing an .aep; " +
-  "these break After Effects' undo history. For multi-step work the typed ae_* tools do not cover; prefer a typed " +
-  "tool where one exists.\n" +
+  "Run a raw ExtendScript (ES3) in After Effects as ONE undo step, on the open project: one Ctrl-Z undoes " +
+  "everything the call changed, even when the script failed part-way. Not covered: opening, creating or closing a " +
+  "project, or importing an .aep; these break After Effects' undo history. Use it for multi-step work the typed " +
+  "ae_* tools do not cover; prefer a typed tool where one exists.\n" +
   "Error shape: an error in plain text means nothing was sent (raw scripts off, a remote session, args refused, a " +
   "script that names an undo or dialog-suppression call, After Effects not connected). An error whose text is a " +
   "JSON envelope means the script was sent and may have partly run: check After Effects before re-running.\n" +
@@ -2084,8 +2084,8 @@ const RUN_SCRIPT_SCRIPT_TEXT =
   "(line and bodyLine null) instead of opening a dialog. Use __log(msg) instead of alert; for confirm or prompt, " +
   "pass the answer in args and read it from __args. These still open a modal dialog that blocks After Effects: " +
   "Window.alert, $.global.alert and this.alert; a library loaded with $.evalFile, or a global helper, that calls " +
-  "alert, confirm or prompt; ScriptUI dialogs; file or folder pickers (File.openDialog, Folder.selectDialog); a " +
-  "menu command that opens a dialog.\n" +
+  "alert, confirm or prompt; ScriptUI dialogs; file or folder pickers (File.openDialog, Folder.selectDialog, " +
+  "app.open() with no file, app.project.save() on a never-saved project); a menu command that opens a dialog.\n" +
   "bodyLine is null when the error was raised outside your script's own text (for example in a $.evalFile'd " +
   "library, or in a helper an earlier call left as a global) or the host's line numbering cannot be calibrated.";
 

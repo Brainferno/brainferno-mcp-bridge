@@ -507,8 +507,8 @@ override it:
   `[brainferno-mcp-bridge] AUDIT raw-script tool=<tool> app=<app> sha256=<12 hex> len=<n> [count=<n>] via=<via> outcome=<run|refused>`.
   It records the first 12 hex digits of a SHA-256 and the length of the script (for
   `ae_run_script`, of the JSON of `{ script, args }`; for `ps_batch_play`, of the descriptors'
-  JSON, plus their `count`) — never the script itself; on a run its first 200 characters go
-  to the `debug` log only. `via` is `stdio` for a local
+  JSON, plus their `count`) — never the script itself; on a run the first 200 characters of
+  that payload go to the `debug` log only. `via` is `stdio` for a local
   session or `http:` plus the first 8 characters of a remote session's id (the same prefix the
   "remote session … opened" log line shows). When the gate is open the server also writes one
   `AUDIT raw scripts ENABLED for …` line at startup, saying whether remote sessions are allowed.
