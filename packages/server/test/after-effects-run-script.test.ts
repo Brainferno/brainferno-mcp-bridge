@@ -277,6 +277,15 @@ describe("ae_run_script: gate, refusals and audit (nothing dispatched → plain 
     expect(s.calls).toHaveLength(7);
     expect(auditLines()).toEqual([expect.stringMatching(/ outcome=run$/), expect.stringMatching(/ outcome=run$/), expect.stringMatching(/ outcome=run$/)]);
     await s.close();
+
+    // The gate is checked first: with the gate closed, a script that names a managed call gets the gate text.
+    audit.mockClear();
+    const closed = await session(CLOSED);
+    const gated = await closed.run({ script: 'app.beginUndoGroup("x"); 1' });
+    expect(textOf(gated)).toBe(rawScriptsDisabledMessage("after_effects", []));
+    expect(auditLines()).toEqual([expect.stringMatching(REFUSED_LINE)]);
+    expect(closed.calls).toEqual([]);
+    await closed.close();
   });
 
   it("audits a run with the hash and length of the JSON of { script, args }, and the session it came from", async () => {
