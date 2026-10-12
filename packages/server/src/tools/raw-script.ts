@@ -392,9 +392,9 @@ function logExcerpt(payload: string): string {
 /**
  * JSON for an audit payload, always a string and never throwing, so every raw call still writes exactly one
  * audit line. `fallback` is the payload to use instead, already serialized: it is returned as given when
- * JSON.stringify throws (V8 overflows its stack on input nested a few thousand levels deep, which JSON.parse and
- * z.record(z.unknown()) both accept; a BigInt throws a TypeError) or gives no text (undefined, a function, a
- * symbol).
+ * JSON.stringify throws or gives no text (undefined, a function, a symbol). It throws on V8 before 13.8 (Node 24 and
+ * older) for input nested a few thousand levels deep, which JSON.parse and z.record(z.unknown()) both accept (13.8's
+ * fast path serializes plain data iteratively); a cycle, a toJSON that throws or a BigInt fails on every engine.
  */
 export function auditJson(value: unknown, fallback: string): string {
   try {

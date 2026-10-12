@@ -2040,34 +2040,37 @@ const AE_MANAGED_CALL = /\b(?:begin|end)(?:UndoGroup|SuppressDialogs)\b/;
 /**
  * ae_run_script's model-facing description. Claude Code shows a tool description only up to 2,048 characters, so
  * it holds the safety text, in this order: what the tool does and the one undo step, the error-shape rule, the
- * modal-UI warning, the gate, the envelope. The detail lives in the parameters' texts (RUN_SCRIPT_SCRIPT_TEXT).
- * It promises only what is verified (AE-01 D15).
+ * modal-UI warning (with the auto-save hazard), the gate, the envelope. The detail lives in the parameters' texts
+ * (RUN_SCRIPT_SCRIPT_TEXT, RUN_SCRIPT_SUPPRESS_TEXT). It promises only what is verified (AE-01 D15): the dialogs
+ * named are the ones suppression hid in the live run on After Effects 26.5 (spike 06), never every dialog.
  */
 export const RUN_SCRIPT_DESCRIPTION =
   "Run a raw ExtendScript (ES3) in After Effects as ONE undo step, on the open project: one Ctrl-Z undoes " +
   "everything the call changed, even when the script failed part-way. Not covered: opening, creating or closing a " +
-  "project, or importing an .aep; these break After Effects' undo history. Use it for multi-step work the typed " +
-  "ae_* tools do not cover; prefer a typed tool where one exists.\n" +
-  "Error shape: an error in plain text means nothing was sent (raw scripts off, a remote session, args refused, a " +
-  "script that names an undo or dialog-suppression call, After Effects not connected). An error whose text is a " +
-  "JSON envelope means the script was sent and may have partly run: check After Effects before re-running.\n" +
+  "project, or importing an .aep; these break After Effects' undo history. Prefer a typed ae_* tool where one " +
+  "exists.\n" +
+  "Error shape: an error in plain text means nothing was sent (raw scripts off for this session, args or script " +
+  "refused, After Effects not connected). An error whose text is a JSON envelope means the script was sent and " +
+  "may have partly run: check After Effects before re-running.\n" +
   "Modal UI: a dialog blocks After Effects and every later call until someone dismisses it. suppressDialogs " +
-  "(default true) hides only After Effects' script warning and error dialogs; the missing-font warning shown when a " +
-  "project is opened may still appear. A bare alert, confirm or prompt in your script's own text fails the call " +
-  "instead. Anything else modal still opens and blocks: see the script parameter. A timeout stops the wait, not " +
-  "the script.\n" +
+  "(default true) hides After Effects' own warning dialogs, such as an export warning or the missing-font dialog " +
+  "when the script opens a project. With it on, opening another project saves the open one's unsaved changes over " +
+  "its file without asking (see suppressDialogs). A bare alert, confirm or prompt in your script's own text fails " +
+  "the call instead. Anything else modal still opens and blocks: see the script parameter. A timeout stops the " +
+  "wait, not the script.\n" +
   "Refused unless the operator sets BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS (1, or a comma list including after_effects) in " +
-  "the MCP server env. Remote (shared HTTP) sessions also need BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS=1. " +
+  "the server env. Remote (shared HTTP) sessions also need BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS=1. " +
   "cc_get_capabilities shows the gate. Every call, run or refused, writes an audit line to the server log.\n" +
   "Returns the envelope { ok, error?: { message, line, bodyLine }, durationMs, value, logs, logsDropped? }. value is " +
-  "the last statement's value. It must be plain data (strings, numbers, booleans, null, arrays, plain objects); a " +
-  "host object such as a layer is refused, so copy the fields you need. logs holds __log(msg) lines, up to 200 " +
-  "lines / 20000 characters; logsDropped counts the rest. bodyLine is the failing line in your script, or null (see " +
-  "the script parameter). durationMs is the server round trip, including any wait behind other After Effects calls.";
+  "the last statement's value and must be plain data (strings, numbers, booleans, null, arrays, plain objects): " +
+  "copy the fields you need from a host object such as a layer, which is refused. logs holds __log(msg) lines, up " +
+  "to 200 lines / 20000 characters; logsDropped counts the rest. bodyLine is the failing line in your script, or " +
+  "null (see script). durationMs is the server round trip, including any wait behind other After Effects calls.";
 
 /**
- * ae_run_script's `script` parameter text: how to write the script, the undo carve-out, the managed calls, which
- * dialogs the shims stop and which they do not (R9), and when bodyLine is null (cc_eval_script's own sentence).
+ * ae_run_script's `script` parameter text: how to write the script, the undo carve-out (and that what reaches the
+ * disk stays changed), the managed calls, which dialogs the shims stop and which they do not (R9), and when bodyLine
+ * is null (cc_eval_script's own sentence).
  */
 const RUN_SCRIPT_SCRIPT_TEXT =
   "ExtendScript (ES3: var only — no let/const, arrow functions, template literals or JSON) source: a statement " +
@@ -2077,9 +2080,10 @@ const RUN_SCRIPT_SCRIPT_TEXT =
   "log lines. Names that start with __ belong to the tool. Variables and functions the script declares stay local " +
   "to the call; assigning to an undeclared name creates a global that persists in After Effects.\n" +
   "Undo: opening, creating or closing a project, or importing an .aep, inside the script resets or breaks After " +
-  "Effects' undo history, so the one-Ctrl-Z guarantee does not cover those calls. Do not call app.beginUndoGroup, " +
-  "app.endUndoGroup, app.beginSuppressDialogs or app.endSuppressDialogs: the tool manages both, and a script that " +
-  "names them (even in a comment or string) is refused before it is sent.\n" +
+  "Effects' undo history, so the one-Ctrl-Z guarantee does not cover those calls. It covers project edits only: what " +
+  "the script saves or writes (app.project.save, File writes, renders, preferences) stays changed. Do not call " +
+  "app.beginUndoGroup, app.endUndoGroup, app.beginSuppressDialogs or app.endSuppressDialogs: the tool manages both, " +
+  "and a script that names them (even in a comment or string) is refused before it is sent.\n" +
   "Dialogs: the tool replaces alert, confirm and prompt for a bare call written in this text; such a call fails " +
   "(line and bodyLine null) instead of opening a dialog. Use __log(msg) instead of alert; for confirm or prompt, " +
   "pass the answer in args and read it from __args. These still open a modal dialog that blocks After Effects: " +
@@ -2088,6 +2092,37 @@ const RUN_SCRIPT_SCRIPT_TEXT =
   "app.open() with no file, app.project.save() on a never-saved project); a menu command that opens a dialog.\n" +
   "bodyLine is null when the error was raised outside your script's own text (for example in a $.evalFile'd " +
   "library, or in a helper an earlier call left as a global) or the host's line numbering cannot be calibrated.";
+
+/**
+ * ae_run_script's `suppressDialogs` parameter text: the dialogs suppression was seen to hide on After Effects 26.5
+ * (AE-01 live probes 8 and 9; never a promise for every dialog), and the auto-save hazard of probe 10 with the way
+ * to discard instead. The description carries the short form of both.
+ */
+const RUN_SCRIPT_SUPPRESS_TEXT =
+  "Suppress After Effects' own warning dialogs while the script runs; they are discarded, not shown afterwards. " +
+  "Verified on an export warning (from a Motion Graphics template export) and on the missing-font dialog when the " +
+  "script opens a project; it is not promised for every dialog. Defaults to true. This covers only After Effects' " +
+  "own dialogs, not modal UI the script opens itself (see script). With false, a dialog waits for a human and the " +
+  "call times out.\n" +
+  "Unsaved changes: with suppression on, a script that opens another project while the open one has unsaved " +
+  "changes gets no save prompt. After Effects saves the open project over its file, those changes included, then " +
+  "opens the other. To discard the changes instead, call app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES) " +
+  "before opening the other project.";
+
+/**
+ * ae_run_script's `args` parameter text, with the number limits After Effects showed live (AE-01 probe 11): the
+ * literal aeArgsLiteral sends keeps every digit, but After Effects reads a number below about 2.2e-308 as 0 and
+ * writes numbers in the result with 15 significant digits, its own String(n) and toPrecision(17) included: only a
+ * string passed in and returned untouched keeps every digit.
+ */
+const RUN_SCRIPT_ARGS_TEXT =
+  "Plain JSON data the script reads as __args (defaults to {}): strings, finite numbers, booleans, null, arrays " +
+  "and plain objects, at most 32 levels deep. Never use a key named __proto__ (a nested one is refused; a " +
+  "top-level one is dropped). Read a key that is an ES3 reserved word as __args[\"default\"], not __args.default.\n" +
+  "Numbers: After Effects reads a number below about 2.2e-308 as 0 (5e-324 arrives as 0), and numbers in the " +
+  "returned value keep 15 significant digits (0.1 + 0.2 arrives exact but comes back as 0.3). Pass a value as a " +
+  "string when every digit matters: strings round-trip exactly. A number the script returns, even via String(n), " +
+  "keeps 15 significant digits.";
 
 // ---- registration --------------------------------------------------------------
 
@@ -2757,31 +2792,14 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
       description: RUN_SCRIPT_DESCRIPTION,
       inputSchema: {
         script: z.string().min(1).describe(RUN_SCRIPT_SCRIPT_TEXT),
-        args: z
-          .record(z.unknown())
-          .optional()
-          .describe(
-            "Plain JSON data the script reads as __args (defaults to {}): strings, finite numbers, booleans, null, " +
-              "arrays and plain objects, at most 32 levels deep. Never use a key named __proto__ (a nested one is " +
-              "refused; a top-level one is dropped). Read a key that is an ES3 reserved word as __args[\"default\"], " +
-              "not __args.default.",
-          ),
+        args: z.record(z.unknown()).optional().describe(RUN_SCRIPT_ARGS_TEXT),
         undoGroupName: z
           .string()
           .min(1)
           .max(200)
           .optional()
           .describe("The undo step's name in After Effects' Edit menu (Edit > Undo <name>). Defaults to \"Brainferno script\"."),
-        suppressDialogs: z
-          .boolean()
-          .optional()
-          .describe(
-            "Suppress After Effects' script warning and error dialogs, such as those raised while saving or " +
-              "exporting, while the script runs; they are discarded, not shown afterwards, and the missing-font " +
-              "warning shown when a project is opened may still appear and block scripting. Defaults to true. This " +
-              "covers only After Effects' own dialogs, not modal UI the script opens itself (see script). With " +
-              "false, a dialog waits for a human and the call times out.",
-          ),
+        suppressDialogs: z.boolean().optional().describe(RUN_SCRIPT_SUPPRESS_TEXT),
         timeoutMs: z
           .number()
           .int()
@@ -2798,8 +2816,9 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
     },
     async ({ script, args, undoGroupName, suppressDialogs, timeoutMs }, extra) => {
       const via = viaOf(extra);
-      // Never throws (F1): JSON.stringify overflows V8's stack on args nested a few thousand levels deep, and every
-      // call is audited. The fallback, built from the script (a string) alone, cannot fail.
+      // Never throws (F1), and every call is audited: on V8 before 13.8 (Node 24 and older) JSON.stringify overflows
+      // its stack on args nested a few thousand levels deep, and a cycle or a throwing toJSON fails on every engine.
+      // The fallback, built from the script (a string) alone, cannot fail.
       const payload = auditJson({ script, args }, JSON.stringify({ script, args: "[args could not be serialized: nested too deeply]" }));
       const audit = (outcome: "run" | "refused") => auditRawCall({ tool: "ae_run_script", app: "after_effects", payload, outcome, via });
       const gate = rawGateState("after_effects", options.rawScriptApps, AE_ONLY, {

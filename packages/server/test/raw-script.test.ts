@@ -572,14 +572,31 @@ describe("audit", () => {
     expect(debug).toHaveBeenCalledTimes(1); // no excerpt for a refusal
   });
 
-  it("auditJson never throws: a value too deep for JSON.stringify gives the fallback (AE-01)", () => {
-    // z.record(z.unknown()) and JSON.parse both accept this depth. 100,000 levels overflow JSON.stringify's
-    // stack on any thread: a worker thread's larger stack takes about 19,000 levels, a main thread's about 4,800.
+  it("auditJson never throws: a value JSON.stringify throws on gives the fallback (AE-01)", () => {
+    // A cycle and a toJSON that throws make JSON.stringify throw on every engine (a BigInt too: see the next test).
+    const cycle: Record<string, unknown> = {};
+    cycle["self"] = cycle;
+    expect(() => JSON.stringify({ a: cycle })).toThrow(TypeError); // precondition
+    expect(auditJson({ a: cycle }, '"F"')).toBe('"F"');
+    const throwing = {
+      toJSON(): never {
+        throw new Error("no JSON");
+      },
+    };
+    expect(() => JSON.stringify({ a: throwing })).toThrow("no JSON"); // precondition
+    expect(auditJson({ a: throwing }, '"F"')).toBe('"F"');
+    expect(auditJson({ a: 1 }, '"F"')).toBe('{"a":1}');
+  });
+
+  it("auditJson on a value 100,000 levels deep: the JSON where the engine serializes it, else the fallback (AE-01)", () => {
+    // z.record(z.unknown()) and JSON.parse both accept this depth. Before V8 13.8 (Node 24 and older) JSON.stringify
+    // overflows its stack on it (a worker thread's stack takes about 19,000 levels, a main thread's about 4,800);
+    // from 13.8 on its fast path is iterative and serializes it. auditJson never throws on either.
     let deep: unknown = [];
     for (let i = 0; i < 100_000; i++) deep = [deep];
-    expect(() => JSON.stringify({ a: deep })).toThrow(RangeError); // precondition
-    expect(auditJson({ a: deep }, '"F"')).toBe('"F"');
-    expect(auditJson({ a: 1 }, '"F"')).toBe('{"a":1}');
+    const json = `{"a":${"[".repeat(100_001)}${"]".repeat(100_001)}}`;
+    const out = auditJson({ a: deep }, '"F"');
+    expect(out === json ? "the JSON" : out === '"F"' ? "the fallback" : "something else").not.toBe("something else");
   });
 
   it("auditJson always returns a string: the fallback, as given, for anything JSON.stringify gives no text for (AE-01)", () => {

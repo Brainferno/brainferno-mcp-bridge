@@ -160,8 +160,9 @@ them; it re-implements none of them.
   payload — never the payload itself. A payload that is the JSON of structured input (such
   as `ae_run_script`'s `{ script, args }`) is built with `auditJson(value, fallback)`, which
   always returns a string and never throws: a bare `JSON.stringify` overflows the stack on
-  input nested a few thousand levels deep, which zod and `JSON.parse` accept, and gives no
-  string at all for `undefined`, a function or a symbol, and the call would then go
+  V8 before 13.8 (Node 24 and older) for input nested a few thousand levels deep, which zod
+  and `JSON.parse` accept, throws on every engine for a cycle or a `toJSON` that throws, and
+  gives no string at all for `undefined`, a function or a symbol, and the call would then go
   unaudited. Pass the fallback already serialized, built from data that cannot fail. Build
   the payload before the gate check, since a refusal is audited too. (`ps_batch_play` still
   uses a bare `JSON.stringify`; moving it is an X-01 follow-up.)

@@ -154,14 +154,21 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   - The whole call runs in one undo group named `undoGroupName` (default `Brainferno script`):
     one Ctrl-Z undoes everything it changed, including what a script that failed part-way
     changed. Opening, creating or closing a project, or importing an `.aep`, inside the script
-    is outside that guarantee.
+    is outside that guarantee, and so is what the script saves or writes (a saved project,
+    files, renders, preferences): it stays changed.
   - `args` reaches the script as `__args` (`{}` when omitted), sent as a pure-ASCII ES3
     literal: plain JSON data, at most 32 levels deep. Deeper data, a number that is not finite
-    or a nested `__proto__` key is refused before anything is sent.
-  - `suppressDialogs` (default `true`) suppresses and discards After Effects' script warning
-    and error dialogs, such as those raised while saving or exporting, while the script runs.
-    The description promises no more than that: the missing-font warning shown when a project
-    is opened may still appear.
+    or a nested `__proto__` key is refused before anything is sent. The `args` text says what
+    After Effects does with numbers: it reads one below about 2.2e-308 as 0, and writes numbers
+    in the result with 15 significant digits (`0.1 + 0.2` comes back as `0.3`); strings arrive
+    exactly.
+  - `suppressDialogs` (default `true`) suppresses and discards After Effects' own warning
+    dialogs while the script runs. The texts name the ones verified on After Effects 26.5 (an
+    export warning, and the missing-font dialog when the script opens a project) and promise no
+    more. With it on, a script that opens another project while the open one has unsaved
+    changes gets no save prompt: After Effects saves the open project over its file. The
+    description warns of this, and the `suppressDialogs` text says to close with
+    `app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES)` first to discard the changes.
   - The tool owns the undo group and the dialog suppression, so a script that names
     `app.beginUndoGroup`, `app.endUndoGroup`, `app.beginSuppressDialogs` or
     `app.endSuppressDialogs` — even in a comment or a string — is refused before it is sent.
@@ -176,8 +183,8 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
     `this.alert`, a `$.evalFile`'d library or a global helper that calls them, ScriptUI dialogs
     and file or folder pickers still open a modal dialog.
   - The description fits the 2,048 characters Claude Code shows, with the safety text first
-    (what the tool does and its one undo step, the error-shape rule, the modal-UI warning, the
-    gate, the envelope); the detail is in the parameters' texts.
+    (what the tool does and its one undo step, the error-shape rule, the modal-UI warning with
+    the auto-save hazard, the gate, the envelope); the detail is in the parameters' texts.
   - Plain-text errors mean nothing was sent: raw scripts disabled, a remote session, args
     refused, a managed call named, After Effects not connected. A JSON envelope means the
     script was sent and may have partly run; `bodyLine` counts lines of the caller's script,
@@ -188,8 +195,15 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
     the script.
   - The audit payload is the JSON of `{ script, args }`; a call whose `args` are nested too
     deeply to serialize is still audited, once.
-  - `cc_get_capabilities` has an `ae_run_script` row. Unit-tested; not yet verified live on
-    After Effects.
+  - `cc_get_capabilities` has an `ae_run_script` row.
+  - Verified live on After Effects 26.5 (Windows 11, 2026-10-12): one Ctrl-Z for a multi-layer
+    script with "Undo <undoGroupName>" in the Edit menu, `bodyLine` for a runtime, native, syntax
+    and thrown error, the shims and `__args`, the refusals, a project switch, the dialog scope
+    above, and later calls waiting behind a timed-out script. Still unit-tested only: the
+    end-call notes (After Effects' second `endUndoGroup` does not fail, and ExtendScript has no
+    getter literals to make the wrapper throw), the refused audit line with the gate off, and
+    `Window.alert` or global code that calls `alert`. Not tested at all: opening another project
+    over a never-saved one under suppression.
   - Shared core, for architect review: `server.ts` passes the raw-script gate to
     `registerAfterEffectsTools`, whose options now require `rawScriptApps`, `remote` and
     `allowRemoteRawScripts`; `raw-script.ts` gains `auditJson`, an audit payload builder that
@@ -272,14 +286,16 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   plain-text cause, `auditJson` in the audit rule, how `__args` enters and what wraps the
   wrapper, and the 2,048-character limit a client shows of a tool description), the README
   (the After Effects section, tool table, raw scripts, what a plain-text error means, security
-  and the audit line; its status line now says every *typed* tool is verified live and
-  `ae_run_script` is unit-tested only), `.env.example`, `docs/HANDOFF.md` (an AE-01 bullet: not
-  yet verified live), `00_PREAMBLE.md`, spike 14 and the comments in `config.ts` and
-  `tool-counts.test.ts` updated to match. The AE-01 prompt is in review, with what the build
-  changed (the refused begin/end calls, the dialog scope it promises, the project-switch
-  carve-out, the shims and what they do not stop, the gate fields) and acceptance 5 split into
-  the save-and-export check and the open-time missing-font check; its live verification is
-  pending.
+  and the audit line; its status line now says every *typed* tool is verified live on Windows
+  and macOS and `ae_run_script` on Windows), `.env.example`, `docs/HANDOFF.md` (an AE-01 bullet
+  with the live results and what stays unit-tested only), `00_PREAMBLE.md`, spike 14 and the
+  comments in `config.ts` and `tool-counts.test.ts` updated to match. Spike 06 has the AE-01
+  live probes on After Effects 26.5 (2026-10-12), with the auto-save hazard, the number limits,
+  the undo-label facts and, as an observation, `ae_open_project` leaving the missing-font
+  dialog open. The AE-01 prompt is in review, with what the build changed (the refused
+  begin/end calls, the dialog scope it promises, the project-switch carve-out, the shims and
+  what they do not stop, the gate fields), acceptance 5 split into the save-and-export check
+  and the open-time missing-font check, and the live results; its live verification is done.
 
 ## v0.3.3 — 2026-10-01
 

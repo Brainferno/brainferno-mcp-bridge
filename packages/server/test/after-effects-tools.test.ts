@@ -463,7 +463,8 @@ describe("ae_run_script's builder and args encoder (AE-01)", () => {
   it("encodes args as one pure-ASCII ES3 object literal, every key quoted", () => {
     expect(litOf({})).toBe("{}");
     expect(litOf({ a: [1, -0, 1e21, 5e-324, -5, true, false, null] })).toBe('{"a":[1,-0,1e+21,5e-324,-5,true,false,null]}');
-    // Every digit a double needs to round-trip (R7: AE-01 acceptance 11).
+    // The literal carries every digit a double needs (R7). After Effects itself keeps less: it reads a number below
+    // about 2.2e-308 as 0 and returns numbers with 15 significant digits (AE-01 live probe 11; the args text says so).
     expect(litOf({ x: 0.1 + 0.2, y: 1 / 3 })).toBe('{"x":0.30000000000000004,"y":0.3333333333333333}');
     expect(litOf({ default: 1, "": 2, constructor: 3 })).toBe('{"default":1,"":2,"constructor":3}');
     expect(litOf({ s: E_ACUTE })).toBe('{"s":"\\u00e9"}');

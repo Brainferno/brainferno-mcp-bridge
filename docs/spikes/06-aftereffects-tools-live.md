@@ -88,6 +88,73 @@ Driven entirely from Claude Code through the hub and the Brainferno MCP Bridge C
     log; full read mode), but its count and time were not recorded: debug logging was off.
     Not AE-16, seen on the way: `ae_set_comp_props` sets its fields in order, so a name set before a
     width that fails stays until undone (one undo group; Ctrl-Z restores it).
+- **AE-01 live probes — verified on After Effects 26.5 (Windows 11, 2026-10-12).** `ae_run_script`
+  on a probe server built from the branch with `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS=after_effects`,
+  talking to the real CEP panel; the operator watched the Edit menu, pressed Ctrl+Z, and reported
+  and dismissed dialogs. Every probe passed or settled an open fact, and the description and the
+  `suppressDialogs` and `args` texts now follow them. What they settled:
+  - Gate: the `cc_get_capabilities` row read enabled, connected and supported, and
+    `(function(){ return app.version; })()` returned `"26.5x89"` in 27 ms. With the gate off (the
+    normal server, no env var) the call was refused in plain text ("… currently enabled for:
+    none.") while After Effects was connected. `app.beginUndoGroup("inner"); 1` was refused as
+    plain text in 3 ms.
+  - One undo step: a script that added a solid and a text layer with `undoGroupName`
+    "AE01 two layers" put **Undo AE01 two layers** in the Edit menu; one Ctrl+Z removed both
+    layers and one Redo brought both back. A script that added a null and then threw left one entry,
+    which removed the null. A read-only call left the Edit menu as it was. A script cannot read that
+    label: `app.findMenuCommandId("Undo AE01 two layers")` returns 0 (`"Undo"` alone gives 2371).
+  - End calls: `app["end" + "UndoGroup"](); 1` (the tool's group closed early) returned `ok`, value
+    1, with no note and no dialog: a second `endUndoGroup` neither throws nor warns, so the end-call
+    notes have no live trigger. Neither does R10 (a note after a throw): ExtendScript has no getter
+    literals, and `({ get a() { … } })` is a SyntaxError ("Expected: :").
+  - Project switch: `app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES); app.newProject(); 1`
+    returned `ok` with no dialog, and the Edit menu then read "Can't Undo": the undo history was
+    reset, as the description's carve-out says.
+  - Errors: `line` = `bodyLine` = the caller's line for a runtime error (`null.x`, line 3), a native
+    error from a bad lookup (line 2, "After Effects error: internal verification failure, sorry!
+    {Item Not Found}"), a SyntaxError on line 1 and on line 3 ("; does not have a value") and a
+    `throw` (line 2).
+  - Scope and shims: `__args`, `__log` and the shims reach the script, `typeof __comp` is
+    `"undefined"`, and `e.source === __src`. A bare `alert` after a `__log` came back `ok: false`
+    with the shim's message, `line` and `bodyLine` null, the log kept, and no dialog; `confirm` and
+    `prompt` gave their own next step. `Object.prototype.zz = 1` was reported and removed, and
+    returning `app.project` was refused as a host object in 11 ms.
+  - Dialogs: on a saved project whose text layer uses a missing font, a script that saved and
+    exported a Motion Graphics template with `suppressDialogs: false` blocked on "After Effects
+    Warning: You must add at least one property controller before exporting a motion graphics
+    template." until its 15 s timeout; with suppression it returned in 0.3 s (export `false`) and
+    left no dialog. `app.open()` of that project with suppression returned in 0.5 s with no dialog;
+    without it, the "Missing fonts" dialog blocked until the operator closed it (20 s timeout). So
+    suppression hides the open-time missing-font dialog on 26.5, and the `Hide Missing Font Dialog`
+    preference was neither read nor changed.
+  - **Auto-save hazard:** with suppression on, `app.open()` of another project while the open one
+    had unsaved changes showed no save prompt. After Effects saved the open project over its file
+    (its modified time changed, and the file held the comp the script had just added), then opened
+    the other. The call itself timed out at 20 s, queued behind the control's still-open "Missing
+    fonts" dialog, so it returned no value: the outcome was read afterwards, from the project then
+    open, the file's modified time and its contents. To discard such changes, close first with
+    `app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES)`. The description warns of it.
+  - `args`: strings round-trip exactly (a quote, a backslash, `é`, U+2028), and so do `1e21` and the
+    keys `default`, `""` and `constructor`. Numbers do not quite: `0.1 + 0.2` arrives exact
+    (`=== 0.1 + 0.2` is true) but comes back in `value` as `0.3`, since After Effects writes numbers
+    with 15 significant digits (`String(n)` and `toPrecision(17)` alike), and it reads a number below
+    about 2.2e-308 as 0 (`5e-324` in `args`, `2.2250738585072014e-308` as a literal). The ae-host
+    unit tests run on V8, which is exact. `reflect`, `toSource` and `watch` enumerate as data, so
+    the encoder refuses no extra keys.
+  - Queueing: an 8 s loop with `timeoutMs: 2000` gave the timeout envelope at 2.0 s, and an
+    `ae_project_info` sent next took 5.8 s, waiting for the loop to end. A call sent while an earlier
+    call's dialog is still open waits behind it the same way (the first try of the suppressed export
+    timed out behind the unsuppressed one's dialog).
+  - Audit: 65 calls gave 65 audit lines (64 `run`, 1 `refused`) plus the startup line, none with
+    script text.
+  - Observation, not AE-01: `ae_open_project` (a typed tool, which does not suppress dialogs)
+    opened the missing-font project in 0.8 s and left the "Missing fonts" dialog on screen.
+  - Still unit-tested only: the end-call notes, after a result and after a throw (no live trigger,
+    above); the refused audit line with the gate off (the client's MCP log keeps no server stderr;
+    the refusal text was seen); and `Window.alert`, `$.global.alert`, `this.alert` and global code
+    that calls `alert`, not probed live by design.
+  - Not tested at all: opening another project over a never-saved one under suppression. It was
+    not tried live, and ae-host has no save prompt to stand in for After Effects'.
 - aerender reads the project **from disk**: `ae_render_comp` saves first, and needs a project
   that has been saved once (`ae_save_project` with a path).
 
