@@ -1,13 +1,13 @@
 /**
  * The one raw-script contract shared by every escape-hatch tool (`cc_eval_script`,
- * `ps_batch_play`): the result envelope, the ES3 wrapper that runs a caller's
- * ExtendScript, the gate, the refusal texts and the audit line. Tools import these;
- * none of them re-implements a piece.
+ * `ae_run_script`, `ps_batch_play`): the result envelope, the ES3 wrapper that runs a
+ * caller's ExtendScript, the gate, the refusal texts and the audit line. Tools import
+ * these; none of them re-implements a piece.
  *
- * Error-shape rule (stated in both tool descriptions): a tool error with PLAIN TEXT
- * means nothing was dispatched (gate off, app not enabled, app not connected); a tool
- * error whose text is a JSON ENVELOPE means the script/batch was sent and may have
- * partly run.
+ * Error-shape rule (stated in every tool's description): a tool error with PLAIN TEXT
+ * means nothing was dispatched (gate off, app not enabled, app not connected, args or
+ * script refused (ae_run_script)); a tool error whose text is a JSON ENVELOPE means the
+ * script/batch was sent and may have partly run.
  */
 
 import { createHash } from "node:crypto";
@@ -390,9 +390,23 @@ function logExcerpt(payload: string): string {
 }
 
 /**
+ * JSON for an audit payload, never throwing: V8's JSON.stringify overflows its stack on input nested about
+ * 5000 levels deep, which JSON.parse and z.record(z.unknown()) both accept, and every raw call must still
+ * write exactly one audit line.
+ */
+export function auditJson(value: unknown, fallback: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return JSON.stringify(fallback);
+  }
+}
+
+/**
  * Exactly one always-on audit line per raw call, run or refused. Records a hash and the
- * length of the payload (the script, or the JSON of the descriptors) — never the payload
- * itself; the first 200 characters go to the debug log on a run, escaped onto one line.
+ * length of the payload (the script, the JSON of the descriptors, or of `{ script, args }`)
+ * — never the payload itself; the first 200 characters go to the debug log on a run,
+ * escaped onto one line.
  */
 export function auditRawCall(call: {
   tool: string;

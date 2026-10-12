@@ -40,8 +40,24 @@ import {
   setLayerPropsScript,
   setLayerStyleParamScript,
   setTextScript,
+  runRawScript,
+  aeArgsLiteral,
+  RUN_SCRIPT_MANAGED_REFUSAL,
 } from "../src/tools/after-effects.js";
+import { asciiLiteral, rawScriptWrapper } from "../src/tools/raw-script.js";
 import { es3Violations, es5Calls } from "./es3.js";
+
+/** aeArgsLiteral's literal, or a thrown error naming its refusal. */
+const litOf = (v: Record<string, unknown>): string => {
+  const r = aeArgsLiteral(v);
+  if (!("literal" in r)) throw new Error(r.refusal);
+  return r.literal;
+};
+
+// Escapes, so this source stays free of a raw U+2028 (a line terminator in source).
+const LS = " ";
+const U_UML = "ü";
+const E_ACUTE = "é";
 
 const SAMPLES: Record<string, string> = {
   LIST_COMPOSITIONS,
@@ -105,6 +121,12 @@ const SAMPLES: Record<string, string> = {
   listEffects: LIST_INSTALLED_EFFECTS,
   filteredEffects: filteredEffectsScript("gausian blur", 3),
   propsParentOnly: setLayerPropsScript(12, 2, { parentIndex: 1 }),
+  // AE-01 (F6, T5): ES3-clean caller text with quotes, args and a name with non-ASCII, quotes, a backslash and U+2028.
+  runRawScript: runRawScript('var s = "say \\"hi\\" " + __args.n;\n__log(s);\ns', {
+    args: litOf({ n: `a"b\\c${LS}${E_ACUTE}` }),
+    undoGroupName: `Schritt "${U_UML}"`,
+    suppressDialogs: true,
+  }),
 };
 
 // Exported builders whose script only reads the project. The "classifies every
@@ -133,6 +155,7 @@ const MUST_UNDO = new Set([
   "importAsCompScript", "createCompScript", "addLayerStyleScript", "setLayerStyleParamScript",
   "removeLayerStyleScript", "addToEssentialGraphicsScript", "addShapeScript", "addMaskScript",
   "setCompPropsScript", "queueRenderScript",
+  "runRawScript", // AE-01: ae_run_script runs the caller's whole script as one undo step
 ]);
 // Builders that change state but legitimately do not use __undo: app-level ops
 // (open/save), a self-cleaning preview render, and the Essential Graphics export
@@ -198,11 +221,24 @@ describe("After Effects tool scripts", () => {
       addMaskScript: () => addMaskScript({ compId: 12, layerIndex: 1, kind: "rectangle" }),
       setCompPropsScript: () => setCompPropsScript(12, { duration: 5 }),
       queueRenderScript: () => queueRenderScript("Main", "C:/r.mov", undefined),
+      runRawScript: () => runRawScript("1", { args: "{}", undoGroupName: "x", suppressDialogs: true }),
     };
+    // The prelude itself defines __undo, so "contains __undo(" would hold for any wrapAe script: check
+    // what follows the prelude, where a builder calls it (T4, AE-01).
+    const PRELUDE = wrapAe("").slice(0, -"\n})()".length);
     for (const name of MUST_UNDO) {
       const build = calls[name];
       expect(build, `add a sample call for ${name}`).toBeDefined();
-      expect(build!(), name).toContain("__undo(");
+      const src = build!();
+      if (name === "runRawScript") {
+        // Not built on wrapAe (D2): pin the call, before the caller's text (T4).
+        const call = 'return __undo("x", function () {';
+        expect(src, name).toContain(call);
+        expect(src.indexOf(call), name).toBeLessThan(src.indexOf("var __src"));
+      } else {
+        expect(src.startsWith(PRELUDE), name).toBe(true);
+        expect(src.slice(PRELUDE.length), name).toContain("__undo(");
+      }
     }
   });
 
@@ -210,6 +246,11 @@ describe("After Effects tool scripts", () => {
     expect(SAMPLES["text"]).toContain('addText("Say \\"hi\\"")');
     expect(SAMPLES["setText"]).toContain('"Hello\\nWorld"');
     expect(setLayerPropsScript(1, 1, { name: "a\u2028b" })).toContain('"a\\u2028b"');
+    // AE-01 (T5): ae_run_script's undo group name and args are pure-ASCII literals (asciiLiteral, not lit).
+    expect(SAMPLES["runRawScript"]).toContain('"Schritt \\"\\u00fc\\""');
+    expect(SAMPLES["runRawScript"]).toContain('"a\\"b\\\\c\\u2028\\u00e9"');
+    expect(SAMPLES["runRawScript"]).not.toContain(U_UML);
+    expect(SAMPLES["runRawScript"]).not.toContain(E_ACUTE);
   });
 
   it("uses match names for transform properties and honors propertyPath", () => {
@@ -231,6 +272,7 @@ describe("After Effects tool scripts", () => {
     const prelude = wrapAe("").slice(0, -suffix.length);
     for (const [name, src] of Object.entries(SAMPLES)) {
       expect(/^[\x00-\x7f]*$/.test(src), name).toBe(true);
+      if (name === "runRawScript") continue; // D2: deliberately not built on wrapAe
       expect(src.startsWith(prelude), name).toBe(true);
       expect(src.endsWith(suffix), name).toBe(true);
     }
@@ -370,6 +412,89 @@ describe("After Effects tool scripts", () => {
     expect(SAMPLES["frame"]).toContain('addComp("__acm_preview"');
     expect(SAMPLES["frame"]).toContain("saveFrameToPng(1.5");
     expect(SAMPLES["frame"]).toContain("tmp.remove();");
+  });
+});
+
+describe("ae_run_script's builder and args encoder (AE-01)", () => {
+  const TAKES = "args takes JSON data only: strings, finite numbers, booleans, null, arrays and plain objects";
+  /** n arrays, nested: nest(1) is [], nest(2) is [[]]. */
+  const nest = (n: number): unknown => {
+    let v: unknown = [];
+    for (let i = 1; i < n; i++) v = [v];
+    return v;
+  };
+  const refusalOf = (v: Record<string, unknown>): string => {
+    const r = aeArgsLiteral(v);
+    if (!("refusal" in r)) throw new Error(`expected a refusal, got ${r.literal}`);
+    return r.refusal;
+  };
+
+  it("opens the undo group around the X-01 wrapper, which it embeds verbatim", () => {
+    const script = 'var s = "say \\"hi\\" " + __args.n;\n__log(s);\ns';
+    const src = SAMPLES["runRawScript"]!;
+    const call = `return __undo(${asciiLiteral(`Schritt "${U_UML}"`)}, function () {`;
+    expect(call).toBe('return __undo("Schritt \\"\\u00fc\\"", function () {');
+    expect(src).toContain(call);
+    expect(src.indexOf(call)).toBeLessThan(src.indexOf("var __src"));
+    expect(src).toContain(rawScriptWrapper(script));
+    // __args is declared in the outer IIFE, before the wrapper (never inside __src, which would shift bodyLine).
+    expect(src.indexOf("var __args = ")).toBeLessThan(src.indexOf("var __src"));
+    expect(src.startsWith("(function () {\n  var __args = {")).toBe(true);
+    expect(src.endsWith("\n})()")).toBe(true);
+  });
+
+  it("does not scan the user's script: only the builder's own text must be ES3", () => {
+    const es6 = "const f = (x) => `${x}`";
+    const built = runRawScript(es6, { args: "{}", undoGroupName: "x", suppressDialogs: true });
+    expect(es3Violations(built)).toEqual(["arrow function", "const", "template literal"]);
+    expect(es3Violations(built.replace(asciiLiteral(es6), '""'))).toEqual([]);
+    expect(es5Calls(built.replace(asciiLiteral(es6), '""'))).toEqual([]);
+  });
+
+  it("suppresses dialogs only when asked", () => {
+    const on = runRawScript("1", { args: "{}", undoGroupName: "x", suppressDialogs: true });
+    expect(on).toContain("app.beginSuppressDialogs();");
+    expect(on).toContain("app.endSuppressDialogs(false);");
+    const off = runRawScript("1", { args: "{}", undoGroupName: "x", suppressDialogs: false });
+    expect(off).not.toContain("SuppressDialogs");
+    expect(off).toContain('return __undo("x", function () {');
+  });
+
+  it("encodes args as one pure-ASCII ES3 object literal, every key quoted", () => {
+    expect(litOf({})).toBe("{}");
+    expect(litOf({ a: [1, -0, 1e21, 5e-324, -5, true, false, null] })).toBe('{"a":[1,-0,1e+21,5e-324,-5,true,false,null]}');
+    expect(litOf({ default: 1, "": 2, constructor: 3 })).toBe('{"default":1,"":2,"constructor":3}');
+    expect(litOf({ s: E_ACUTE })).toBe('{"s":"\\u00e9"}');
+    expect(litOf({ s: `q"\\${LS}` })).toBe('{"s":"q\\"\\\\\\u2028"}');
+    expect(litOf({ s: "\uD800" })).toBe('{"s":"\\ud800"}'); // a lone surrogate, as an ES3 escape
+    const bare = Object.create(null) as Record<string, unknown>;
+    bare["k"] = { "a-b": [] };
+    expect(litOf({ o: bare })).toBe('{"o":{"k":{"a-b":[]}}}');
+    expect(/^[\x20-\x7e]*$/.test(litOf({ s: `x${LS}${E_ACUTE}${U_UML}\n` }))).toBe(true);
+  });
+
+  it("refuses what ExtendScript cannot receive as data, naming the path and the next step", () => {
+    expect(refusalOf(JSON.parse('{"a":{"b":1e999}}') as Record<string, unknown>)).toBe(
+      `args.a.b is not a finite number (Infinity) — ${TAKES}; send a finite number, or a string the script converts.`,
+    );
+    expect(refusalOf({ n: [NaN] })).toBe(`args.n[0] is not a finite number (NaN) — ${TAKES}; send a finite number, or a string the script converts.`);
+    expect(refusalOf(JSON.parse('{"o":{"__proto__":1}}') as Record<string, unknown>)).toBe(
+      'args.o has a key named "__proto__" — rename that key; a script engine would not keep it as data.',
+    );
+    expect(refusalOf({ a: [1, , 3] })).toBe(`args.a[1] is a hole in a sparse array — ${TAKES}.`);
+    expect(refusalOf({ f: () => 1 })).toBe(`args.f is a function — ${TAKES}.`);
+    expect(refusalOf({ b: 1n })).toBe(`args.b is a bigint — ${TAKES}.`);
+    expect(refusalOf({ "two words": { d: new Date(0) } })).toBe(`args["two words"].d is not a plain object — ${TAKES}.`);
+    // Every refusal ends with its own " — <next step>".
+    expect(RUN_SCRIPT_MANAGED_REFUSAL).toContain(" — ");
+  });
+
+  it("refuses args nested more than 32 levels at level 32, however deep, without overflowing", () => {
+    expect(litOf({ d: nest(31) })).toBe(`{"d":${"[".repeat(31)}${"]".repeat(31)}}`);
+    expect(refusalOf({ d: nest(32) })).toBe(`args.d${"[0]".repeat(31)} is nested more than 32 levels deep — flatten args.`);
+    const deep = JSON.parse(`{"a":${"[".repeat(10_000)}${"]".repeat(10_000)}}`) as Record<string, unknown>;
+    expect(() => aeArgsLiteral(deep)).not.toThrow();
+    expect(refusalOf(deep)).toBe(`args.a${"[0]".repeat(31)} is nested more than 32 levels deep — flatten args.`);
   });
 });
 

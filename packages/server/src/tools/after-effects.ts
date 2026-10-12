@@ -9,13 +9,26 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { jsStringLiteral } from "../bridge/script-escape.js";
 import { EvalTimeoutError, ScriptError, type AppBridge, type EvalOptions, type JsonValue } from "../bridge/types.js";
+import type { RawScriptApp } from "../config.js";
+import { MAX_EXPLICIT_TIMEOUT_MS } from "../drivers/osscript.js";
 import type { JobRegistry } from "../jobs.js";
 import { log } from "../logging.js";
 import { currentToolCall, withToolContext } from "./call-context.js";
 import { MESSAGE_LIMIT, QUOTED_SPAN, echoArgs, excerptLine, messageText } from "./echo.js";
 import { runOrQueue, waitParam, type ProgressExtra } from "./jobs.js";
-import { lineCount } from "./raw-script.js";
-import { guard, imageResult, jsonResult } from "./result.js";
+import {
+  asciiLiteral,
+  auditJson,
+  auditRawCall,
+  dispatchedFailure,
+  envelopeResult,
+  lineCount,
+  rawGateState,
+  rawScriptWrapper,
+  toEnvelope,
+  viaOf,
+} from "./raw-script.js";
+import { errorResult, guard, imageResult, jsonResult } from "./result.js";
 import { fold, rank, stripAeVendor, suggestionThreshold } from "./suggest.js";
 
 /**
@@ -492,7 +505,7 @@ export type AeErrorLocation =
   | { readonly kind: "outside" }
   | { readonly kind: "unknown" };
 
-/** The body of a wrap()ped script, or null for any other script (a future ae_batch, a raw wrapper). */
+/** The body of a wrap()ped script, or null for any other script (a future ae_batch, runRawScript's output). */
 function aeBody(script: string): string | null {
   return script.length >= AE_PRELUDE.length + AE_SUFFIX.length && script.startsWith(AE_PRELUDE) && script.endsWith(AE_SUFFIX)
     ? script.slice(AE_PRELUDE.length, script.length - AE_SUFFIX.length)
@@ -1862,6 +1875,183 @@ export async function renderCompHeadless(bridge: AppBridge, o: RenderCompOptions
   return { outputPath: o.outputPath, compName: o.compName, log: tail.slice(-600) };
 }
 
+// ---- ae_run_script (AE-01) -------------------------------------------------------
+
+/** ae_run_script's undo step name when the caller gives none. */
+const AE_RUN_SCRIPT_UNDO = "Brainferno script";
+
+/**
+ * ae_run_script's script: the X-01 wrapper inside one undo group, with __args in scope, alert/confirm/prompt
+ * shadowed, and dialogs optionally suppressed. `o.args` must be aeArgsLiteral's literal. A failing end call is
+ * annotated onto the envelope (__closed), never allowed to replace it.
+ *
+ * Not built on wrap(): the AE helpers stay out of the caller's scope, and the caller's text enters only as the
+ * wrapper's string literal (__src), so bodyLine still counts lines of the caller's script. Everything added
+ * around the wrapper sits outside __src and cannot produce a false bodyLine: the shims throw a plain object (no
+ * line), an end call's failure is an annotation with line null, and a begin call's failure escapes to the panel,
+ * where dispatchedFailure gives it none.
+ */
+export function runRawScript(
+  script: string,
+  o: { args: string; undoGroupName: string; suppressDialogs: boolean },
+): string {
+  const run = rawScriptWrapper(script);
+  const body = o.suppressDialogs
+    ? "    var __r;\n" +
+      "    app.beginSuppressDialogs();\n" +
+      "    try {\n" +
+      "      __r = " + run + ";\n" +
+      "    } finally {\n" +
+      "      try { app.endSuppressDialogs(false); } catch (x) { __r = __closed(__r, \"app.endSuppressDialogs(false)\", x); }\n" +
+      "    }\n" +
+      "    return __r;\n"
+    : "    return " + run + ";\n";
+  return (
+    "(function () {\n" +
+    "  var __args = " + o.args + ";\n" +
+    "  function __modal(what) {\n" +
+    "    throw { message: what + \"() would open a modal dialog in After Effects and block scripting until someone dismisses it \\u2014 use __log(msg) instead.\" };\n" +
+    "  }\n" +
+    "  function alert(m) { __modal(\"alert\"); }\n" +
+    "  function confirm(m) { __modal(\"confirm\"); }\n" +
+    "  function prompt(m) { __modal(\"prompt\"); }\n" +
+    "  function __closed(r, what, x) {\n" +
+    "    var m = what + \" failed: \" + String(x && x.message !== undefined ? x.message : x) + \" \\u2014 the script ran; check After Effects before re-running.\";\n" +
+    "    if (r && r.ok === false && r.error) { r.error.message = r.error.message + \" \" + m; return r; }\n" +
+    "    return { ok: false, error: { message: m, line: null, lineBase: null }, value: r ? r.value : null, logs: r ? r.logs : [], logsDropped: r ? r.logsDropped : 0 };\n" +
+    "  }\n" +
+    "  function __undo(name, fn) {\n" +
+    "    var r;\n" +
+    "    app.beginUndoGroup(name);\n" +
+    "    try {\n" +
+    "      r = fn();\n" +
+    "    } finally {\n" +
+    "      try { app.endUndoGroup(); } catch (x) { r = __closed(r, \"app.endUndoGroup()\", x); }\n" +
+    "    }\n" +
+    "    return r;\n" +
+    "  }\n" +
+    "  return __undo(" + asciiLiteral(o.undoGroupName) + ", function () {\n" +
+    body +
+    "  });\n" +
+    "})()"
+  );
+}
+
+/** Guards the encoder's own recursion; below the result walker's 64 (raw-script.ts). */
+const ARGS_MAX_DEPTH = 32;
+const ARGS_TAKES = "args takes JSON data only: strings, finite numbers, booleans, null, arrays and plain objects";
+const ARGS_IDENT = /^[A-Za-z_$][\w$]*$/;
+class ArgsRefused extends Error {}
+
+function argsPath(path: readonly (string | number)[]): string {
+  let s = "args";
+  for (const p of path) s += typeof p === "number" ? `[${p}]` : ARGS_IDENT.test(p) ? `.${p}` : `[${JSON.stringify(p)}]`;
+  return s.length > 200 ? `${s.slice(0, 200)}...` : s;
+}
+
+/**
+ * ae_run_script's args as one pure-ASCII ES3 object literal (every key quoted), or the plain-text refusal for a
+ * value ExtendScript cannot receive as data. Depth is checked before each recursion, so it never recurses more
+ * than ARGS_MAX_DEPTH + 1 levels, however deep the input. (ExtendScript has no JSON to parse a string with, so
+ * the literal is the only way in; it goes into ae_run_script's outer IIFE, never inside __src.)
+ */
+export function aeArgsLiteral(args: Readonly<Record<string, unknown>>): { literal: string } | { refusal: string } {
+  const path: (string | number)[] = [];
+  const refuse = (message: string): never => {
+    throw new ArgsRefused(message);
+  };
+  const enc = (v: unknown, depth: number): string => {
+    if (v === null) return "null";
+    if (typeof v === "boolean") return v ? "true" : "false";
+    if (typeof v === "number") {
+      if (!Number.isFinite(v)) refuse(`${argsPath(path)} is not a finite number (${String(v)}) — ${ARGS_TAKES}; send a finite number, or a string the script converts.`);
+      return Object.is(v, -0) ? "-0" : num(v);
+    }
+    if (typeof v === "string") return asciiLiteral(v);
+    if (typeof v !== "object") return refuse(`${argsPath(path)} is a ${typeof v} — ${ARGS_TAKES}.`);
+    if (depth >= ARGS_MAX_DEPTH) refuse(`${argsPath(path)} is nested more than ${ARGS_MAX_DEPTH} levels deep — flatten args.`);
+    if (Array.isArray(v)) {
+      const parts: string[] = [];
+      for (let i = 0; i < v.length; i++) {
+        if (!(i in v)) refuse(`${argsPath([...path, i])} is a hole in a sparse array — ${ARGS_TAKES}.`);
+        path.push(i);
+        parts.push(enc(v[i], depth + 1));
+        path.pop();
+      }
+      return `[${parts.join(",")}]`;
+    }
+    const proto: unknown = Object.getPrototypeOf(v);
+    if (proto !== Object.prototype && proto !== null) refuse(`${argsPath(path)} is not a plain object — ${ARGS_TAKES}.`);
+    const parts: string[] = [];
+    for (const k of Object.keys(v)) {
+      if (k === "__proto__") refuse(`${argsPath(path)} has a key named "__proto__" — rename that key; a script engine would not keep it as data.`);
+      path.push(k);
+      parts.push(`${asciiLiteral(k)}:${enc((v as Record<string, unknown>)[k], depth + 1)}`);
+      path.pop();
+    }
+    return `{${parts.join(",")}}`;
+  };
+  try {
+    return { literal: enc(args, 0) };
+  } catch (error) {
+    if (error instanceof ArgsRefused) return { refusal: error.message };
+    throw error;
+  }
+}
+
+/** The refusal for a script that names a call the tool manages itself (D11). */
+export const RUN_SCRIPT_MANAGED_REFUSAL =
+  "ae_run_script already runs your script in one undo group (undoGroupName) and handles dialog suppression " +
+  "(suppressDialogs) — remove every app.beginUndoGroup, app.endUndoGroup, app.beginSuppressDialogs and " +
+  "app.endSuppressDialogs call from the script (a comment or string that names one counts too), then retry.";
+
+/**
+ * The calls ae_run_script makes itself. A caller's unbalanced pair cannot be repaired from outside, so a script
+ * that names one is refused before it is sent. A guard against honest mistakes, not adversaries: a raw script
+ * is arbitrary code by design.
+ */
+const AE_MANAGED_CALL = /\b(?:begin|end)(?:UndoGroup|SuppressDialogs)\b/;
+
+/** ae_run_script's model-facing description; the bodyLine sentence is cc_eval_script's own. */
+export const RUN_SCRIPT_DESCRIPTION =
+  "Run a raw ExtendScript in After Effects as ONE undo step. An escape hatch for multi-step work the typed ae_* " +
+  "tools do not cover (many layers, masks or expressions in one call) — prefer a typed tool where one exists.\n" +
+  "The script is ES3 (var only — no let/const, arrow functions, template literals or JSON), a statement list or " +
+  "one IIFE; the completion value of its last statement is returned (a top-level `return` is a SyntaxError — wrap " +
+  "such code in an IIFE). To return an object literal, wrap it in parentheses — ({ a: 1 }) — or return it from an " +
+  "IIFE; a bare { a: 1 } on the last line is a block and returns 1. It reads `args` as __args (a fresh object each " +
+  "call, {} when omitted). Call __log(msg) to collect up to 200 lines / 20000 characters (logsDropped counts the " +
+  "rest). Names that start with __ belong to the tool. The result must be plain data — strings, numbers, booleans, " +
+  "null, arrays and plain objects; a host object (a layer, a comp, a TextDocument) is refused with its path, so " +
+  "copy the fields you need. Variables and functions the script declares stay local to the call; assigning to an " +
+  "undeclared name creates a global that persists in After Effects.\n" +
+  "Undo: the whole call runs inside one undo group named undoGroupName (Edit > Undo <name>), so one Ctrl-Z undoes " +
+  "everything it changed — including what a script that failed part-way changed before it failed. Opening, " +
+  "creating or closing a project, or importing an .aep, inside the script resets or breaks After Effects' undo " +
+  "history, so the one-Ctrl-Z guarantee does not cover those calls. The tool manages the undo group and dialog " +
+  "suppression itself: a script that names app.beginUndoGroup, app.endUndoGroup, app.beginSuppressDialogs or " +
+  "app.endSuppressDialogs (even in a comment or string) is refused before it is sent.\n" +
+  "Dialogs: with suppressDialogs (default true), After Effects' script warning and error dialogs, such as those " +
+  "raised while saving or exporting, are suppressed and discarded while the script runs; the missing-font warning " +
+  "shown when a project is opened may still appear and block scripting. With false, a dialog waits for a human and " +
+  "the call times out. Modal UI the script opens itself is not covered by suppressDialogs and blocks After Effects " +
+  "and every later call until someone dismisses it: alert, confirm and prompt fail the call here instead of " +
+  "opening a dialog; do not open file or folder pickers (File.openDialog, Folder.selectDialog), a ScriptUI " +
+  "dialog's show(), or a menu command that opens a dialog. A timeout stops the wait, not the script: After Effects " +
+  "keeps running it, and later After Effects calls wait behind it.\n" +
+  "Returns the envelope { ok, error?: { message, line, bodyLine }, durationMs, value, logs, logsDropped? }. " +
+  "bodyLine is the line in your script that failed. bodyLine is null when the error was raised outside your " +
+  "script's own text (for example in a $.evalFile'd library, or in a helper an earlier call left as a global) or " +
+  "the host's line numbering cannot be calibrated. durationMs is the server round trip, including any wait behind " +
+  "other After Effects calls.\n" +
+  "Error shape: an error with plain text means nothing was dispatched (raw scripts disabled, a remote session, " +
+  "args refused, the script names an undo or dialog-suppression call, After Effects not connected); an error whose " +
+  "text is a JSON envelope means the script was sent and may have partly run.\n" +
+  "Refused unless the operator sets BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS (1, or a comma list including after_effects) " +
+  "in the MCP server env; remote (shared HTTP) sessions are also refused unless " +
+  "BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS=1. cc_get_capabilities shows the gate. Every call, run or refused, " +
+  "writes an audit line to the server log.";
+
 // ---- registration --------------------------------------------------------------
 
 const compId = z.number().int().describe("Composition id from ae_list_compositions.");
@@ -1882,9 +2072,18 @@ export interface AfterEffectsToolOptions {
   jobs?: JobRegistry;
   /** Whether ae_render_comp blocks when the caller passes no `wait` (BRAINFERNO_MCP_DEFAULT_WAIT). */
   defaultWait?: boolean;
+  /** The raw-script gate: ae_run_script runs only when it includes "after_effects". Always registered. */
+  rawScriptApps: readonly RawScriptApp[];
+  /** This McpServer serves a remote (shared HTTP) session. */
+  remote: boolean;
+  /** BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS: whether a remote session may run raw scripts. */
+  allowRemoteRawScripts: boolean;
 }
 
-export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, options: AfterEffectsToolOptions = {}): void {
+/** After Effects' tools are registered only when After Effects is enabled, so the gate's "enabled apps" is just After Effects. */
+const AE_ONLY = ["after_effects"] as const;
+
+export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, options: AfterEffectsToolOptions): void {
   // Every callback runs inside a tool-call context (tool name + validated arguments) that an
   // error raised deep inside a bridge call can name. The registerTool calls below are unchanged.
   const server = withToolContext(mcp, { noArgs: AE_NO_ARG_ECHO });
@@ -2510,5 +2709,107 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
           { wait: wait ?? options.defaultWait ?? true, timeoutMs: 30 * 60_000, extra: extra as ProgressExtra },
         );
       }),
+  );
+
+  // ---- escape hatch -------------------------------------------------------
+  // Always registered; refuses (touching no bridge) unless the raw-script gate includes After Effects.
+  server.registerTool(
+    "ae_run_script",
+    {
+      title: "After Effects: run a raw ExtendScript as one undo step",
+      description: RUN_SCRIPT_DESCRIPTION,
+      inputSchema: {
+        script: z
+          .string()
+          .min(1)
+          .describe(
+            "ExtendScript (ES3) source: a statement list or one IIFE. The value of its last statement is returned; " +
+              "to return an object literal, wrap it in parentheses — ({ a: 1 }) — or return it from an IIFE, since a bare " +
+              "{ a: 1 } on the last line is a block and returns 1. Read args as __args; call __log(msg) to collect log " +
+              "lines. Do not call app.beginUndoGroup, app.endUndoGroup, app.beginSuppressDialogs or " +
+              "app.endSuppressDialogs: the tool manages both, and a script that names them (even in a comment or string) " +
+              "is refused before it is sent.",
+          ),
+        args: z
+          .record(z.unknown())
+          .optional()
+          .describe(
+            "Plain JSON data the script reads as __args (defaults to {}): strings, finite numbers, booleans, null, " +
+              "arrays and plain objects, at most 32 levels deep. Never use a key named __proto__ (a nested one is " +
+              "refused; a top-level one is dropped). Read a key that is an ES3 reserved word as __args[\"default\"], " +
+              "not __args.default.",
+          ),
+        undoGroupName: z
+          .string()
+          .min(1)
+          .max(200)
+          .optional()
+          .describe("The undo step's name in After Effects' Edit menu (Undo <name>). Defaults to \"Brainferno script\"."),
+        suppressDialogs: z
+          .boolean()
+          .optional()
+          .describe(
+            "Suppress After Effects' script warning and error dialogs, such as those raised while saving or " +
+              "exporting, while the script runs; they are discarded, not shown afterwards. Defaults to true. The " +
+              "missing-font warning shown when a project is opened may still appear and block scripting. With false, " +
+              "a dialog waits for a human and the call times out.",
+          ),
+        timeoutMs: z
+          .number()
+          .int()
+          .positive()
+          .max(MAX_EXPLICIT_TIMEOUT_MS)
+          .optional()
+          .describe(
+            "Override the result timeout for this call, in ms (default: the server's slow timeout, " +
+              "BRAINFERNO_MCP_EVAL_TIMEOUT_MS; max 30 minutes). A timeout stops the wait, not the script.",
+          ),
+      },
+      annotations: { destructiveHint: true, openWorldHint: true },
+    },
+    async ({ script, args, undoGroupName, suppressDialogs, timeoutMs }, extra) => {
+      const via = viaOf(extra);
+      // Never throws (F1): JSON.stringify overflows V8's stack on args nested ~5000 deep, and every call is audited.
+      const payload = auditJson({ script, args }, { script, args: "[args could not be serialized: nested too deeply]" });
+      const audit = (outcome: "run" | "refused") => auditRawCall({ tool: "ae_run_script", app: "after_effects", payload, outcome, via });
+      const gate = rawGateState("after_effects", options.rawScriptApps, AE_ONLY, {
+        remote: options.remote,
+        allowRemote: options.allowRemoteRawScripts,
+      });
+      // Every refusal below is nothing dispatched: plain text, one refused audit, no bridge call.
+      if (!gate.open) {
+        audit("refused");
+        return errorResult(gate.reason);
+      }
+      const encoded = aeArgsLiteral(args ?? {});
+      if ("refusal" in encoded) {
+        audit("refused");
+        return errorResult(encoded.refusal);
+      }
+      if (AE_MANAGED_CALL.test(script)) {
+        audit("refused");
+        return errorResult(RUN_SCRIPT_MANAGED_REFUSAL);
+      }
+      audit("run");
+      const source = runRawScript(script, {
+        args: encoded.literal,
+        undoGroupName: undoGroupName ?? AE_RUN_SCRIPT_UNDO,
+        suppressDialogs: suppressDialogs ?? true,
+      });
+      return guard(async () => {
+        const t0 = Date.now();
+        try {
+          const raw = await evaluateAe(bridge, source, { timeoutClass: "slow", timeoutMs });
+          return envelopeResult(toEnvelope(raw, script, Date.now() - t0)); // the CALLER's script: bodyLine counts its lines
+        } catch (error) {
+          const env = dispatchedFailure(error, Date.now() - t0, {
+            noun: "the script",
+            onScriptError: (message) => `${message} — the script was sent; it may have partly run`,
+          });
+          if (env !== null) return envelopeResult(env);
+          throw error; // AppNotConnectedError (not dispatched) and anything else: guard() → plain text.
+        }
+      });
+    },
   );
 }

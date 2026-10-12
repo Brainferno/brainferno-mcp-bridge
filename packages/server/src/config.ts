@@ -77,7 +77,7 @@ export interface Config {
    */
   allowRawScripts: boolean;
   /**
-   * Apps whose raw-script tools (`cc_eval_script`, `ps_batch_play`) may run, from
+   * Apps whose raw-script tools (`cc_eval_script`, `ae_run_script`, `ps_batch_play`) may run, from
    * BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS (`1`/`all` or a comma list). Empty = every raw
    * call is refused. The tools are always registered; this only opens the gate.
    * Off by default: it is arbitrary code execution at user privilege.
@@ -193,7 +193,7 @@ export function parseApps(raw: string | undefined, fallback: readonly Installabl
   return out;
 }
 
-/** Apps with a raw-script tool: cc_eval_script (ExtendScript hosts) and ps_batch_play (Photoshop). Canonical order. */
+/** Apps with a raw-script tool: cc_eval_script (ExtendScript hosts), ae_run_script (After Effects) and ps_batch_play (Photoshop). Canonical order. */
 export const RAW_SCRIPT_APPS = ["after_effects", "photoshop", "illustrator", "audition"] as const;
 export type RawScriptApp = (typeof RAW_SCRIPT_APPS)[number];
 

@@ -34,7 +34,7 @@ import { SERVER_VERSION } from "../src/version.js";
 import { ScriptError } from "../src/bridge/types.js";
 import { setRedactionSecrets } from "../src/tools/echo.js";
 import { scriptErrorText } from "../src/tools/result.js";
-import { AE_PRELUDE_LINES, LIST_INSTALLED_EFFECTS, applyEffectScript, getCompScript, getLayerScript, wrapAe } from "../src/tools/after-effects.js";
+import { AE_PRELUDE_LINES, LIST_INSTALLED_EFFECTS, applyEffectScript, getCompScript, getLayerScript, runRawScript, wrapAe } from "../src/tools/after-effects.js";
 import { aeHost, panelReply, type AeHost } from "./ae-host.js";
 import { hostEval, runJsxFile } from "./host-vm.js";
 
@@ -205,6 +205,28 @@ function rawAuditLines(spy: MockInstance): string[] {
   return spy.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith("raw-script "));
 }
 
+/** A fake panel that runs every eval cmd in `host`, the way host.jsx's __acmEval does. */
+function vmPanel(panel: WebSocket, host: AeHost, delayMs = 0): CmdFrame[] {
+  return recordCmds(panel, (f) => {
+    const answer = () => {
+      const r = host.eval(f.params.script!);
+      if (r.ok) reply(panel, f.id, r.value);
+      else reply(panel, f.id, panelReply(r), false);
+    };
+    if (delayMs > 0) setTimeout(answer, delayMs);
+    else answer();
+  });
+}
+
+/** An ae-host with a version and no-op dialog suppression (ae-host models neither), for ae_run_script (AE-01). */
+function runScriptHost(): AeHost {
+  const host = aeHost();
+  host.app.version = "26.5";
+  host.app.beginSuppressDialogs = () => {};
+  host.app.endSuppressDialogs = () => {};
+  return host;
+}
+
 describe("brainferno-mcp-bridge server", () => {
   let client: Client;
   let bridge: BridgeServer;
@@ -250,6 +272,7 @@ describe("brainferno-mcp-bridge server", () => {
     expect(names).toContain("cc_eval_script");
     expect(names).toContain("cc_get_capabilities");
     expect(names).toContain("ps_batch_play");
+    expect(names).toContain("ae_run_script");
 
     const audit = vi.spyOn(log, "audit").mockImplementation(() => {});
     try {
@@ -267,6 +290,12 @@ describe("brainferno-mcp-bridge server", () => {
       expect(p.isError).toBe(true);
       expect(textOf(p)).toContain(RAW_SCRIPTS_DISABLED_MESSAGE);
 
+      // AE-01 acceptance 1: ae_run_script is listed and refuses the same way.
+      const a = await client.callTool({ name: "ae_run_script", arguments: { script: "/* raw-probe-7f3 */ 1" } });
+      expect(a.isError).toBe(true);
+      expect(textOf(a)).toContain(RAW_SCRIPTS_DISABLED_MESSAGE);
+      expect(textOf(a)).toContain("currently enabled for: none");
+
       await settle();
       expect(aeCmds).toEqual([]);
       expect(psCmds).toEqual([]);
@@ -280,6 +309,7 @@ describe("brainferno-mcp-bridge server", () => {
       expect(rawAuditLines(audit)).toEqual([
         expect.stringMatching(/^raw-script tool=cc_eval_script app=after_effects .* via=stdio outcome=refused$/),
         expect.stringMatching(/^raw-script tool=ps_batch_play app=photoshop .* count=1 via=stdio outcome=refused$/),
+        expect.stringMatching(/^raw-script tool=ae_run_script app=after_effects .* via=stdio outcome=refused$/),
       ]);
       ae.close();
       ps.close();
@@ -289,10 +319,22 @@ describe("brainferno-mcp-bridge server", () => {
   });
 
   it("says in cc_eval_script's description both reasons bodyLine can be null", async () => {
+    const tools = (await client.listTools()).tools;
+    // AE-01: ae_run_script repeats the sentence verbatim.
+    for (const name of ["cc_eval_script", "ae_run_script"]) {
+      const tool = tools.find((t) => t.name === name);
+      expect(tool?.description, name).toContain(
+        "bodyLine is null when the error was raised outside your script's own text (for example in a $.evalFile'd " +
+          "library, or in a helper an earlier call left as a global) or the host's line numbering cannot be calibrated.",
+      );
+    }
+  });
+
+  it("points cc_eval_script's After Effects callers at ae_run_script and warns about a bare object literal (AE-01, ES-7)", async () => {
     const tool = (await client.listTools()).tools.find((t) => t.name === "cc_eval_script");
+    expect(tool?.description).toContain("For After Effects, ae_run_script runs a script as one undo step, with __args and dialogs suppressed.");
     expect(tool?.description).toContain(
-      "bodyLine is null when the error was raised outside your script's own text (for example in a $.evalFile'd " +
-        "library, or in a helper an earlier call left as a global) or the host's line numbering cannot be calibrated.",
+      "To return an object literal, wrap it in parentheses — ({ a: 1 }) — or return it from an IIFE; a bare { a: 1 } on the last line is a block and returns 1.",
     );
   });
 
@@ -547,6 +589,151 @@ describe("cc_eval_script with the gate open for After Effects", () => {
   });
 });
 
+describe("ae_run_script with the gate open for After Effects (AE-01)", () => {
+  const AE_ONLY: Partial<Config> = { allowRawScripts: true, rawScriptApps: ["after_effects"] };
+  let audit: MockInstance;
+  beforeEach(() => {
+    audit = vi.spyOn(log, "audit").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("sends the built script as one slow eval command, and it really runs (A2)", async () => {
+    const s = await startSession(AE_ONLY);
+    const panel = await connectPanel(s.bridge.port(), "after_effects");
+    const cmds = vmPanel(panel, runScriptHost());
+    const script = "(function(){ return app.version; })()";
+    const r = await s.c.callTool({ name: "ae_run_script", arguments: { script } });
+    expect(cmds).toHaveLength(1);
+    expect(cmds[0]!.name).toBe("eval");
+    expect(cmds[0]!.timeoutClass).toBe("slow");
+    expect(cmds[0]!.params.script).toBe(runRawScript(script, { args: "{}", undoGroupName: "Brainferno script", suppressDialogs: true }));
+    expect(r.isError).toBeFalsy();
+    expect(JSON.parse(textOf(r))).toMatchObject({ ok: true, value: "26.5", logs: [] });
+    expect(rawAuditLines(audit)).toEqual([expect.stringMatching(/^raw-script tool=ae_run_script app=after_effects sha256=[0-9a-f]{12} len=\d+ via=stdio outcome=run$/)]);
+    panel.close();
+    await s.close();
+  });
+
+  it("makes two layers in one undo group (A3)", async () => {
+    const s = await startSession(AE_ONLY);
+    const panel = await connectPanel(s.bridge.port(), "after_effects");
+    const host = runScriptHost();
+    vmPanel(panel, host);
+    const script = 'var c = app.project.itemByID(12);\nc.layers.addSolid([1,0,0], "A");\nc.layers.addText("B");\nc.numLayers';
+    const r = await s.c.callTool({ name: "ae_run_script", arguments: { script, undoGroupName: "Two layers" } });
+    expect(JSON.parse(textOf(r))).toMatchObject({ ok: true, value: 5 });
+    expect(host.undo).toEqual({ begin: 1, end: 1 });
+    expect(host.mutations).toEqual(["layers.addSolid", "layers.addText"]);
+    panel.close();
+    await s.close();
+  });
+
+  it("maps a calibrated host line to bodyLine, and drops an uncalibrated or out-of-range one (A4)", async () => {
+    const s = await startSession(AE_ONLY);
+    const panel = await connectPanel(s.bridge.port(), "after_effects");
+    let error = { message: "x", line: 2, lineBase: 0 };
+    recordCmds(panel, (f) => reply(panel, f.id, { ok: false, error, value: null, logs: ["a"], logsDropped: 0 }));
+    const script = "var a = 1;\nundefinedThing.x;\na";
+    const at = async () => JSON.parse(textOf(await s.c.callTool({ name: "ae_run_script", arguments: { script } }))).error;
+    expect(await at()).toEqual({ message: "x", line: 2, bodyLine: 2 });
+    error = { message: "x", line: 140, lineBase: 0 };
+    expect(await at()).toEqual({ message: "x", line: 140, bodyLine: null });
+    error = { message: "x", line: 2, lineBase: 5 };
+    expect(await at()).toEqual({ message: "x", line: 2, bodyLine: null });
+    panel.close();
+    await s.close();
+  });
+
+  it("a throw outside the wrapper (beginSuppressDialogs) reaches the panel as a host error: dispatched envelope, no bodyLine (T6b, T6c)", async () => {
+    const s = await startSession(AE_ONLY);
+    const panel = await connectPanel(s.bridge.port(), "after_effects");
+    const host = runScriptHost();
+    host.app.beginSuppressDialogs = () => {
+      throw new host.VmError("Suppress failed");
+    };
+    const lines: (number | undefined)[] = [];
+    recordCmds(panel, (f) => {
+      const r = host.eval(f.params.script!);
+      if (r.ok) return reply(panel, f.id, r.value);
+      const frame = panelReply(r);
+      lines.push(frame.line);
+      reply(panel, f.id, frame, false);
+    });
+    const r = await s.c.callTool({ name: "ae_run_script", arguments: { script: "1" } });
+    expect(r.isError).toBe(true);
+    expect(JSON.parse(textOf(r))).toMatchObject({
+      ok: false,
+      value: null,
+      logs: [],
+      error: { message: "Suppress failed — the script was sent; it may have partly run", line: null, bodyLine: null },
+    });
+    // The panel's own line is the begin call's, in the built script (computed, never typed).
+    const src = runRawScript("1", { args: "{}", undoGroupName: "Brainferno script", suppressDialogs: true });
+    expect(lines).toEqual([src.split("\n").findIndex((l) => l.includes("app.beginSuppressDialogs();")) + 1]);
+    expect(host.undo).toEqual({ begin: 1, end: 1 });
+    panel.close();
+    await s.close();
+  });
+
+  it("a failing endUndoGroup comes back through the socket as an annotated envelope that keeps value and logs (ES-6)", async () => {
+    const s = await startSession(AE_ONLY);
+    const panel = await connectPanel(s.bridge.port(), "after_effects");
+    const host = runScriptHost();
+    host.app.endUndoGroup = () => {
+      throw new host.VmError("Undo group mismatch");
+    };
+    vmPanel(panel, host);
+    const r = await s.c.callTool({ name: "ae_run_script", arguments: { script: '__log("kept?");\n5' } });
+    expect(r.isError).toBe(true);
+    expect(JSON.parse(textOf(r))).toMatchObject({
+      ok: false,
+      error: {
+        message: "app.endUndoGroup() failed: Undo group mismatch — the script ran; check After Effects before re-running.",
+        line: null,
+        bodyLine: null,
+      },
+      value: 5,
+      logs: ["kept?"],
+    });
+    panel.close();
+    await s.close();
+  });
+
+  it("without suppression a modal dialog hangs the call until the timeout; with it (the default) the call returns (A5)", async () => {
+    const s = await startSession(AE_ONLY);
+    const panel = await connectPanel(s.bridge.port(), "after_effects");
+    const host = runScriptHost();
+    // Stand in for a dialog that blocks scripting: a script sent without suppression never answers.
+    const cmds = recordCmds(panel, (f) => {
+      if (!f.params.script!.includes("app.beginSuppressDialogs();")) return;
+      const r = host.eval(f.params.script!);
+      if (r.ok) reply(panel, f.id, r.value);
+      else reply(panel, f.id, panelReply(r), false);
+    });
+    const hung = await s.c.callTool({ name: "ae_run_script", arguments: { script: "app.project.numItems", suppressDialogs: false, timeoutMs: 100 } });
+    expect(hung.isError).toBe(true);
+    expect(JSON.parse(textOf(hung)).error.message).toMatch(/^timed out after 100 ms — the script may still be running or have partly run/);
+    const ok = await s.c.callTool({ name: "ae_run_script", arguments: { script: "app.project.numItems" } });
+    expect(ok.isError).toBeFalsy();
+    expect(JSON.parse(textOf(ok))).toMatchObject({ ok: true, value: 1 });
+    expect(cmds).toHaveLength(2);
+    panel.close();
+    await s.close();
+  });
+
+  it("says plain-text 'not connected' when no panel is there (nothing was dispatched)", async () => {
+    const s = await startSession(AE_ONLY);
+    const r = await s.c.callTool({ name: "ae_run_script", arguments: { script: "1" } });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toMatch(/^No running host connected/);
+    expect(() => JSON.parse(textOf(r))).toThrow();
+    expect(rawAuditLines(audit)).toEqual([expect.stringMatching(/ outcome=run$/)]);
+    await s.close();
+  });
+});
+
 describe("cc_eval_script for Illustrator goes down the os-script lane", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -718,10 +905,23 @@ describe("raw scripts in a remote (shared HTTP) session", () => {
     expect(cmds).toEqual([]);
     expect(rawAuditLines(audit)).toEqual([expect.stringMatching(/ via=http:a1b2c3d4 outcome=refused$/)]);
 
+    // AE-01 (T3): ae_run_script takes the same remote refusal, and sends nothing either.
+    const ae = await s.c.callTool({ name: "ae_run_script", arguments: { script: "1" } });
+    expect(ae.isError).toBe(true);
+    expect(textOf(ae)).toBe(REMOTE_RAW_SCRIPTS_REFUSED_MESSAGE);
+    await settle();
+    expect(cmds).toEqual([]);
+    expect(rawAuditLines(audit).at(-1)).toMatch(/^raw-script tool=ae_run_script app=after_effects .* via=http:a1b2c3d4 outcome=refused$/);
+
     const caps = JSON.parse(textOf(await s.c.callTool({ name: "cc_get_capabilities", arguments: {} })));
     expect(caps.session).toBe("remote");
     const aeRow = caps.tools.find((t: { tool: string; app: string }) => t.tool === "cc_eval_script" && t.app === "after_effects");
     expect(aeRow).toMatchObject({ enabled: false, enableWith: REMOTE_RAW_SCRIPTS_REFUSED_MESSAGE });
+    const runRow = caps.tools.find((t: { tool: string; app: string }) => t.tool === "ae_run_script" && t.app === "after_effects");
+    expect(runRow).toMatchObject({ enabled: false, enableWith: REMOTE_RAW_SCRIPTS_REFUSED_MESSAGE });
+    await rowsMatchCalls(s.c, caps);
+    await settle();
+    expect(cmds).toEqual([]);
     panel.close();
     await s.close();
 
@@ -733,9 +933,44 @@ describe("raw scripts in a remote (shared HTTP) session", () => {
     expect(JSON.parse(textOf(ok)).value).toBe(42);
     expect(cmds2).toHaveLength(1);
     expect(rawAuditLines(audit).at(-1)).toMatch(/ via=http:ffff0000 outcome=run$/);
+
+    // AE-01 (T3): a second panel (it replaces p2) backed by ae-host, whose context has an `app` (hostEval's has none).
+    const p3 = await connectPanel(allowed.bridge.port(), "after_effects");
+    const cmds3 = vmPanel(p3, runScriptHost());
+    const run = await allowed.c.callTool({ name: "ae_run_script", arguments: { script: "40 + 2" } });
+    expect(run.isError).toBeFalsy();
+    expect(JSON.parse(textOf(run)).value).toBe(42);
+    expect(cmds3).toHaveLength(1);
+    expect(rawAuditLines(audit).at(-1)).toMatch(/^raw-script tool=ae_run_script app=after_effects .* via=http:ffff0000 outcome=run$/);
+    const caps2 = JSON.parse(textOf(await allowed.c.callTool({ name: "cc_get_capabilities", arguments: {} })));
+    expect(caps2.tools.find((t: { tool: string; app: string }) => t.tool === "ae_run_script" && t.app === "after_effects")).toMatchObject({
+      enabled: true,
+      enableWith: null,
+    });
+    await rowsMatchCalls(allowed.c, caps2);
     p2.close();
+    p3.close();
     await allowed.close();
   });
+
+  /** For both After Effects raw rows: calling the tool answers with enableWith exactly when the row says disabled. */
+  async function rowsMatchCalls(c: Client, caps: { tools: { tool: string; app: string; enabled: boolean; enableWith: string | null }[] }) {
+    const calls: [string, Record<string, unknown>][] = [
+      ["cc_eval_script", { appId: "after_effects", script: "1" }],
+      ["ae_run_script", { script: "1" }],
+    ];
+    for (const [tool, args] of calls) {
+      const row = caps.tools.find((t) => t.tool === tool && t.app === "after_effects")!;
+      const r = await c.callTool({ name: tool, arguments: args });
+      if (row.enabled) {
+        expect(row.enableWith, tool).toBeNull();
+        expect(r.isError, tool).toBeFalsy();
+      } else {
+        expect(r.isError, tool).toBe(true);
+        expect(textOf(r), tool).toBe(row.enableWith);
+      }
+    }
+  }
 });
 
 describe("cc_get_capabilities", () => {
@@ -766,6 +1001,7 @@ describe("cc_get_capabilities", () => {
       "cc_eval_script:after_effects",
       "cc_eval_script:illustrator",
       "cc_eval_script:audition",
+      "ae_run_script:after_effects",
       "ps_batch_play:photoshop",
       "ai_beta_status:illustrator",
       "ai_beta_list_tools:illustrator",
@@ -795,6 +1031,15 @@ describe("cc_get_capabilities", () => {
     expect(caps.rawScriptGate.apps).toEqual(["after_effects"]);
     expect(row(caps, "cc_eval_script", "after_effects")).toEqual({
       tool: "cc_eval_script",
+      app: "after_effects",
+      enabled: true,
+      enableWith: null,
+      connected: true,
+      panelSupports: true,
+    });
+    // AE-01: ae_run_script rides the panel's generic eval command, like cc_eval_script.
+    expect(row(caps, "ae_run_script", "after_effects")).toEqual({
+      tool: "ae_run_script",
       app: "after_effects",
       enabled: true,
       enableWith: null,
@@ -839,6 +1084,22 @@ describe("app choice", () => {
     expect(names).not.toContain("pipeline_render_and_import");
     const apps = JSON.parse(((await c.callTool({ name: "cc_connected_apps", arguments: {} })).content as { type: string; text: string }[])[0]!.text) as { appId: string }[];
     expect(apps.map((a) => a.appId).sort()).toEqual(["after_effects", "photoshop"]);
+    expect(names).toContain("ae_run_script");
+    await c.close();
+    await built.server.close();
+    await built.bridge.close();
+  });
+
+  it("lists ae_run_script only with After Effects' tools (AE-01)", async () => {
+    const built = buildServer({ ...config, enabledApps: ["photoshop"], allowRawScripts: true, rawScriptApps: ["after_effects", "photoshop"] });
+    await built.bridge.ready();
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    const c = new Client({ name: "subset", version: "0" });
+    await Promise.all([c.connect(ct), built.server.connect(st)]);
+    const names = (await c.listTools()).tools.map((t) => t.name);
+    expect(names).toContain("ps_batch_play");
+    expect(names).not.toContain("ae_run_script");
+    expect(names.filter((n) => n.startsWith("ae_"))).toEqual([]);
     await c.close();
     await built.server.close();
     await built.bridge.close();
@@ -880,19 +1141,6 @@ describe("After Effects error context (AE-16)", () => {
   const bodyLineOf = (script: string, needle: string) => script.slice(PRELUDE_LENGTH).split("\n").slice(1).findIndex((l) => l.includes(needle)) + 1;
   /** The script line of the first line containing `needle`. */
   const scriptLineOf = (script: string, needle: string) => script.split("\n").findIndex((l) => l.includes(needle)) + 1;
-
-  /** A fake panel that runs every eval cmd in `host`, the way host.jsx's __acmEval does. */
-  function vmPanel(panel: WebSocket, host: AeHost, delayMs = 0): CmdFrame[] {
-    return recordCmds(panel, (f) => {
-      const answer = () => {
-        const r = host.eval(f.params.script!);
-        if (r.ok) reply(panel, f.id, r.value);
-        else reply(panel, f.id, panelReply(r), false);
-      };
-      if (delayMs > 0) setTimeout(answer, delayMs);
-      else answer();
-    });
-  }
 
   it("a canned body-failure frame reads as body line 3 with the code around it (acceptance 6)", async () => {
     const s = await startSession({});
