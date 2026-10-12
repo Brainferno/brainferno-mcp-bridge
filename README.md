@@ -26,8 +26,8 @@ the way. Every action is one undo step in the app, so you can always step back.
   for other computers on your network (token-protected).
 
 > Status: every typed tool verified live on Windows and macOS, the two platforms Adobe ships
-> Creative Cloud for (Adobe 2026 apps); `ae_run_script` is unit-tested and not yet verified
-> live. The npm badge above is the current version. See [Status](#status).
+> Creative Cloud for (Adobe 2026 apps); `ae_run_script` is verified live on Windows (After
+> Effects 26.5), not yet on macOS. The npm badge above is the current version. See [Status](#status).
 
 The companion panel inside each app — here in Adobe After Effects and Adobe Photoshop —
 shows the connection, a live log, and a kill switch:
@@ -97,7 +97,7 @@ markers, Essential Graphics (expose a control, export a Motion Graphics template
 single-frame preview, render queue, and headless rendering through `aerender` (the UI stays free).
 Plus a raw ExtendScript tool (`ae_run_script`) that runs a whole script as one undo step and is
 always listed but refuses until you enable raw scripts for After Effects — see
-[Raw scripts](#raw-scripts-opt-in). It is unit-tested; not yet verified live.
+[Raw scripts](#raw-scripts-opt-in). It is verified live on Windows (After Effects 26.5).
 
 ### Premiere Pro — 29 tools
 Project, sequences and items, a full sequence read (every track and clip with times),
@@ -358,7 +358,7 @@ The wire protocol is documented in [`docs/protocol.md`](docs/protocol.md).
 | `audio_*` (9) | ffmpeg | Probe, R128 measure + two-pass normalize, convert/extract, trim, trim silence, denoise, mix, waveform image |
 | `pipeline_*` (4) | cross-app | `ps_to_ae`, `render_and_import`, `audio_roundtrip`, `ai_to_ps` — one call, one job, failure names the step + recovery tool — [live run](docs/spikes/09-pipelines-live.md) |
 | `cc_eval_script` | After Effects, Illustrator, Audition | Raw ExtendScript escape hatch — always listed; refuses unless enabled (**opt-in**, `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS`) — see `cc_get_capabilities` |
-| `ae_run_script` | After Effects | Raw ExtendScript as one undo step, with `__args` and script dialogs suppressed — always listed; refuses unless enabled for After Effects (**opt-in**, same switch); unit-tested, not yet verified live |
+| `ae_run_script` | After Effects | Raw ExtendScript as one undo step, with `__args` and After Effects' warning dialogs suppressed — always listed; refuses unless enabled for After Effects (**opt-in**, same switch) — [live run](docs/spikes/06-aftereffects-tools-live.md) on Windows |
 | `ps_batch_play` | Photoshop | Raw batchPlay descriptors — always listed; refuses unless enabled for Photoshop (**opt-in**, same switch) |
 
 Tools are always advertised for the apps you chose, even when an app is closed — a closed
@@ -405,34 +405,44 @@ the value is batchPlay's results array, and a descriptor that Photoshop reports 
 `{ "_obj": "error" }` entry) makes the call fail, naming the index: the descriptors before it
 already ran and are not undone.
 
-`ae_run_script` adds what After Effects work needs around the same wrapper (unit-tested against
-a stand-in for After Effects; not yet verified live):
+`ae_run_script` adds what After Effects work needs around the same wrapper (verified live on
+After Effects 26.5 on Windows; the probes are in `docs/spikes/06-aftereffects-tools-live.md`):
 
 - **One undo step.** The whole call runs inside one undo group named `undoGroupName` (default
   `Brainferno script`), so one Ctrl-Z undoes everything the script changed, including what a
   script that failed part-way changed before it failed. Opening, creating or closing a
   project, or importing an `.aep`, inside the script resets or breaks After Effects' undo
-  history, so those calls are outside that guarantee.
+  history, so those calls are outside that guarantee. It covers project edits only: what the
+  script saves or writes (a saved project, files, renders, preferences) stays changed.
 - **`args`** reaches the script as `__args` (`{}` when omitted): plain JSON data, at most 32
   levels deep. Deeper data, a number that is not finite (such as `1e999`) or a nested
   `__proto__` key is refused before anything is sent; a top-level `__proto__` key is dropped.
-- **Dialogs.** `suppressDialogs` (default on) suppresses and discards After Effects' script
-  warning and error dialogs, such as those raised while saving or exporting, while the script
-  runs; the missing-font warning shown when a project is opened may still appear and block
-  scripting. Modal UI the script opens itself is not covered. A bare `alert`, `confirm` or
-  `prompt` written in the script's own text fails the call instead of opening a dialog, and
-  says what to do instead: `__log(msg)` for `alert`; for `confirm` or `prompt`, pass the answer
-  in `args`. Everything else modal still opens and blocks After Effects and every later call
-  until someone dismisses it: `Window.alert`, `$.global.alert` and `this.alert`; a library
-  loaded with `$.evalFile`, or a global helper, that calls `alert`, `confirm` or `prompt`;
-  ScriptUI dialogs; file or folder pickers; a menu command that opens a dialog.
+  Strings arrive exactly; numbers as After Effects keeps them: it reads a number below about
+  2.2e-308 as 0, and writes numbers in the result with 15 significant digits (`0.1 + 0.2` comes
+  back as `0.3`).
+- **Dialogs.** `suppressDialogs` (default on) suppresses and discards After Effects' own warning
+  dialogs while the script runs. It was verified on an export warning and on the missing-font
+  dialog shown when the script opens a project, and is not promised for every dialog.
+  **With it on, a script that opens another project while the open one has unsaved changes gets
+  no save prompt: After Effects saves the open project over its file, those changes included.**
+  To discard them instead, close it first with
+  `app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES)`. Modal UI the script opens itself is
+  not covered. A bare `alert`, `confirm` or `prompt` written in the script's own text fails
+  the call instead of opening a dialog, and says what to do instead: `__log(msg)` for `alert`;
+  for `confirm` or `prompt`, pass the answer in `args`. Everything else modal still opens and
+  blocks After Effects and every later call until someone dismisses it: `Window.alert`,
+  `$.global.alert` and `this.alert`; a library loaded with `$.evalFile`, or a global helper,
+  that calls `alert`, `confirm` or `prompt`; ScriptUI dialogs; file or folder pickers; a menu
+  command that opens a dialog. (That list was not probed live, by design: each one would block
+  After Effects.)
 - **The tool owns the undo group and dialog suppression**, so a script that names
   `app.beginUndoGroup`, `app.endUndoGroup`, `app.beginSuppressDialogs` or
   `app.endSuppressDialogs` — even in a comment or a string — is refused before it is sent. If
   ending the suppression or closing the undo group fails after the script ran, the envelope
   reports it in `error.message` (after the script's own error, if it had one) and keeps the
   script's value and logs. If it fails after the call itself failed outside the script (the
-  wrapper or a begin call threw), the note follows that error's message instead.
+  wrapper or a begin call threw), the note follows that error's message instead. (These notes
+  are unit-tested only: the live run found no way to make After Effects fail an end call.)
 - **A timeout stops the wait, not the script:** After Effects keeps running it, and later
   After Effects calls wait behind it.
 
@@ -569,8 +579,8 @@ docs/                build plan, protocol, live-run notes (spikes/), Audition AP
   Tool is not needed; a single signed installer; TLS for shared mode; Audition multitrack
   writes; Media Encoder queue control. The Codex CLI / Gemini CLI lanes are built and
   unit-tested but not yet verified against the live CLIs — that run is
-  `docs/spikes/15-multi-client-lanes.md`. `ae_run_script` (AE-01) is unit-tested but not yet
-  verified live on After Effects; its live run goes in `docs/spikes/06-aftereffects-tools-live.md`.
+  `docs/spikes/15-multi-client-lanes.md`. `ae_run_script` (AE-01) is verified live on After
+  Effects 26.5 on Windows (`docs/spikes/06-aftereffects-tools-live.md`), not yet on macOS.
 - Roadmap: `docs/BUILD_PLAN.md` (Phase 6).
 
 ## License

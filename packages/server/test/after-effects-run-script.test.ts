@@ -204,19 +204,25 @@ describe("ae_run_script: gate, refusals and audit (nothing dispatched → plain 
     await s.close();
   });
 
-  it("deep args: the gate still wins, the audit line is still written, and depth is refused at level 32 (T2, F1)", async () => {
-    // 100,000 levels overflow JSON.stringify on any thread (a worker's stack takes about 19,000, a main thread's 4,800).
-    const args = JSON.parse(`{"a":${"[".repeat(100_000)}${"]".repeat(100_000)}}`) as Record<string, unknown>;
-    expect(() => JSON.stringify(args)).toThrow(RangeError); // precondition: else the audit payload is not the fallback
+  /** The audit line's ` sha256=… len=… ` for a payload, as auditRawCall writes it. */
+  const signed = (payload: string) => ` sha256=${createHash("sha256").update(payload).digest("hex").slice(0, 12)} len=${payload.length} `;
+  const FALLBACK_PAYLOAD = (script: string) => JSON.stringify({ script, args: "[args could not be serialized: nested too deeply]" });
+
+  it("args that JSON.stringify throws on: the gate still wins, one audit line of the fallback, refused at level 32 (T2, F1)", async () => {
+    // A cycle makes JSON.stringify throw a TypeError on every engine. No wire delivers one, but the in-memory transport
+    // passes the arguments by reference and z.record(z.unknown()) checks only the top level, so the handler gets it.
+    const cycle: Record<string, unknown> = {};
+    cycle["self"] = cycle;
+    const args = { a: cycle };
+    expect(() => JSON.stringify(args)).toThrow(TypeError); // precondition: else the audit payload is not the fallback
     const script = "1";
-    const fallback = JSON.stringify({ script, args: "[args could not be serialized: nested too deeply]" });
+    const fallback = FALLBACK_PAYLOAD(script);
 
     const closed = await session(CLOSED);
     const r = await closed.run({ script, args });
     expect(textOf(r)).toBe(rawScriptsDisabledMessage("after_effects", []));
     expect(auditLines()).toEqual([expect.stringMatching(REFUSED_LINE)]);
-    expect(auditLines()[0]).toContain(` len=${fallback.length} `);
-    expect(auditLines()[0]).toContain(` sha256=${createHash("sha256").update(fallback).digest("hex").slice(0, 12)} `);
+    expect(auditLines()[0]).toContain(signed(fallback));
     expect(closed.calls).toEqual([]);
     await closed.close();
 
@@ -224,10 +230,38 @@ describe("ae_run_script: gate, refusals and audit (nothing dispatched → plain 
     const open = await session(OPEN);
     const r2 = await open.run({ script, args });
     expect(isError(r2)).toBe(true);
+    // The encoder's own refusal at level 32 (a cycle is nested without end), which also shows the cycle arrived.
+    expect(textOf(r2)).toBe(`args.a${".self".repeat(31)} is nested more than 32 levels deep — flatten args.`);
     expect(textOf(r2)).toBe((aeArgsLiteral(args) as { refusal: string }).refusal);
-    expect(textOf(r2).startsWith("args.a[0]")).toBe(true);
-    expect(textOf(r2)).toContain("nested more than 32 levels deep — flatten args.");
     expect(auditLines()).toEqual([expect.stringMatching(REFUSED_LINE)]);
+    expect(auditLines()[0]).toContain(signed(fallback));
+    expect(open.calls).toEqual([]);
+    await open.close();
+  });
+
+  it("args 100,000 levels deep: one audit line, refused at level 32, nothing sent, on every engine (T2, F1)", async () => {
+    // Before V8 13.8 (Node 24 and older) JSON.stringify overflows its stack on this, so the audit payload is the
+    // fallback; from 13.8 on its fast path is iterative and serializes it, so the payload is the real JSON.
+    const N = 100_000;
+    const args = JSON.parse(`{"a":${"[".repeat(N)}${"]".repeat(N)}}`) as Record<string, unknown>;
+    const script = "1";
+    const payloads = [signed(`{"script":"1","args":{"a":${"[".repeat(N)}${"]".repeat(N)}}}`), signed(FALLBACK_PAYLOAD(script))];
+
+    const closed = await session(CLOSED);
+    const r = await closed.run({ script, args });
+    expect(textOf(r)).toBe(rawScriptsDisabledMessage("after_effects", []));
+    expect(auditLines()).toEqual([expect.stringMatching(REFUSED_LINE)]);
+    expect(payloads.filter((p) => auditLines()[0]!.includes(p))).toHaveLength(1);
+    expect(closed.calls).toEqual([]);
+    await closed.close();
+
+    audit.mockClear();
+    const open = await session(OPEN);
+    const r2 = await open.run({ script, args });
+    expect(isError(r2)).toBe(true);
+    expect(textOf(r2)).toBe(`args.a${"[0]".repeat(31)} is nested more than 32 levels deep — flatten args.`);
+    expect(auditLines()).toEqual([expect.stringMatching(REFUSED_LINE)]);
+    expect(payloads.filter((p) => auditLines()[0]!.includes(p))).toHaveLength(1);
     expect(open.calls).toEqual([]);
     await open.close();
   });
@@ -393,26 +427,34 @@ describe("ae_run_script: metadata", () => {
     // Claude Code cuts a tool description at 2,048 characters; measured as tools/list delivers it.
     expect(d.length).toBeLessThanOrEqual(2048);
 
-    // In this order: what it does and the one undo step, the error-shape rule, the modal-UI warning, the gate,
-    // then the envelope.
+    // The auto-save hazard the live run found (AE-01 probe 10): safety text, so it sits in the modal-UI part and
+    // ends well before the cut, whatever follows it.
+    const autoSave =
+      "With it on, opening another project saves the open one's unsaved changes over its file without asking (see suppressDialogs).";
+
+    // In this order: what it does and the one undo step, the error-shape rule, the modal-UI warning with the
+    // auto-save hazard, the gate, then the envelope.
     const order = [
       "Run a raw ExtendScript (ES3) in After Effects as ONE undo step",
       "Error shape:",
       "Modal UI:",
+      autoSave,
       "Refused unless the operator sets BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS",
       "Returns the envelope { ok, error?: { message, line, bodyLine }, durationMs, value, logs, logsDropped? }",
     ];
     for (const phrase of order) expect(d, phrase).toContain(phrase);
     const at = order.map((p) => d.indexOf(p));
     expect([...at].sort((a, b) => a - b)).toEqual(at);
+    expect(d.indexOf(autoSave) + autoSave.length).toBeLessThanOrEqual(2048);
 
-    // D15: it promises no more than is verified.
+    // D15: it promises no more than is verified. The dialog scope is what suppression hid live on After Effects
+    // 26.5 (probes 8 and 9), named as examples, never as every dialog.
     for (const phrase of [
       "opening, creating or closing a project, or importing an .aep", // ES-5: outside the one Ctrl-Z
       "plain text means nothing was sent",
       "a JSON envelope means the script was sent and may have partly run",
-      "suppressDialogs (default true) hides only After Effects' script warning and error dialogs", // ES-1
-      "the missing-font warning shown when a project is opened may still appear", // ES-1
+      "suppressDialogs (default true) hides After Effects' own warning dialogs, such as an export warning or the " +
+        "missing-font dialog when the script opens a project.", // ES-1, widened by the live run
       "A bare alert, confirm or prompt in your script's own text fails the call", // ES-4, as narrowed (R9)
       "BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS=1",
       "cc_get_capabilities shows the gate",
@@ -421,6 +463,8 @@ describe("ae_run_script: metadata", () => {
       expect(d, phrase).toContain(phrase);
     }
     expect(d).not.toContain("alert, confirm and prompt fail the call"); // the unqualified claim R9 withdrew
+    expect(d).not.toContain("may still appear"); // the open-time missing-font dialog: hidden live (probe 9)
+    expect(d).not.toMatch(/every dialog|all dialogs|any dialog/i);
 
     // The detail lives in the parameters' own texts.
     for (const phrase of [
@@ -428,6 +472,9 @@ describe("ae_run_script: metadata", () => {
       "var only — no let/const, arrow functions, template literals or JSON",
       "wrap it in parentheses", // ES-7
       "opening, creating or closing a project, or importing an .aep, inside the script resets or breaks", // ES-5
+      // Ctrl-Z reaches the project only; what reached the disk stays.
+      "It covers project edits only: what the script saves or writes (app.project.save, File writes, renders, " +
+        "preferences) stays changed.",
       "is refused before it is sent", // ES-3
       // R9: the shims stop only a bare call written in the script's own text.
       "Window.alert, $.global.alert and this.alert",
@@ -440,8 +487,30 @@ describe("ae_run_script: metadata", () => {
     ]) {
       expect(describe("script"), phrase).toContain(phrase);
     }
-    expect(describe("suppressDialogs")).toContain("the missing-font warning shown when a project is opened may still appear");
-    expect(describe("suppressDialogs")).toContain("not modal UI the script opens itself");
+    // The live run's dialog scope (probes 8, 9) and the auto-save hazard in full, with the way to discard (probe 10).
+    for (const phrase of [
+      "Verified on an export warning (from a Motion Graphics template export) and on the missing-font dialog when " +
+        "the script opens a project; it is not promised for every dialog.",
+      "not modal UI the script opens itself",
+      "a script that opens another project while the open one has unsaved changes gets no save prompt. After " +
+        "Effects saves the open project over its file, those changes included, then opens the other.",
+      "To discard the changes instead, call app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES) before opening the " +
+        "other project.",
+    ]) {
+      expect(describe("suppressDialogs"), phrase).toContain(phrase);
+    }
+    expect(describe("suppressDialogs")).not.toContain("may still appear");
+    // The number limits After Effects showed (probe 11); ae-host, on V8, is exact and cannot show them.
+    for (const phrase of [
+      "After Effects reads a number below about 2.2e-308 as 0 (5e-324 arrives as 0)",
+      "numbers in the returned value keep 15 significant digits (0.1 + 0.2 arrives exact but comes back as 0.3)",
+      // Only a string passed in keeps every digit: live, String(n) and toPrecision(17) in the script kept 15.
+      "Pass a value as a string when every digit matters: strings round-trip exactly.",
+      "A number the script returns, even via String(n), keeps 15 significant digits.",
+    ]) {
+      expect(describe("args"), phrase).toContain(phrase);
+    }
+    expect(describe("args")).not.toContain("both ways"); // a returned number cannot keep every digit as a string
     expect(describe("undoGroupName")).toContain("Edit > Undo <name>");
     expect(describe("timeoutMs")).toContain("After Effects keeps running it, and later After Effects calls wait behind it.");
     for (const name of ["script", "args", "undoGroupName", "suppressDialogs", "timeoutMs"]) {
@@ -510,7 +579,8 @@ describe("ae_run_script on ae-host (node:vm standing in for After Effects)", () 
   });
 
   it("T1 (1): a throw in the wrapper outside its own try still ends suppression and closes the group", async () => {
-    // A throwing getter in the result stands in for anything that throws in the wrapper outside its try.
+    // A throwing getter in the result stands in for anything that throws in the wrapper outside its try. The trigger
+    // works on ae-host (V8) only: ExtendScript has no getter literals (a SyntaxError in the AE-01 live run).
     const { host, ev, s } = await hosted();
     const r = await s.run({ script: '({ get a() { throw new Error("g"); } })' });
     expect(ev).toEqual(["begin:Brainferno script@0", "sup@0", "unsup:false@0", "end@0"]);
@@ -569,7 +639,9 @@ describe("ae_run_script on ae-host (node:vm standing in for After Effects)", () 
   });
 
   it("R10: an end call that fails after the call itself threw is added to that error, not lost", async () => {
-    const getter = '({ get a() { throw new Error("g"); } })'; // the wrapper throws outside its own try (T1 (1))
+    // The wrapper throws outside its own try (T1 (1)). ae-host only: ExtendScript has no getter literals, so R10 has
+    // no live trigger and stays unit-tested (AE-01 live run).
+    const getter = '({ get a() { throw new Error("g"); } })';
     /** The recorded end call (still counted, so the group closes), then a throw. */
     const failing = (host: AeHost, which: "endSuppressDialogs" | "endUndoGroup", ev: string[], msg: string) => {
       const inner = host.app[which];
@@ -808,7 +880,9 @@ describe("ae_run_script on ae-host (node:vm standing in for After Effects)", () 
     // Escapes, so this source stays free of a raw U+2028 (a line terminator in source) and of raw non-ASCII.
     const args = { n: 41, s: 'q"\\\u2028\u00e9', a: [1, -0, 1e21, 5e-324, 0.1 + 0.2, true, null], o: { default: 1, "": 2, constructor: 3 } };
     const back = envOf(await s.run({ script: "__args", args }));
-    // -0 comes back as 0: host.jsx's serializer writes String(-0). 0.1 + 0.2 keeps all 17 digits (R7).
+    // -0 comes back as 0: host.jsx's serializer writes String(-0). On ae-host (V8) 5e-324 and 0.1 + 0.2 come back
+    // exact, so this pins the literal (R7). After Effects itself reads 5e-324 as 0 and returns 0.1 + 0.2 as 0.3 (15
+    // significant digits; AE-01 live probe 11): the args text says so, and no After Effects round trip is claimed.
     expect(back).toMatchObject({ ok: true, value: { ...args, a: [1, 0, 1e21, 5e-324, 0.30000000000000004, true, null] } });
     expect(envOf(await s.run({ script: "__args.a[4] === 0.1 + 0.2", args })).value).toBe(true);
     expect(envOf(await s.run({ script: "__args.n + 1", args: { n: 41 } })).value).toBe(42);

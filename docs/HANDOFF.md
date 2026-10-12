@@ -15,7 +15,7 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
   publishes and creates the GitHub release by itself. See **Releasing** below.
 - Everything is verified live on **Windows 11** with the Adobe 2026 apps: Photoshop 21
   (+ `ps_batch_play`, unit-tested only since X-01 — see the next bullet),
-  After Effects 34 (+ `ae_run_script`, unit-tested only until its live run — see the AE-01
+  After Effects 34 (+ `ae_run_script`, live on After Effects 26.5 since AE-01 — see the AE-01
   bullet), Premiere Pro 29, Illustrator 7 (+ Adobe's 46 via `ai_beta_call`),
   Audition 12, Media Encoder 6, audio/ffmpeg 9, pipelines 4, jobs 4. (`tool-counts.test.ts`
   checks the "Expect N tools" line below and the README's per-app headers; it does not check
@@ -72,17 +72,27 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
   JSON of `{ script, args }`, built with the new `auditJson` in `raw-script.ts`.
   `cc_get_capabilities` has an `ae_run_script` row. No panel change: the CEP panel's `eval`
   command carries it.
-  - **Not yet verified live.** Unit-tested only, against the `node:vm` stand-in for After Effects
-    (`test/ae-host.ts`). The live run on After Effects 26.5 must settle: one Ctrl-Z and the Edit
-    menu's name for a two-layer script; `bodyLine` for a SyntaxError at this nesting; that
-    `__args`, `__log` and the shims reach the caller's script; that a failing end call is
-    reported both after a result and after a throw; which dialogs `suppressDialogs`
-    covers — the save-and-export path, and the missing-font warning when a project is opened
-    (if that survives suppression, whether the `Hide Missing Font Dialog` preference hides it,
-    and with which value); a project switch inside the undo group; how later calls queue behind
-    a timed-out script; and whether ExtendScript keeps `args` keys such as `reflect`, `toSource`
-    and `watch` as data. The checks are the AE-01 prompt's acceptance tests; results go in
+  - **Verified live on After Effects 26.5 (Windows 11, 2026-10-12)** with the gate set to
+    `after_effects`, against the AE-01 prompt's acceptance tests: one Ctrl-Z (and one Redo) for a
+    two-layer script, with "Undo <undoGroupName>" in the Edit menu, and no undo entry for a
+    read-only call; `line` = `bodyLine` for a runtime, native, syntax and thrown error; `__args`,
+    `__log` and the shims reach the script, the After Effects helpers do not; the managed-call
+    refusal; a project switch inside the group returns ok and resets the undo history; later calls
+    wait behind a timed-out script. Suppression hid an export warning and the missing-font dialog
+    when the script opened a project, and each blocked without it; the texts name those and
+    promise no more. Found, and now in the model-facing texts: with suppression on, opening another
+    project saves the open one's unsaved changes over its file without asking (close it with
+    `CloseOptions.DO_NOT_SAVE_CHANGES` first to discard them; that probe's call timed out behind
+    an open dialog, so its outcome was read from the files afterwards); After Effects reads a
+    number below about 2.2e-308 as 0 and returns numbers with 15 significant digits. Also found:
+    a script cannot read the Undo label (`app.findMenuCommandId` returns 0 for it). Details:
     `docs/spikes/06-aftereffects-tools-live.md`.
+  - **Still unit-tested only:** the end-call notes — a second `endUndoGroup` does not fail, and
+    ExtendScript has no getter literals to make the wrapper throw (R10); the refused audit line
+    with the gate off (the refusal text was seen live); `Window.alert` and global code that calls
+    `alert`, not probed live by design.
+  - **Not tested at all:** opening another project over a never-saved one under suppression (not
+    tried live; ae-host has no save prompt to model).
 - **macOS run on 2026-08-28** (macOS 26, Adobe 2026 apps, Node 26): panels, Illustrator via
   osascript, previews, ffmpeg all fine as written. Two real bugs fixed — the aerender path
   (`Folder.appPackage` is the `.app` itself on macOS) and Media Encoder (nested console bundle,
