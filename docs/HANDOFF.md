@@ -62,16 +62,21 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
   `packages/server/src/tools/after-effects.ts`). Around the wrapper it adds the undo group
   (`undoGroupName`), `args` as `__args` (an ES3 literal, at most 32 levels deep), dialog
   suppression (`suppressDialogs`, default on), `alert`/`confirm`/`prompt` shims that fail the
-  call instead of opening a dialog, and a plain-text refusal, before dispatch, of a script that
-  names `app.beginUndoGroup`, `app.endUndoGroup`, `app.beginSuppressDialogs` or
-  `app.endSuppressDialogs`. An end call that fails after the script ran is added to the
-  envelope's error, keeping the value and logs. The audit payload is the JSON of
-  `{ script, args }`, built with the new `auditJson` in `raw-script.ts`. `cc_get_capabilities`
-  has an `ae_run_script` row. No panel change: the CEP panel's `eval` command carries it.
+  call instead of opening a dialog (only for a bare call in the script's own text: global code
+  and `Window.alert`/`$.global.alert`/`this.alert` still reach After Effects' dialogs), and a
+  plain-text refusal, before dispatch, of a script that names `app.beginUndoGroup`,
+  `app.endUndoGroup`, `app.beginSuppressDialogs` or `app.endSuppressDialogs`. An end call that
+  fails after the script ran is added to the envelope's error, keeping the value and logs; one
+  that fails after the call itself threw is added to that thrown message. The description
+  keeps its safety text within the 2,048 characters Claude Code shows. The audit payload is the
+  JSON of `{ script, args }`, built with the new `auditJson` in `raw-script.ts`.
+  `cc_get_capabilities` has an `ae_run_script` row. No panel change: the CEP panel's `eval`
+  command carries it.
   - **Not yet verified live.** Unit-tested only, against the `node:vm` stand-in for After Effects
     (`test/ae-host.ts`). The live run on After Effects 26.5 must settle: one Ctrl-Z and the Edit
     menu's name for a two-layer script; `bodyLine` for a SyntaxError at this nesting; that
-    `__args`, `__log` and the shims reach the caller's script; which dialogs `suppressDialogs`
+    `__args`, `__log` and the shims reach the caller's script; that a failing end call is
+    reported both after a result and after a throw; which dialogs `suppressDialogs`
     covers — the save-and-export path, and the missing-font warning when a project is opened
     (if that survives suppression, whether the `Hide Missing Font Dialog` preference hides it,
     and with which value); a project switch inside the undo group; how later calls queue behind

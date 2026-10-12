@@ -65,9 +65,12 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   refusal says to rerun the installer and pick the app, or to set `BRAINFERNO_MCP_APPS` to the
   full list of apps, since it replaces the installer's choice rather than adding to it.
   `timeoutMs` is capped at 30 minutes.
-- `cc_eval_script`'s description points After Effects work to `ae_run_script` (AE-01) and says
+- `cc_eval_script`'s description points After Effects work to `ae_run_script` when After
+  Effects' tools are enabled (AE-01). Its `script` parameter now carries the ES3 rules and says
   how to return an object literal: wrap it in parentheses, since a bare `{ a: 1 }` on the last
-  line is a block and returns 1.
+  line is a block and returns 1. That keeps the description within the 2,048 characters Claude
+  Code shows of a tool description; a test now checks every tool's description and parameter
+  texts against that limit.
 - New audit line for every raw call, run or refused, on every raw-script tool (`ps_batch_play`
   had none): `AUDIT raw-script tool=… app=… sha256=<12 hex> len=… [count=…] via=stdio|http:<8 chars> outcome=run|refused`.
   It is written at every log level and carries no script text; the first 200 characters of a
@@ -75,7 +78,8 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   line; see Fixed). When the gate is open the server writes one
   `AUDIT raw scripts ENABLED for …` line at startup; the "raw-script tool is disabled" info
   lines are gone.
-- After Effects tool errors (AE-16) are one paragraph naming the tool and its arguments, where
+- Errors from the typed After Effects tools (AE-16; not `ae_run_script`, whose envelope passes
+  the host's message on unchanged) are one paragraph naming the tool and its arguments, where
   it failed (`at body line N (script line M)` with the failing line and its neighbours,
   `in helper __x`, or `outside this tool's own code` for an error the panel hit while
   converting the result) and what to do next; the old `(line N)` was a line of the generated
@@ -163,14 +167,23 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
     `app.endSuppressDialogs` — even in a comment or a string — is refused before it is sent.
     If one of the tool's own end calls fails after the script ran, the envelope reports it in
     `error.message` (after the script's own error, if it had one) and keeps the script's value
-    and logs.
-  - `alert`, `confirm` and `prompt` fail the call (`line` and `bodyLine` `null`) instead of
-    opening a dialog that would block After Effects.
+    and logs; if it fails after the call itself threw outside the script (the wrapper or a
+    begin call), the note follows that error's message.
+  - A bare `alert`, `confirm` or `prompt` written in the script's own text fails the call
+    (`line` and `bodyLine` `null`) instead of opening a dialog that would block After Effects,
+    and says what to do instead: `__log(msg)` for `alert`; pass the answer in `args` for
+    `confirm` and `prompt`. Nothing else is stopped: `Window.alert`, `$.global.alert`,
+    `this.alert`, a `$.evalFile`'d library or a global helper that calls them, ScriptUI dialogs
+    and file or folder pickers still open a modal dialog.
+  - The description fits the 2,048 characters Claude Code shows, with the safety text first
+    (what the tool does and its one undo step, the error-shape rule, the modal-UI warning, the
+    gate, the envelope); the detail is in the parameters' texts.
   - Plain-text errors mean nothing was sent: raw scripts disabled, a remote session, args
     refused, a managed call named, After Effects not connected. A JSON envelope means the
     script was sent and may have partly run; `bodyLine` counts lines of the caller's script,
-    and the host's message is passed on without AE-16's tool-and-arguments context, so the
-    server echoes neither the script nor `args`.
+    and the host's message is passed on unchanged: without AE-16's tool-and-arguments context,
+    so the server echoes neither the script nor `args`, and without its key and token
+    redaction.
   - `timeoutMs` (at most 30 minutes) overrides the slow timeout; a timeout stops the wait, not
     the script.
   - The audit payload is the JSON of `{ script, args }`; a call whose `args` are nested too
@@ -180,8 +193,10 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   - Shared core, for architect review: `server.ts` passes the raw-script gate to
     `registerAfterEffectsTools`, whose options now require `rawScriptApps`, `remote` and
     `allowRemoteRawScripts`; `raw-script.ts` gains `auditJson`, an audit payload builder that
-    never throws (otherwise comment edits); `diagnostics.ts` gains the capabilities row and
-    the `cc_eval_script` description sentences (see Changed); `config.ts` changes comments only.
+    always returns a string and never throws, taking its fallback already serialized
+    (otherwise comment edits); `diagnostics.ts` gains the capabilities row and the
+    `cc_eval_script` description and `script` parameter changes (see Changed); `config.ts`
+    changes comments only.
 
 **Fixed**
 
@@ -255,13 +270,16 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   AE-16 shifted (AE-02 to AE-10, AE-14).
 - AE-01: `CONTRIBUTING.md` (architect review: `ae_run_script` among the raw tools, a fourth
   plain-text cause, `auditJson` in the audit rule, how `__args` enters and what wraps the
-  wrapper), the README (the After Effects section, tool table, raw scripts, what a plain-text
-  error means, security and the audit line), `.env.example`, `docs/HANDOFF.md` (an AE-01
-  bullet: not yet verified live), `00_PREAMBLE.md`, spike 14 and the comments in `config.ts`
-  and `tool-counts.test.ts` updated to match. The AE-01 prompt is in review, with what the
-  build changed (the refused begin/end calls, the dialog scope it promises, the project-switch
-  carve-out, the shims, the gate fields) and acceptance 5 split into the save-and-export check
-  and the open-time missing-font check; its live verification is pending.
+  wrapper, and the 2,048-character limit a client shows of a tool description), the README
+  (the After Effects section, tool table, raw scripts, what a plain-text error means, security
+  and the audit line; its status line now says every *typed* tool is verified live and
+  `ae_run_script` is unit-tested only), `.env.example`, `docs/HANDOFF.md` (an AE-01 bullet: not
+  yet verified live), `00_PREAMBLE.md`, spike 14 and the comments in `config.ts` and
+  `tool-counts.test.ts` updated to match. The AE-01 prompt is in review, with what the build
+  changed (the refused begin/end calls, the dialog scope it promises, the project-switch
+  carve-out, the shims and what they do not stop, the gate fields) and acceptance 5 split into
+  the save-and-export check and the open-time missing-font check; its live verification is
+  pending.
 
 ## v0.3.3 — 2026-10-01
 

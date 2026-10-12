@@ -16,6 +16,10 @@ acting as architect, never through a per-app branch. The full design lives in
 - `title` is `"<App name>: <what it does>"`. `description` says what the tool
   does, what it acts on (the operator's open project — there is no separate
   workspace), and anything the model must know to call it safely.
+- Claude Code shows only the first 2,048 characters of a tool description, so keep each
+  description, and each parameter's `.describe()`, within that (`server.test.ts` checks every
+  tool as `tools/list` delivers it). Put what the model must know to call the tool safely
+  first; move detail into the parameters' texts.
 
 ## Engines — the rule that breaks builds
 
@@ -154,18 +158,22 @@ them; it re-implements none of them.
 - **Audit every call.** Exactly one `auditRawCall` per call, run or refused. It writes
   through `log.audit`, which no log level silences, and records a hash and the length of the
   payload — never the payload itself. A payload that is the JSON of structured input (such
-  as `ae_run_script`'s `{ script, args }`) is built with `auditJson`, which never throws: a
-  bare `JSON.stringify` overflows the stack on input nested about 5000 levels deep, which
-  zod and `JSON.parse` accept, and the call would then go unaudited. Build it before the gate
-  check, since a refusal is audited too. (`ps_batch_play` still uses a bare `JSON.stringify`;
-  moving it is an X-01 follow-up.)
+  as `ae_run_script`'s `{ script, args }`) is built with `auditJson(value, fallback)`, which
+  always returns a string and never throws: a bare `JSON.stringify` overflows the stack on
+  input nested a few thousand levels deep, which zod and `JSON.parse` accept, and gives no
+  string at all for `undefined`, a function or a symbol, and the call would then go
+  unaudited. Pass the fallback already serialized, built from data that cannot fail. Build
+  the payload before the gate check, since a refusal is audited too. (`ps_batch_play` still
+  uses a bare `JSON.stringify`; moving it is an X-01 follow-up.)
 - **ExtendScript enters only through `rawScriptWrapper`.** The caller's script becomes a
   pure-ASCII string literal (built on `jsStringLiteral`) that the ES3 wrapper runs with a
   direct `eval` inside its own inner function; the wrapper collects `__log` output and refuses
   a result that is not plain data. `ae_run_script`'s args enter only as an ES3 literal built
   by `aeArgsLiteral` (on `asciiLiteral`) in the outer IIFE, never inside `__src`; the undo
   group, the dialog suppression and the `alert`/`confirm`/`prompt` shims wrap the wrapper from
-  outside, and a failing end call is added to the envelope's error rather than replacing it.
+  outside (the shims reach only a bare call in the caller's own text, not global code), and a
+  failing end call is added to the envelope's error rather than replacing it — or, when the
+  call itself threw, to the thrown message, so it is never lost.
 - **Illustrator goes through the os-script lane** — the same `OsScriptBridge` instance the
   `ai_*` tools use, so its queue serializes them — never through the socket hub, where
   Illustrator has no panel.

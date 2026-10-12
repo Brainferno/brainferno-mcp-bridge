@@ -30,6 +30,7 @@ import {
   RAW_SCRIPTS_DISABLED_MESSAGE,
   REMOTE_RAW_SCRIPTS_REFUSED_MESSAGE,
   lineCount,
+  rawScriptWrapper,
   rawScriptsDisabledMessage,
 } from "../src/tools/raw-script.js";
 import { aeHost, panelReply, type AeHost } from "./ae-host.js";
@@ -44,10 +45,21 @@ type Gate = Pick<AfterEffectsToolOptions, "rawScriptApps" | "remote" | "allowRem
 const OPEN: Gate = { rawScriptApps: ["after_effects"], remote: false, allowRemoteRawScripts: false };
 const CLOSED: Gate = { rawScriptApps: [], remote: false, allowRemoteRawScripts: false };
 const SECRET = "TOP-SECRET-AE01";
-const MODAL = (what: string) =>
-  `${what}() would open a modal dialog in After Effects and block scripting until someone dismisses it — use __log(msg) instead.`;
+/** Each shim's text, pinned whole: its own next step (R12). */
+const MODAL = {
+  alert: "alert() would open a modal dialog in After Effects and block scripting until someone dismisses it — use __log(msg) instead.",
+  confirm:
+    "confirm() would open a modal dialog in After Effects and block scripting until someone dismisses it — pass the answer in args and read it from __args.",
+  prompt:
+    "prompt() would open a modal dialog in After Effects and block scripting until someone dismisses it — pass the answer in args and read it from __args.",
+} as const;
+/** The note an end call's failure adds after the script returned (it ran). */
 const CLOSED_NOTE = (call: string, msg: string) => `${call} failed: ${msg} — the script ran; check After Effects before re-running.`;
-/** cc_eval_script's own sentence (diagnostics.ts), which ae_run_script's description repeats verbatim. */
+/** The note an end call's failure adds to an error the call itself threw (the script may not have run). */
+const THROWN_NOTE = (call: string, msg: string) => `${call} failed: ${msg} — check After Effects before re-running.`;
+/** What the server appends to a host error that escaped the built script (dispatchedFailure). */
+const SENT = " — the script was sent; it may have partly run";
+/** cc_eval_script's own sentence (diagnostics.ts), which ae_run_script's script describe repeats verbatim. */
 const BODYLINE_SENTENCE =
   "bodyLine is null when the error was raised outside your script's own text (for example in a $.evalFile'd " +
   "library, or in a helper an earlier call left as a global) or the host's line numbering cannot be calibrated.";
@@ -193,7 +205,9 @@ describe("ae_run_script: gate, refusals and audit (nothing dispatched → plain 
   });
 
   it("deep args: the gate still wins, the audit line is still written, and depth is refused at level 32 (T2, F1)", async () => {
-    const args = JSON.parse(`{"a":${"[".repeat(10_000)}${"]".repeat(10_000)}}`) as Record<string, unknown>;
+    // 100,000 levels overflow JSON.stringify on any thread (a worker's stack takes about 19,000, a main thread's 4,800).
+    const args = JSON.parse(`{"a":${"[".repeat(100_000)}${"]".repeat(100_000)}}`) as Record<string, unknown>;
+    expect(() => JSON.stringify(args)).toThrow(RangeError); // precondition: else the audit payload is not the fallback
     const script = "1";
     const fallback = JSON.stringify({ script, args: "[args could not be serialized: nested too deeply]" });
 
@@ -251,6 +265,17 @@ describe("ae_run_script: gate, refusals and audit (nothing dispatched → plain 
       expect(isError(await s.run({ script })), script).toBe(false);
     }
     expect(s.calls).toHaveLength(4);
+
+    // The match is case-sensitive, as After Effects' own names are (K2b): another case names no managed call, so
+    // it is sent, not refused.
+    audit.mockClear();
+    for (const script of ['app.BeginUndoGroup("x"); 1', "// BEGINUNDOGROUP\n1", "app.EndSuppressDialogs(false); 1"]) {
+      const r = await s.run({ script });
+      expect(isError(r), script).toBe(false);
+      expect(textOf(r), script).not.toBe(RUN_SCRIPT_MANAGED_REFUSAL);
+    }
+    expect(s.calls).toHaveLength(7);
+    expect(auditLines()).toEqual([expect.stringMatching(/ outcome=run$/), expect.stringMatching(/ outcome=run$/), expect.stringMatching(/ outcome=run$/)]);
     await s.close();
   });
 
@@ -348,16 +373,70 @@ describe("ae_run_script: metadata", () => {
     expect(tool!.inputSchema["required"]).toEqual(["script"]);
 
     expect(tool!.description).toBe(RUN_SCRIPT_DESCRIPTION);
+    await s.close();
+  });
+
+  it("puts the safety text first, inside the 2,048 characters a client shows, and the detail in the parameters (R1)", async () => {
+    const s = await session(CLOSED);
+    const tool = await s.tool();
+    const d = tool!.description!;
+    const describe = (name: string) => (tool!.inputSchema["properties"] as Record<string, { description: string }>)[name]!.description;
+    // Claude Code cuts a tool description at 2,048 characters; measured as tools/list delivers it.
+    expect(d.length).toBeLessThanOrEqual(2048);
+
+    // In this order: what it does and the one undo step, the error-shape rule, the modal-UI warning, the gate,
+    // then the envelope.
+    const order = [
+      "Run a raw ExtendScript (ES3) in After Effects as ONE undo step",
+      "Error shape:",
+      "Modal UI:",
+      "Refused unless the operator sets BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS",
+      "Returns the envelope { ok, error?: { message, line, bodyLine }, durationMs, value, logs, logsDropped? }",
+    ];
+    for (const phrase of order) expect(d, phrase).toContain(phrase);
+    const at = order.map((p) => d.indexOf(p));
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+
+    // D15: it promises no more than is verified.
+    for (const phrase of [
+      "opening, creating or closing a project, or importing an .aep", // ES-5: outside the one Ctrl-Z
+      "plain text means nothing was sent",
+      "a JSON envelope means the script was sent and may have partly run",
+      "suppressDialogs (default true) hides only After Effects' script warning and error dialogs", // ES-1
+      "the missing-font warning shown when a project is opened may still appear", // ES-1
+      "A bare alert, confirm or prompt in your script's own text fails the call", // ES-4, as narrowed (R9)
+      "BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS=1",
+      "cc_get_capabilities shows the gate",
+      "audit line",
+    ]) {
+      expect(d, phrase).toContain(phrase);
+    }
+    expect(d).not.toContain("alert, confirm and prompt fail the call"); // the unqualified claim R9 withdrew
+
+    // The detail lives in the parameters' own texts.
     for (const phrase of [
       BODYLINE_SENTENCE,
-      "Error shape:",
-      "the missing-font warning shown when a project is opened may still appear", // ES-1
-      "alert, confirm and prompt fail the call", // ES-4
-      "Opening, creating or closing a project, or importing an .aep", // ES-5
+      "var only — no let/const, arrow functions, template literals or JSON",
       "wrap it in parentheses", // ES-7
+      "opening, creating or closing a project, or importing an .aep, inside the script resets or breaks", // ES-5
       "is refused before it is sent", // ES-3
+      // R9: the shims stop only a bare call written in the script's own text.
+      "Window.alert, $.global.alert and this.alert",
+      "a library loaded with $.evalFile, or a global helper, that calls alert, confirm or prompt",
+      "ScriptUI dialogs",
+      "file or folder pickers",
+      // R12: each shim's own next step.
+      "Use __log(msg) instead of alert",
+      "for confirm or prompt, pass the answer in args and read it from __args",
     ]) {
-      expect(RUN_SCRIPT_DESCRIPTION, phrase).toContain(phrase);
+      expect(describe("script"), phrase).toContain(phrase);
+    }
+    expect(describe("suppressDialogs")).toContain("the missing-font warning shown when a project is opened may still appear");
+    expect(describe("suppressDialogs")).toContain("not modal UI the script opens itself");
+    expect(describe("undoGroupName")).toContain("Edit > Undo <name>");
+    expect(describe("timeoutMs")).toContain("After Effects keeps running it, and later After Effects calls wait behind it.");
+    for (const name of ["script", "args", "undoGroupName", "suppressDialogs", "timeoutMs"]) {
+      expect(describe(name).length, name).toBeLessThanOrEqual(2048);
     }
     await s.close();
   });
@@ -464,6 +543,114 @@ describe("ae_run_script on ae-host (node:vm standing in for After Effects)", () 
     await s.close();
   });
 
+  it("K2a: a failing beginUndoGroup runs nothing else: no suppression, no script, no endUndoGroup", async () => {
+    // beginUndoGroup sits before __undo's try: inside it, the end call would run and close a group never opened.
+    const { host, ev, s } = await hosted();
+    host.app.beginUndoGroup = () => {
+      ev.push("begin!");
+      throw new host.VmError("Undo failed");
+    };
+    const r = await s.run({ script: 'var c = app.project.itemByID(12);\nc.layers.addSolid([1,0,0], "A");\n1' });
+    expect(ev).toEqual(["begin!"]);
+    expect(host.mutations).toEqual([]);
+    expect(host.undo).toEqual({ begin: 0, end: 0 });
+    expect(isError(r)).toBe(true);
+    expect(envOf(r)).toMatchObject({ ok: false, value: null, logs: [], error: { message: `Undo failed${SENT}`, line: null, bodyLine: null } });
+    await s.close();
+  });
+
+  it("R10: an end call that fails after the call itself threw is added to that error, not lost", async () => {
+    const getter = '({ get a() { throw new Error("g"); } })'; // the wrapper throws outside its own try (T1 (1))
+    /** The recorded end call (still counted, so the group closes), then a throw. */
+    const failing = (host: AeHost, which: "endSuppressDialogs" | "endUndoGroup", ev: string[], msg: string) => {
+      const inner = host.app[which];
+      host.app[which] = (...a: unknown[]) => {
+        inner.apply(host.app, a);
+        ev.push(`${which} threw`);
+        throw new host.VmError(msg);
+      };
+    };
+
+    // The suppress block: the wrapper threw, then ending the suppression failed.
+    const a = await hosted();
+    failing(a.host, "endSuppressDialogs", a.ev, "Dialog state lost");
+    const ra = envOf(await a.s.run({ script: getter }));
+    expect(ra).toMatchObject({ ok: false, value: null, logs: [] });
+    expect(ra.error).toEqual({ message: `g ${THROWN_NOTE("app.endSuppressDialogs(false)", "Dialog state lost")}${SENT}`, line: null, bodyLine: null });
+    expect(a.ev).toEqual(["begin:Brainferno script@0", "sup@0", "unsup:false@0", "endSuppressDialogs threw", "end@0"]);
+    expect(a.host.undo).toEqual({ begin: 1, end: 1 });
+    await a.s.close();
+
+    // __undo: beginSuppressDialogs threw (the script never ran), then closing the group failed.
+    const b = await hosted();
+    b.host.app.beginSuppressDialogs = () => {
+      throw new b.host.VmError("Suppress failed");
+    };
+    failing(b.host, "endUndoGroup", b.ev, "Undo group mismatch");
+    const rb = envOf(await b.s.run({ script: "1" }));
+    expect(rb.error).toEqual({ message: `Suppress failed ${THROWN_NOTE("app.endUndoGroup()", "Undo group mismatch")}${SENT}`, line: null, bodyLine: null });
+    expect(b.host.undo).toEqual({ begin: 1, end: 1 });
+    await b.s.close();
+
+    // Without suppression: the wrapper threw, then closing the group failed.
+    const c = await hosted();
+    failing(c.host, "endUndoGroup", c.ev, "Undo group mismatch");
+    const rc = envOf(await c.s.run({ script: getter, suppressDialogs: false }));
+    expect(rc.error).toEqual({ message: `g ${THROWN_NOTE("app.endUndoGroup()", "Undo group mismatch")}${SENT}`, line: null, bodyLine: null });
+    await c.s.close();
+
+    // Both end calls failed after the throw: both notes, in the order they ran.
+    const d = await hosted();
+    failing(d.host, "endSuppressDialogs", d.ev, "Dialog state lost");
+    failing(d.host, "endUndoGroup", d.ev, "Undo group mismatch");
+    const rd = envOf(await d.s.run({ script: getter }));
+    expect(rd.error.message).toBe(
+      `g ${THROWN_NOTE("app.endSuppressDialogs(false)", "Dialog state lost")} ${THROWN_NOTE("app.endUndoGroup()", "Undo group mismatch")}${SENT}`,
+    );
+    expect(d.host.undo).toEqual({ begin: 1, end: 1 });
+    await d.s.close();
+  });
+
+  it("R10: a rethrown error keeps its own line when no end call failed, and has none when a note was added", () => {
+    // bodyLine stays null either way (dispatchedFailure gives a host error none); this pins what the panel sees.
+    const lineOf = (src: string, text: string) => src.split("\n").findIndex((l) => l.includes(text)) + 1;
+    const plain = aeHost();
+    plain.app.beginSuppressDialogs = () => {
+      throw new plain.VmError("Suppress failed");
+    };
+    const src = runRawScript("1", { args: "{}", undoGroupName: "x", suppressDialogs: true });
+    expect(plain.eval(src)).toEqual({ ok: false, error: { message: "Suppress failed", line: lineOf(src, "app.beginSuppressDialogs();") } });
+
+    const noted = aeHost();
+    noted.app.beginSuppressDialogs = () => {
+      throw new noted.VmError("Suppress failed");
+    };
+    noted.app.endUndoGroup = () => {
+      throw new noted.VmError("Undo group mismatch");
+    };
+    expect(noted.eval(src)).toEqual({
+      ok: false,
+      error: { message: `Suppress failed ${THROWN_NOTE("app.endUndoGroup()", "Undo group mismatch")}`, line: null },
+    });
+  });
+
+  it("R6: an end call that fails after an ok result keeps the value, the 200 kept logs and logsDropped", async () => {
+    for (const which of ["endSuppressDialogs", "endUndoGroup"] as const) {
+      const { host, s } = await hosted();
+      host.app[which] = () => {
+        throw new host.VmError("closing failed");
+      };
+      const env = envOf(await s.run({ script: "for (var i = 0; i < 250; i++) { __log(i); }\n5" }));
+      const call = which === "endUndoGroup" ? "app.endUndoGroup()" : "app.endSuppressDialogs(false)";
+      expect(env.error, which).toEqual({ message: CLOSED_NOTE(call, "closing failed"), line: null, bodyLine: null });
+      expect(env.value, which).toBe(5);
+      expect(env.logs, which).toHaveLength(200);
+      expect(env.logs[199], which).toBe("199");
+      expect(env.logsDropped, which).toBe(50);
+      await s.close();
+    }
+  });
+
   it("ES-6: a failing endUndoGroup is added to the envelope instead of replacing it", async () => {
     const { host, ev, s } = await hosted();
     host.app.endUndoGroup = () => {
@@ -510,19 +697,58 @@ describe("ae_run_script on ae-host (node:vm standing in for After Effects)", () 
     await s.close();
   });
 
-  it("ES-4: alert, confirm and prompt fail the call instead of opening a dialog, with no line", async () => {
+  it("ES-4: a bare alert, confirm or prompt fails the call instead of opening a dialog, with no line and its own next step", async () => {
     const { s } = await hosted();
     const alerted = envOf(await s.run({ script: '__log("before");\nalert("done");\n1' }));
-    expect(alerted).toMatchObject({ ok: false, error: { message: MODAL("alert"), line: null, bodyLine: null }, logs: ["before"] });
+    expect(alerted).toMatchObject({ ok: false, error: { message: MODAL.alert, line: null, bodyLine: null }, logs: ["before"] });
     const confirmed = envOf(await s.run({ script: 'confirm("sure?")' }));
-    expect(confirmed.error).toEqual({ message: MODAL("confirm"), line: null, bodyLine: null });
+    expect(confirmed.error).toEqual({ message: MODAL.confirm, line: null, bodyLine: null });
     // On the script's last line of six: a shim's own line must never be read as the caller's.
     const prompted = envOf(await s.run({ script: 'var a = 1;\nvar b = 2;\nvar c = 3;\nvar d = 4;\nvar e = 5;\nprompt("name?")' }));
-    expect(prompted.error).toEqual({ message: MODAL("prompt"), line: null, bodyLine: null });
+    expect(prompted.error).toEqual({ message: MODAL.prompt, line: null, bodyLine: null });
+    // A function the script itself declares reaches the shims too: its scope chain runs through them.
+    const own = envOf(await s.run({ script: 'function ask() { return confirm("sure?"); }\nask()' }));
+    expect(own.error).toEqual({ message: MODAL.confirm, line: null, bodyLine: null });
 
     // A caller's own catch swallows the shim's throw, and the call goes on with no dialog.
     const caught = envOf(await s.run({ script: 'try { alert("x"); } catch (e) { __log("caught: " + e.message.substring(0, 7)); }\n2' }));
     expect(caught).toMatchObject({ ok: true, value: 2, logs: ["caught: alert()"] });
+    await s.close();
+  });
+
+  it("R9: the shims stop only a bare call in the script's own text; global code and qualified calls reach the real dialog", async () => {
+    // What the script describe warns about, pinned: ae-host gets a global alert, confirm and prompt (standing in for
+    // After Effects' own, which would open a modal), $.global, Window, and a helper an earlier call left as a global
+    // (the case of a $.evalFile'd library too: both run in global scope).
+    const { host, s } = await hosted();
+    vm.runInContext(
+      [
+        "var __opened = [];",
+        "function alert(m) { __opened.push('alert:' + m); }",
+        "function confirm(m) { __opened.push('confirm:' + m); return true; }",
+        "function prompt(m) { __opened.push('prompt:' + m); return 'typed'; }",
+        "var $ = { global: this };",
+        "var Window = { alert: function (m) { __opened.push('Window.alert:' + m); } };",
+        "function helperThatAsks() { alert('from helper'); return confirm('helper sure?'); }",
+      ].join("\n"),
+      host.ctx,
+    );
+    const opened = () => vm.runInContext("__opened.join('|')", host.ctx) as string;
+    for (const [script, dialog] of [
+      ["helperThatAsks()", "alert:from helper|confirm:helper sure?"],
+      ['Window.alert("w"); 1', "Window.alert:w"],
+      ['$.global.alert("g"); 1', "alert:g"],
+      ['this.prompt("t")', "prompt:t"],
+    ] as const) {
+      vm.runInContext("__opened.length = 0", host.ctx);
+      const env = envOf(await s.run({ script }));
+      expect(env.ok, script).toBe(true);
+      expect(opened(), script).toBe(dialog); // After Effects would have opened a modal here
+    }
+    // A bare call in the script's own text still meets the shim: the real alert stays untouched.
+    vm.runInContext("__opened.length = 0", host.ctx);
+    expect(envOf(await s.run({ script: 'alert("own"); 1' })).error).toEqual({ message: MODAL.alert, line: null, bodyLine: null });
+    expect(opened()).toBe("");
     await s.close();
   });
 
@@ -570,10 +796,12 @@ describe("ae_run_script on ae-host (node:vm standing in for After Effects)", () 
 
   it("__args: round-trips plain data, defaults to {}, keeps the AE helpers out of scope and leaves no global", async () => {
     const { host, s } = await hosted();
-    const args = { n: 41, s: 'q"\\ é', a: [1, -0, 1e21, 5e-324, true, null], o: { default: 1, "": 2, constructor: 3 } };
+    // Escapes, so this source stays free of a raw U+2028 (a line terminator in source) and of raw non-ASCII.
+    const args = { n: 41, s: 'q"\\\u2028\u00e9', a: [1, -0, 1e21, 5e-324, 0.1 + 0.2, true, null], o: { default: 1, "": 2, constructor: 3 } };
     const back = envOf(await s.run({ script: "__args", args }));
-    // -0 comes back as 0: host.jsx's serializer writes String(-0).
-    expect(back).toMatchObject({ ok: true, value: { ...args, a: [1, 0, 1e21, 5e-324, true, null] } });
+    // -0 comes back as 0: host.jsx's serializer writes String(-0). 0.1 + 0.2 keeps all 17 digits (R7).
+    expect(back).toMatchObject({ ok: true, value: { ...args, a: [1, 0, 1e21, 5e-324, 0.30000000000000004, true, null] } });
+    expect(envOf(await s.run({ script: "__args.a[4] === 0.1 + 0.2", args })).value).toBe(true);
     expect(envOf(await s.run({ script: "__args.n + 1", args: { n: 41 } })).value).toBe(42);
     const dflt = envOf(await s.run({ script: 'var k, n = 0; for (k in __args) { n++; } typeof __args + ":" + n' }));
     expect(dflt.value).toBe("object:0");
@@ -584,7 +812,56 @@ describe("ae_run_script on ae-host (node:vm standing in for After Effects)", () 
       "function",
       "function",
     ]);
-    expect(vm.runInContext("typeof __args + typeof __closed + typeof __modal", host.ctx)).toBe("undefinedundefinedundefined");
+    await s.close();
+  });
+
+  it("leaves no global behind: every name the builder declares stays inside its IIFE (R3)", async () => {
+    // Every name declared in the builder's own text (the X-01 wrapper's are its own concern), read from the text so
+    // a name added later is checked too. A leaked shim would replace After Effects' own alert for every later script.
+    const declared = (built: string): string[] => {
+      const own = built.replace(rawScriptWrapper("1"), "");
+      const names = new Set<string>();
+      for (const m of own.matchAll(/\bfunction\s+([A-Za-z_$][\w$]*)/g)) names.add(m[1]!);
+      for (const m of own.matchAll(/\bcatch\s*\(\s*([A-Za-z_$][\w$]*)/g)) names.add(m[1]!);
+      for (const m of own.matchAll(/\bvar\s+([^;]+);/g)) {
+        for (const part of m[1]!.split(",")) {
+          const id = /^\s*([A-Za-z_$][\w$]*)\s*(?:=|$)/.exec(part);
+          if (id) names.add(id[1]!);
+        }
+      }
+      return [...names];
+    };
+    const on = declared(runRawScript("1", { args: "{}", undoGroupName: "x", suppressDialogs: true }));
+    const off = declared(runRawScript("1", { args: "{}", undoGroupName: "x", suppressDialogs: false }));
+    expect(on).toEqual(expect.arrayContaining(["__args", "__modal", "__closed", "__undo", "__r", "alert", "confirm", "prompt"]));
+    expect(on).toEqual(expect.arrayContaining(off));
+
+    const { host, s } = await hosted();
+    // ae-host has no alert, confirm or prompt of its own, so "undefined" is each name's baseline.
+    for (const n of on) expect(vm.runInContext(`typeof ${n}`, host.ctx), `${n} before`).toBe("undefined");
+    // And no global at all appears, declared or not (an assignment to an undeclared name creates one). __aeSrc is
+    // ae-host's own: how it hands the script to the panel's __acmEval.
+    const globals = () =>
+      (vm.runInContext("Object.getOwnPropertyNames(this).join(',')", host.ctx) as string)
+        .split(",")
+        .filter((n) => n !== "__aeSrc")
+        .sort();
+    const before = globals();
+    // An ok run, a shim, a throw out of the wrapper, and both end calls failing: every path through the builder.
+    await s.run({ script: "__args" });
+    await s.run({ script: 'alert("x")' });
+    await s.run({ script: 'confirm("x")', suppressDialogs: false });
+    await s.run({ script: '({ get a() { throw new Error("g"); } })' });
+    host.app.endSuppressDialogs = () => {
+      throw new host.VmError("end failed");
+    };
+    host.app.endUndoGroup = () => {
+      throw new host.VmError("end failed");
+    };
+    await s.run({ script: "1" });
+    await s.run({ script: '({ get a() { throw new Error("g"); } })' });
+    for (const n of on) expect(vm.runInContext(`typeof ${n}`, host.ctx), n).toBe("undefined");
+    expect(globals()).toEqual(before);
     await s.close();
   });
 });
