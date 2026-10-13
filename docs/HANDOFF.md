@@ -111,13 +111,13 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
     elicitation, did not show the question, and answered `accept {allowProjectSwitch: false}` by
     itself while the operator saw nothing (no Elicitation hook in user or project settings;
     managed settings not checked conclusively). **Seen live on After Effects 26.5x89 (Windows 11,
-    2026-10-12) on the earlier build (fe4700c)**, whose refusal had older wording and whose flag
+    2026-10-12) on the earlier build (afd2b21)**, whose refusal had older wording and whose flag
     ran with no refuse-first guard: a plain-text refusal with the project's name and state, a run
     after `allowProjectSwitch: true` (audit `refused consent=needed`, then `run consent=flag`),
     `cc_eval_script`'s refusal; a script could not wrap `app.open`, `app.project.close` or
     `app.newProject` (assigning to them was silently ignored; the other calls were not probed), so
     the text scan is the only guard. **Rechecked live on After Effects 26.5x89 (Windows 11,
-    2026-10-13) on build 0fcaffd, from Claude Code:** the refusal in its current wording (a project
+    2026-10-13) on build bd1fd51, from Claude Code:** the refusal in its current wording (a project
     with no file, the "not verified live" and "as it is now" sentences); a flag with no matching
     refusal refused; a flag sent 10 min 4 s after the refusal refused as expired; the approved
     call run once; its second use refused. Claude Code's MCP log kept no per-call audit lines.

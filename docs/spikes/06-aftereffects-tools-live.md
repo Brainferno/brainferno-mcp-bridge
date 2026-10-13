@@ -160,7 +160,7 @@ Driven entirely from Claude Code through the hub and the Brainferno MCP Bridge C
     changes was tried in the consent live run below (its not-tried list is at the end).
 - **AE-01 consent live run — After Effects 26.5x89, Windows 11, 2026-10-12.** Owner request
   2026-10-12: a script that closes or replaces the open project must not run without the
-  operator's OK, never asked in After Effects. The branch build at fe4700c (MCP elicitation when
+  operator's OK, never asked in After Effects. The branch build at afd2b21 (MCP elicitation when
   the client advertised it, a plain-text refusal plus `allowProjectSwitch` otherwise) ran with the
   gate set to `after_effects`, against the real CEP panel, on scratch projects only: `a.aep` (a
   fresh copy of a one-comp project before each test) and `b.aep` (one comp). "Dirty" = the script
@@ -223,7 +223,7 @@ Driven entirely from Claude Code through the hub and the Brainferno MCP Bridge C
     prompt with suppression off is marked expected), and states nothing else about them.
   - The checklist this run followed (Claude Code's dialog, the fallback, the wrap probe, the
     trigger table) is done; its open points are the "Not tried" list above.
-- **AE-01 chat-only recheck — After Effects 26.5x89, Windows 11, 2026-10-13, build 0fcaffd.**
+- **AE-01 chat-only recheck — After Effects 26.5x89, Windows 11, 2026-10-13, build bd1fd51.**
   Claude Code (this repo's session) drove `ae_run_script` through its own MCP connection, gate set
   to `after_effects`, on an untitled project with no file and 0 items. Script:
   `if (__args.go) { app.newProject(); }\napp.project.numItems` with `args` `{go: false}`, so
