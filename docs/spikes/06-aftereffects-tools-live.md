@@ -157,7 +157,7 @@ Driven entirely from Claude Code through the hub and the Brainferno MCP Bridge C
     above); the refused audit line with the gate off (the client's MCP log keeps no server stderr;
     the refusal text was seen); and `Window.alert`, `$.global.alert`, `this.alert` and global code
     that calls `alert`, not probed live by design. What the project-switch calls do with unsaved
-    changes was settled by the consent live run below.
+    changes was tried in the consent live run below (its not-tried list is at the end).
 - **AE-01 consent live run — After Effects 26.5x89, Windows 11, 2026-10-12.** Owner request
   2026-10-12: a script that closes or replaces the open project must not run without the
   operator's OK, never asked in After Effects. The branch build at fe4700c (MCP elicitation when
@@ -193,11 +193,12 @@ Driven entirely from Claude Code through the hub and the Brainferno MCP Bridge C
     model's tool calls. That guard, the current refusal text and the risk texts are unit-tested
     only; F1 and F2 saw the earlier build's refusal (older wording) and a flagged run with no
     guard.
-  - **A script cannot wrap the triggers.** `app.open` is a native function; assigning
-    `app[n] = function () {}` (with `n` computed) raised no error and changed nothing, and the
-    same for `app.project.close` and `app.newProject`. So no run-time guard is possible, and the
-    text scan (`projectSwitchCalls`) stays the only one. (Calling through was skipped on purpose:
-    `app.open()` with no file opens a file picker.)
+  - **A script could not wrap the three triggers tried.** `app.open` is a native function;
+    assigning `app[n] = function () {}` (with `n` computed) raised no error and changed nothing,
+    and the same for `app.project.close` and `app.newProject`. `app.openFast`, `app.quit`,
+    `app.restart` and other ways to wrap were not probed. So the text scan
+    (`projectSwitchCalls`) stays the only guard. (Calling through was skipped on purpose:
+    `app.open()` with no file would open a file picker; not run.)
   - **What After Effects does with unsaved changes** (the refusal's `riskSentence` states exactly
     this, by the project's state and `suppressDialogs`):
 

@@ -600,8 +600,9 @@ describe("ae_run_script: metadata", () => {
         "close(CloseOptions.PROMPT_TO_SAVE_CHANGES) saved its unsaved changes over the file without asking; " +
         "close(CloseOptions.DO_NOT_SAVE_CHANGES) threw them away. For a never-saved project, app.open still showed " +
         "After Effects' save prompt, which blocks After Effects.",
-      // Not the whole untried list: the refusal names each case (fix B1).
-      "Other cases, app.quit and app.restart among them, were not tried; the refusal marks each one \"not verified live\".",
+      // Not the whole list of what was seen or not tried: the refusal names each case (round-2 fix B1; T5, T6, T7 and
+      // t4#0 were tried, and the refusal states them as seen).
+      "Every other case is in the refusal, as seen live or marked \"not verified live\"; app.quit and app.restart were not tried.",
       "$.evalFile",
       "with (app)",
       "text passed in args",
@@ -615,7 +616,8 @@ describe("ae_run_script: metadata", () => {
       expect(describe("allowProjectSwitch"), phrase).toContain(phrase);
     }
     expect(describe("allowProjectSwitch")).not.toContain("as Adobe documents it"); // the close outcomes are seen live now
-    expect(describe("allowProjectSwitch")).not.toContain("app.quit and app.restart were not tried."); // read as the whole list (B1)
+    // Round 2, B1: false for T5, T6, T7 and t4#0, which were tried.
+    expect(describe("allowProjectSwitch")).not.toContain("Other cases, app.quit and app.restart among them, were not tried");
     for (const name of ["script", "args", "undoGroupName", "suppressDialogs", "timeoutMs", "allowProjectSwitch"]) {
       expect(describe(name).length, name).toBeLessThanOrEqual(2048);
     }
@@ -1248,10 +1250,13 @@ const REMOTE_MODEL_LINE =
 const NO_REFUSAL_FOUND =
   "allowProjectSwitch is honoured only for the same script, args (as sent) and suppressDialogs that this tool refused in this " +
   "session within the last 10 minutes, once; this call had no such refusal.";
-/** The sentence a risk with two or more switch calls ends with: the later ones act on another project (fix C1). */
+/**
+ * The sentence a risk with two or more switch calls ends with (fix C1): the later ones act on the project the first one
+ * leaves open, which T3 shows can be this same project (round-2 fix A1).
+ */
 const LATER_CALLS =
-  "These clauses describe the project open now; after the first of these calls a different project is open (one with no " +
-  "file after a close or app.newProject), and the later calls act on that one.";
+  "These clauses describe the project open now; the later calls act on the project the first one leaves open (which can " +
+  "be this same project).";
 /** Every refusal with the risk: the approved call does not read the project again (fix B3). */
 const AS_IT_IS_NOW =
   "This describes the project as it is now: the approved call does not read it again, so if the open project changes " +
@@ -1952,6 +1957,18 @@ describe("ae_run_script: what the refusal says After Effects does (AE-01 consent
       ["// CloseOptions.SAVE_CHANGES would save it\napp.project.close(CloseOptions.DO_NOT_SAVE_CHANGES)", ALL],
       ["CloseOptions.SAVE_CHANGESX", ALL],
       ["CloseOptions.save_changes", ALL],
+      // Round 2, B2: once the scan sees a close (CloseOptions named, or a close through app.project), a close on any
+      // object whose argument is neither empty nor one value written out stands for all three (an alias of app.project
+      // the text does not show; a File's or a window's close with an argument over-warns, the safe direction). The
+      // reviewers' three probes first.
+      ["var p = app.project; if (m) p.close(__args.mode); else p.close(CloseOptions.DO_NOT_SAVE_CHANGES);", ALL],
+      ["var p = app.project; p.close(CloseOptions.DO_NOT_SAVE_CHANGES); p.close(1213)", ALL],
+      ["// app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES)\nvar p = app.project; p.close(__args.o)", ALL],
+      ["app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES); w.close(1)", ALL],
+      ['p["close"](__args.o); p.close(CloseOptions.SAVE_CHANGES)', ALL],
+      // ...but a close with no argument (a File's) stays out, as does any close when the scan sees none.
+      ["p.close(CloseOptions.SAVE_CHANGES); f.close( )", ["SAVE_CHANGES"]],
+      ["app.open(f); w.close(1)", []],
       // No close at all.
       ["app.open(f)", []],
       ["MyCloseOptions.SAVE_CHANGES", []],
@@ -1969,7 +1986,7 @@ describe("ae_run_script: what the refusal says After Effects does (AE-01 consent
           const text = riskSentence(script, state, suppress);
           const live = LIVE[where];
           const on = suppress ? "on" : "off";
-          const quit = item === "app.quit" || item === "app.restart" ? ` ${item} also closes After Effects itself.` : "";
+          const quit = item === "app.quit" || item === "app.restart" ? ` ${item} is meant to close After Effects itself (not verified live).` : "";
           if (live) expect(text, where).toBe(live.text);
           else if (EXPECTED_PROMPT.has(where)) {
             expect(text, where).toBe(
@@ -1978,7 +1995,8 @@ describe("ae_run_script: what the refusal says After Effects does (AE-01 consent
           } else {
             expect(text, where).toBe(`Not verified live (suppressDialogs ${on}${state.path === null ? ", a project with no file" : ""}): what ${item} does with unsaved changes.${quit}`);
           }
-          // Nothing not tried is stated as fact; "without asking" only where the live run saw no prompt.
+          // Nothing not tried is stated as fact (app.quit and app.restart closing After Effects included: "meant to", not
+          // verified live; round-2 fix B3); "without asking" only where the live run saw no prompt.
           expect(text.includes("without asking"), where).toBe(live?.prompt === false);
           expect(/does not ask/.test(text), where).toBe(false);
           expect(/not verified live/i.test(text), where).toBe(live === undefined);
@@ -2015,8 +2033,8 @@ describe("ae_run_script: what the refusal says After Effects does (AE-01 consent
       const chosen = parts.filter((_, i) => mask & (1 << i));
       const script = chosen.map((p) => p.code).join("\n");
       const items = [...new Set(chosen.flatMap((p) => p.items))];
-      // Two calls or more: the later ones act on another project (fix C1). The comment is no call, but alone with a
-      // call that does not close it is a second one (the scan reads CloseOptions as a close).
+      // Two calls or more: the later ones act on the project the first one leaves open (fix C1; round-2 A1). The comment
+      // is no call, but alone with a call that does not close it is a second one (the scan reads CloseOptions as a close).
       const calls = chosen.filter((p) => p.call);
       const comment = chosen.some((p) => !p.call);
       const later = calls.length >= 2 || (calls.length === 1 && comment && !calls[0]!.close);
@@ -2042,12 +2060,38 @@ describe("ae_run_script: what the refusal says After Effects does (AE-01 consent
 
   it("C23: representative refusals, pinned whole", () => {
     // Several calls on a saved project, suppression on: grouped (app.newProject and app.open save over the file), then the
-    // note that the later calls act on another project (fix C1).
+    // note that the later calls act on the project the first one leaves open (fix C1; round-2 A1).
     expect(riskSentence(MULTI, FONTPROJ, true)).toBe(
       "With suppressDialogs on, close(CloseOptions.DO_NOT_SAVE_CHANGES) throws unsaved changes away without asking, leaving the file " +
         "as it was. app.newProject and app.open save the open project's unsaved changes over its file without asking. Not verified " +
-        `live (suppressDialogs on): what app.quit does with unsaved changes. app.quit also closes After Effects itself. ${LATER_CALLS}`,
+        "live (suppressDialogs on): what app.quit does with unsaved changes. app.quit is meant to close After Effects itself (not " +
+        `verified live). ${LATER_CALLS}`,
     );
+    // Both quitting calls: one sentence, plural (round-2 B3: not tried, so "meant to").
+    expect(riskSentence("app.quit();\napp.restart()", FONTPROJ, true)).toBe(
+      "Not verified live (suppressDialogs on): what app.quit and app.restart do with unsaved changes. app.quit and app.restart " +
+        `are meant to close After Effects itself (not verified live). ${LATER_CALLS}`,
+    );
+    // Round 2, A1: app.open on a project with no file, suppression on, then a close. T3: after Don't Save the unsaved
+    // project stayed open, so the close may act on it; the refusal must not say a different project is open.
+    const OPEN_THEN_CLOSE = "app.open(new File(__args.p));\napp.project.close(CloseOptions.DO_NOT_SAVE_CHANGES)";
+    const openThenClose = switchRefusal(OPEN_THEN_CLOSE, NOFILE, true, false, false);
+    expect(openThenClose).toBe(
+      "ae_run_script did not send this script: it calls app.open (line 1), app.project.close (line 2), which close or replace " +
+        "the open After Effects project — tell the operator what follows, ask in the chat whether the script may do this, and " +
+        "call ae_run_script again with the same script, args (as sent) and suppressDialogs and allowProjectSwitch: true only if " +
+        "they agree (within 10 minutes; it lets that call through once); to keep the open project, remove those calls instead. " +
+        "The open project has never been saved (no file), 2 items; it has unsaved changes right now. With suppressDialogs on, " +
+        "app.open still showed After Effects' own save prompt for unsaved changes in a project with no file: it blocks After " +
+        "Effects until someone answers it there, and the call times out meanwhile; after Don't Save, the other project was not " +
+        "opened and the unsaved one stayed open. close(CloseOptions.DO_NOT_SAVE_CHANGES) closes the project without asking; the " +
+        "project open afterwards has no file and no items. These clauses describe the project open now; the later calls act on " +
+        "the project the first one leaves open (which can be this same project). This describes the project as it is now: the " +
+        "approved call does not read it again, so if the open project changes first, call without allowProjectSwitch for a new " +
+        "refusal. Do not run this script, or its project switch, through cc_eval_script or another tool.",
+    );
+    expect(openThenClose).not.toContain("a different project");
+    expect(openThenClose).not.toContain("another project");
     // Every opening call at once: the grouping the spec names.
     expect(riskSentence("app.open(f); app.openFast(g); app.newProject()", FONTPROJ, true)).toBe(
       `With suppressDialogs on, app.open, app.openFast and app.newProject save the open project's unsaved changes over its file without asking. ${LATER_CALLS}`,
@@ -2079,6 +2123,25 @@ describe("ae_run_script: what the refusal says After Effects does (AE-01 consent
     expect(
       riskSentence("var opt = CloseOptions.DO_NOT_SAVE_CHANGES; if (__args.keep) opt = CloseOptions[__args.mode]; app.project.close(opt)", SAVED, true),
     ).toBe(ALL_THREE);
+    // Round 2, B2: the reviewers' three probes. A close through an alias whose argument is not one value written out
+    // stands for all three, and counts as a call, so the note on later calls follows.
+    for (const script of [
+      "var p = app.project; if (m) p.close(__args.mode); else p.close(CloseOptions.DO_NOT_SAVE_CHANGES);",
+      "var p = app.project; p.close(CloseOptions.DO_NOT_SAVE_CHANGES); p.close(1213)",
+      "// app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES)\nvar p = app.project; p.close(__args.o)",
+    ]) {
+      expect(riskSentence(script, SAVED, true), script).toBe(`${ALL_THREE} ${LATER_CALLS}`);
+    }
+    // A File's close() (no argument) is no call and changes nothing; a close with an argument when the scan sees no
+    // close is outside it (the alias gap, pinned in T2).
+    const DO_NOT_ONLY =
+      "With suppressDialogs on, close(CloseOptions.DO_NOT_SAVE_CHANGES) throws unsaved changes away without asking, leaving the file as it was.";
+    expect(riskSentence("app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES); var f = File(__args.log); f.open('w'); f.close()", SAVED, true)).toBe(
+      DO_NOT_ONLY,
+    );
+    expect(riskSentence("app.open(f); w.close(1)", SAVED, true)).toBe(
+      "With suppressDialogs on, app.open saves the open project's unsaved changes over its file without asking.",
+    );
     // ...and a close whose own argument is the value: that value alone.
     expect(riskSentence("app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES)", SAVED, true)).toBe(
       "With suppressDialogs on, close(CloseOptions.DO_NOT_SAVE_CHANGES) throws unsaved changes away without asking, leaving the file as it was.",

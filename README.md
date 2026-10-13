@@ -451,7 +451,9 @@ After Effects 26.5 on Windows; the probes are in `docs/spikes/06-aftereffects-to
   in plain text, giving the file name (or "never saved"), whether there are unsaved changes, and,
   for each call in the script, what the live run saw After Effects do with them, or that it was
   not tried. A close counts as one `CloseOptions` value only when its own argument is that value
-  written out; any other close gets the outcome of each value. With two switch calls or more, the
+  written out. Any other close gets the outcome of each value: through `app.project` always, and
+  on any other object (a File's or a window's too) when it has an argument and the script names
+  `CloseOptions` or closes through `app.project`. With two switch calls or more, the
   refusal adds that each clause describes the project open now, and the later calls act on the
   project the first one leaves open. The model tells the operator, asks in the chat, and only if
   they agree calls again with the same script, `args` (as sent; left out counts as `{}`) and
@@ -492,8 +494,9 @@ After Effects 26.5 on Windows; the probes are in `docs/spikes/06-aftereffects-to
   `PROMPT_TO_SAVE_CHANGES` on a never-saved project; `app.open` with suppression off on a
   never-saved project; `close(DO_NOT_SAVE_CHANGES)` with suppression off on a never-saved
   project. The refusal says "not verified live" for these (an expected save prompt as
-  expected). A script cannot wrap these calls at run time (assigning to `app.open`,
-  `app.newProject` or `app.project.close` changes nothing), so the text check is the only guard.
+  expected). In the live run a script could not wrap `app.open`, `app.newProject` or
+  `app.project.close` (assigning a function to each changed nothing); `app.openFast`, `app.quit`,
+  `app.restart` and other ways to wrap were not probed. The text check is the only guard.
   It reads the text only and does not catch, among others: a computed name, an alias,
   `with (app) { open(f) }`, `(app).open`, `.call`/`.apply`, a comment or escape inside the call, a
   menu command, or code run from elsewhere at run time (`$.evalFile`, `eval` of a file's text or
@@ -581,13 +584,16 @@ override it:
   at every `BRAINFERNO_MCP_LOG_LEVEL` (the level cannot silence it):
   `[brainferno-mcp-bridge] AUDIT raw-script tool=<tool> app=<app> sha256=<12 hex> len=<n> [count=<n>] via=<via> outcome=<run|refused>[ consent=<flag|needed>]`.
   `consent` appears only on `ae_run_script` calls whose script closes or replaces the open
-  project: `needed` on the refusal that states the risk, `flag` on the run that
-  `allowProjectSwitch` let through after that refusal (the server cannot check that the operator
-  agreed). A refusal and the run it lets through carry the same `sha256` and `len`, since the
-  run repeats the refused call (`args` left out is recorded as `{}`, so it matches `args: {}`).
+  project: `needed` on the refusal that states the risk (a call the client cancelled while a
+  read-only check that succeeded was running is audited `refused consent=needed` too, but records
+  no refusal of its own; a failed check is audited without `consent`), `flag` on the run that `allowProjectSwitch` let through after that refusal
+  (the server cannot check that the operator agreed). A refusal and the run it lets through
+  carry the same `sha256` and `len`, since the run repeats the refused call (`args` left out is
+  recorded as `{}`, so it matches `args: {}`).
   The run's line is written before the script is sent, so a flagged call that then finds After
   Effects not connected also writes `outcome=run consent=flag` though nothing was sent, and
-  keeps the OK for a retry: one refusal can be followed by two `run consent=flag` lines.
+  keeps the OK for a retry: each retry while After Effects is not connected writes one more
+  `run consent=flag` line.
   It records the first 12 hex digits of a SHA-256 and the length of the script (for
   `ae_run_script`, of the JSON of `{ script, args }`, `args` `{}` when left out; for
   `ps_batch_play`, of the descriptors' JSON, plus their `count`) — never the script itself; on

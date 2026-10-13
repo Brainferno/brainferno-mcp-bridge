@@ -163,10 +163,12 @@ them; it re-implements none of them.
   payload — never the payload itself. `ae_run_script` adds `consent=` (last on the line) when the
   project-switch scan matched: `needed` on the refusal that states the risk (the read-only
   project check succeeded; a failed check, or After Effects not connected, is audited without
-  it), `flag` on the run `allowProjectSwitch` let through after that refusal. The run's line is
-  written before dispatch, so a flagged call that then finds After Effects not connected also
-  writes `outcome=run consent=flag` (nothing sent, the OK kept for a retry): one refusal can be
-  followed by two `run consent=flag` lines. A payload that is the JSON of structured input (such
+  it; a call the client cancelled during the check is still audited with it, though it records
+  no refusal), `flag` on the run `allowProjectSwitch` let through after that refusal. The run's
+  line is written before dispatch, so a flagged call that then finds After Effects not connected
+  also writes `outcome=run consent=flag` (nothing sent, the OK kept for a retry): each retry
+  while After Effects is not connected writes one more `run consent=flag` line. A payload that
+  is the JSON of structured input (such
   as `ae_run_script`'s `{ script, args }`, `args` `{}` when left out) is built with
   `auditJson(value, fallback)`, which
   always returns a string and never throws: a bare `JSON.stringify` overflows the stack on
@@ -188,7 +190,8 @@ them; it re-implements none of them.
   repeat the check, so the refusal says it describes the project as it is then. The OK is taken
   when the call starts, so two calls at once cannot both use it, and put back only when nothing
   reached the app (a plain `AppNotConnectedError`). A failed check, or a call the client
-  cancelled meanwhile, records no refusal. The server cannot tell whether the operator was
+  cancelled meanwhile, records no refusal (the cancelled call is still audited
+  `refused consent=needed`). The server cannot tell whether the operator was
   asked: the guard only makes sure a refusal stating the risk reached the model first (the audit
   line records the pair); the asking happens in the chat, where the operator can see the model's
   tool calls. The store lives in `registerAfterEffectsTools`, one per `McpServer`, and
