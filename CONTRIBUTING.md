@@ -160,12 +160,15 @@ them; it re-implements none of them.
   scripts are not allowed.
 - **Audit every call.** Exactly one `auditRawCall` per call, run or refused. It writes
   through `log.audit`, which no log level silences, and records a hash and the length of the
-  payload — never the payload itself. `ae_run_script` adds `consent=` (last on the line) when a
-  call reached the operator's OK, that is, the project-switch scan matched and the read-only
-  project check succeeded (a failed check, or After Effects not connected, is audited without
-  it): `operator` (approved in the client), `flag` (`allowProjectSwitch`, the client cannot
-  ask), `declined`, `failed` or `needed`. A payload that is the JSON of structured input (such
-  as `ae_run_script`'s `{ script, args }`) is built with `auditJson(value, fallback)`, which
+  payload — never the payload itself. `ae_run_script` adds `consent=` (last on the line) when the
+  project-switch scan matched: `needed` on the refusal that states the risk (the read-only
+  project check succeeded; a failed check, or After Effects not connected, is audited without
+  it), `flag` on the run `allowProjectSwitch` let through after that refusal. The run's line is
+  written before dispatch, so a flagged call that then finds After Effects not connected also
+  writes `outcome=run consent=flag` (nothing sent, the OK kept for a retry): one refusal can be
+  followed by two `run consent=flag` lines. A payload that is the JSON of structured input (such
+  as `ae_run_script`'s `{ script, args }`, `args` `{}` when left out) is built with
+  `auditJson(value, fallback)`, which
   always returns a string and never throws: a bare `JSON.stringify` overflows the stack on
   V8 before 13.8 (Node 24 and older) for input nested a few thousand levels deep, which zod
   and `JSON.parse` accept, throws on every engine for a cycle or a `toJSON` that throws, and
@@ -173,20 +176,34 @@ them; it re-implements none of them.
   unaudited. Pass the fallback already serialized, built from data that cannot fail. Build
   the payload before the gate check, since a refusal is audited too. (`ps_batch_play` still
   uses a bare `JSON.stringify`; moving it is an X-01 follow-up.)
-- **Asking the operator.** A raw tool that needs the operator's OK (today `ae_run_script`,
-  before a script that closes or replaces the open project) asks through MCP elicitation, form
-  mode, only when the session's client advertises it (`getClientCapabilities()?.elicitation?.form`),
-  and never in the app. Without it, the tool refuses in plain text and honours an explicit flag
-  the model may set only after it passed that refusal on and the operator agreed in the chat;
-  with it, the flag never skips the question. Every way of not getting a yes (decline, cancel, a
-  false or missing field, an error, a timeout) is plain text with nothing of the caller's
-  dispatched; a call the client cancels gets no result at all, and nothing of the caller's is
-  dispatched either. A read-only check that feeds the question runs before it. There is one
-  consent path per hazard: another raw tool that could run the same script refuses it and
-  points to the tool that asks (`cc_eval_script` for After Effects). In a shared (remote)
-  session the question goes to that session's client, whose user answers for the person at the
-  app; the texts say so. A client that advertises form elicitation but hands the form to its
-  own model (auto-fill) lets the model answer, and the server cannot tell.
+- **The operator's OK, in the chat (refuse first).** A raw tool that needs the operator's OK
+  (today `ae_run_script`, before a script that closes or replaces the open project) never sends
+  such a call the first time: it refuses in plain text, stating the risk (a read-only check that
+  feeds the refusal runs first), and the model passes that on and asks the operator in the
+  chat. Only an explicit flag (`allowProjectSwitch: true`) on the same call — same script,
+  `args` as sent (left out counts as `{}`) and effective `suppressDialogs` — refused in the same
+  session within the last 10 minutes runs it, once (`SwitchRefusals` in `after-effects.ts`: at
+  most 64 refusals per session, an injectable clock). A flag with no such refusal is refused the
+  same way, with one sentence more, so the model cannot skip the risk. The flagged call does not
+  repeat the check, so the refusal says it describes the project as it is then. The OK is taken
+  when the call starts, so two calls at once cannot both use it, and put back only when nothing
+  reached the app (a plain `AppNotConnectedError`). A failed check, or a call the client
+  cancelled meanwhile, records no refusal. The server cannot tell whether the operator was
+  asked: the guard only makes sure a refusal stating the risk reached the model first (the audit
+  line records the pair); the asking happens in the chat, where the operator can see the model's
+  tool calls. The store lives in `registerAfterEffectsTools`, one per `McpServer`, and
+  `createMcpServer` builds one per stdio session and per remote session, so nothing is shared
+  across sessions. A session is one MCP connection: in Claude Code that is one server process
+  per window, so its subagents and a new conversation after `/clear` in that window are expected
+  to share the store (not verified live). Never ask through MCP elicitation or in the app: in
+  the AE-01 live check, Claude Code 2.1.296 in a Windows 11 terminal, in three tries (auto mode
+  twice, manual once), advertised form elicitation, did not show the question, and answered
+  `accept {allowProjectSwitch: false}` by itself (no Elicitation hook in user or project
+  settings; managed settings not checked conclusively); a dialog in the app freezes automation.
+  There is one consent path per hazard: another raw tool that could run the same script refuses
+  it and points to the tool that holds the OK (`cc_eval_script` for After Effects). In a shared
+  (remote) session the person in the chat answers for whoever is at the app; the refusal tells
+  the model to say so.
 - **ExtendScript enters only through `rawScriptWrapper`.** The caller's script becomes a
   pure-ASCII string literal (built on `jsStringLiteral`) that the ES3 wrapper runs with a
   direct `eval` inside its own inner function; the wrapper collects `__log` output and refuses

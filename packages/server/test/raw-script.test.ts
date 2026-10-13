@@ -579,12 +579,12 @@ describe("audit", () => {
     const hash = createHash("sha256").update(payload).digest("hex").slice(0, 12);
     const head = `raw-script tool=ae_run_script app=after_effects sha256=${hash} len=${payload.length} via=stdio`;
     auditRawCall({ tool: "ae_run_script", app: "after_effects", payload, outcome: "run", via: "stdio", consent: "flag" });
-    auditRawCall({ tool: "ae_run_script", app: "after_effects", payload, outcome: "refused", via: "stdio", consent: "declined" });
+    auditRawCall({ tool: "ae_run_script", app: "after_effects", payload, outcome: "refused", via: "stdio", consent: "needed" });
     auditRawCall({ tool: "ae_run_script", app: "after_effects", payload, outcome: "run", via: "stdio" });
     auditRawCall({ tool: "ae_run_script", app: "after_effects", payload, outcome: "run", via: "stdio", consent: undefined });
     expect(audit.mock.calls.map((c) => c[0])).toEqual([
       `${head} outcome=run consent=flag`,
-      `${head} outcome=refused consent=declined`,
+      `${head} outcome=refused consent=needed`,
       `${head} outcome=run`,
       `${head} outcome=run`,
     ]);

@@ -98,8 +98,9 @@ single-frame preview, render queue, and headless rendering through `aerender` (t
 Plus a raw ExtendScript tool (`ae_run_script`) that runs a whole script as one undo step and is
 always listed but refuses until you enable raw scripts for After Effects — see
 [Raw scripts](#raw-scripts-opt-in). It is verified live on Windows (After Effects 26.5).
-A script that closes or replaces the open project asks the operator first, in the MCP client
-(unit-tested; live check pending).
+A script that closes or replaces the open project is refused until the operator agrees in the
+chat (a refusal and a flagged run were seen live on an earlier build; the current guard and its
+texts are unit-tested only).
 
 ### Premiere Pro — 29 tools
 Project, sequences and items, a full sequence read (every track and clip with times),
@@ -360,7 +361,7 @@ The wire protocol is documented in [`docs/protocol.md`](docs/protocol.md).
 | `audio_*` (9) | ffmpeg | Probe, R128 measure + two-pass normalize, convert/extract, trim, trim silence, denoise, mix, waveform image |
 | `pipeline_*` (4) | cross-app | `ps_to_ae`, `render_and_import`, `audio_roundtrip`, `ai_to_ps` — one call, one job, failure names the step + recovery tool — [live run](docs/spikes/09-pipelines-live.md) |
 | `cc_eval_script` | After Effects, Illustrator, Audition | Raw ExtendScript escape hatch — always listed; refuses unless enabled (**opt-in**, `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS`) — see `cc_get_capabilities`; refuses an After Effects script that closes or replaces the open project (use `ae_run_script`) |
-| `ae_run_script` | After Effects | Raw ExtendScript as one undo step, with `__args` and After Effects' warning dialogs suppressed — always listed; refuses unless enabled for After Effects (**opt-in**, same switch); a script that closes or replaces the open project needs the operator's OK, asked in the client (unit-tested; live check pending) — [live run](docs/spikes/06-aftereffects-tools-live.md) on Windows |
+| `ae_run_script` | After Effects | Raw ExtendScript as one undo step, with `__args` and After Effects' warning dialogs suppressed — always listed; refuses unless enabled for After Effects (**opt-in**, same switch); a script that closes or replaces the open project needs the operator's OK, given in the chat after the tool's refusal — [live run](docs/spikes/06-aftereffects-tools-live.md) on Windows |
 | `ps_batch_play` | Photoshop | Raw batchPlay descriptors — always listed; refuses unless enabled for Photoshop (**opt-in**, same switch) |
 
 Tools are always advertised for the apps you chose, even when an app is closed — a closed
@@ -426,10 +427,14 @@ After Effects 26.5 on Windows; the probes are in `docs/spikes/06-aftereffects-to
 - **Dialogs.** `suppressDialogs` (default on) suppresses and discards After Effects' own warning
   dialogs while the script runs. It was verified on an export warning and on the missing-font
   dialog shown when the script opens a project, and is not promised for every dialog.
-  **With it on, a script that opens another project with `app.open` while the open one has
-  unsaved changes gets no save prompt: After Effects saves the open project over its file, those
-  changes included.** To discard them instead, close it first with
-  `app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES)`. Modal UI the script opens itself is
+  **With it on, a script that opens or creates another project (`app.open`, `app.openFast`,
+  `app.newProject`) while the open project has a file and unsaved changes gets no save prompt:
+  After Effects saves the open project over its file, those changes included** (seen live). On a
+  project with no file, `app.open` still showed After Effects' save prompt, which blocks After
+  Effects until someone answers it; `app.openFast` and `app.newProject` on such a project were not
+  tried. To discard the changes instead, close the project first with
+  `app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES)`, which closed it without a prompt in the
+  live run. Modal UI the script opens itself is
   not covered. A bare `alert`, `confirm` or `prompt` written in the script's own text fails
   the call instead of opening a dialog, and says what to do instead: `__log(msg)` for `alert`;
   for `confirm` or `prompt`, pass the answer in `args`. Everything else modal still opens and
@@ -438,33 +443,61 @@ After Effects 26.5 on Windows; the probes are in `docs/spikes/06-aftereffects-to
   that calls `alert`, `confirm` or `prompt`; ScriptUI dialogs; file or folder pickers; a menu
   command that opens a dialog. (That list was not probed live, by design: each one would block
   After Effects.)
-- **Closing or replacing the open project needs the operator's OK** (unit-tested; live check
-  pending). A script whose text calls `app.open`, `app.openFast`, `app.newProject`,
-  `app.project.close`, `app.quit` or `app.restart` (with a dot or as a quoted name in brackets,
-  such as `app['open']`), or names `CloseOptions` — comments and strings included — is not sent
-  until the operator agrees. The tool first reads the open project (`ae_project_info`'s
-  read-only script). When the client supports MCP elicitation, it asks there, giving the file
-  name (or "never saved"), whether there are unsaved changes, and what After Effects does with
-  them, saying which parts were seen live. With `suppressDialogs` on, `app.open` over a saved
-  project was seen to save them over the file without asking; the other calls, and `app.open` on
-  a never-saved project, were not tried over unsaved changes, so what happens to them, and
-  whether After Effects asks, is not verified (they may be saved or lost). As Adobe documents it,
-  `CloseOptions.DO_NOT_SAVE_CHANGES` discards them and `CloseOptions.SAVE_CHANGES` saves them;
-  `CloseOptions.PROMPT_TO_SAVE_CHANGES` may show After Effects' own save prompt. None of the
-  three was verified live. The question itself never appears in After Effects. A client that
-  cannot ask gets a plain-text refusal stating the risk; the model tells the operator what it
-  says, asks in the chat, and calls again with `allowProjectSwitch: true` only if they agreed.
-  With a client that can ask, that flag does not skip the question. A decline, a dismissed
-  question, an error or no answer within 10 minutes means the script is not sent. In a shared
-  (remote) session the question goes to that session's client, whose user answers for whoever
-  is at After Effects, and the question says so. The question is a snapshot taken before the
-  wait: changes the operator makes in After Effects while it is open are not re-checked. A
-  client that advertises form elicitation but hands the form to its own model (auto-fill) would
-  let the model answer, and the server cannot tell; Claude Code shows it to the person (live
-  check pending). The check reads the text only and does not catch, among others: a computed
-  name, an alias, `with (app) { open(f) }`, `(app).open`, `.call`/`.apply`, a comment or escape
-  inside the call, a menu command, or code run from elsewhere at run time (`$.evalFile`, `eval`
-  of a file's text or of text passed in `args`).
+- **Closing or replacing the open project needs the operator's OK, given in the chat.** A
+  script whose text calls `app.open`, `app.openFast`, `app.newProject`, `app.project.close`,
+  `app.quit` or `app.restart` (with a dot or as a quoted name in brackets, such as
+  `app['open']`), or names `CloseOptions` — comments and strings included — is never sent on its
+  first call. The tool reads the open project (`ae_project_info`'s read-only script) and refuses
+  in plain text, giving the file name (or "never saved"), whether there are unsaved changes, and,
+  for each call in the script, what the live run saw After Effects do with them, or that it was
+  not tried. A close counts as one `CloseOptions` value only when its own argument is that value
+  written out; any other close gets the outcome of each value. With two switch calls or more, the
+  refusal adds that each clause describes the project open now, and the later calls act on the
+  project the first one leaves open. The model tells the operator, asks in the chat, and only if
+  they agree calls again with the same script, `args` (as sent; left out counts as `{}`) and
+  `suppressDialogs` plus `allowProjectSwitch: true`. The flag is honoured only for a call this
+  session refused within the last 10 minutes, and only once; a flagged call with no such refusal
+  gets the refusal instead, so the model cannot skip the risk. The approved call does not read the
+  project again: the refusal describes the project as it was then, and says to call without the
+  flag for a new refusal if it changes first. If After Effects is not connected when the approved
+  call is sent, the OK stays for a retry; once the script was sent, it is used. A session is one
+  MCP connection: in Claude Code that is one server process per window, so its subagents and a
+  new conversation after `/clear` in that window are expected to share the refusals (not verified
+  live). In a shared (remote) session the refusal adds that the person in the chat answers for
+  whoever is at After Effects. The server cannot tell whether the operator was asked: the guard
+  only makes sure a refusal stating the risk reached the model first (the audit line records the
+  pair); the asking happens in the chat, where the operator can see the model's tool calls.
+  The tool never asks through the MCP client: in the AE-01 live check, Claude Code 2.1.296 in a
+  Windows 11 terminal, in three tries (auto mode twice, manual once), advertised MCP form
+  elicitation, did not show the question, and answered `accept {allowProjectSwitch: false}` by
+  itself (no Elicitation hook in user or project settings; managed settings not checked
+  conclusively). A plain-text refusal and a flagged run were seen live on an earlier build of this
+  tool (After Effects 26.5, Windows 11), whose refusal had older wording and whose flag ran with no
+  refuse-first guard; the guard, the current refusal text and the risk texts are unit-tested
+  only. What After Effects did with a project's unsaved changes in that run:
+
+  | Call | `suppressDialogs` | Project | Seen live |
+  | --- | --- | --- | --- |
+  | `app.open`, `app.openFast`, `app.newProject` | on | saved | no prompt; saved over its file |
+  | `app.open` | on | never saved | After Effects' save prompt anyway, blocking After Effects (the call timed out); after Don't Save, the other project was not opened |
+  | `app.open` | off | saved | the save prompt, blocking After Effects (the call timed out); after Don't Save, the other project opened and the file was unchanged |
+  | `close(CloseOptions.PROMPT_TO_SAVE_CHANGES)` | on | saved | no prompt; saved over its file |
+  | `close(CloseOptions.DO_NOT_SAVE_CHANGES)` | on or off | saved | no prompt; changes thrown away, file unchanged |
+  | `close(CloseOptions.DO_NOT_SAVE_CHANGES)` | on | never saved | no prompt; afterwards the open project had no file and no items |
+  | `close(CloseOptions.SAVE_CHANGES)` | off | saved | no prompt; saved over its file |
+
+  Not tried: `app.quit` and `app.restart`; `app.openFast` and `app.newProject` with suppression
+  off or on a never-saved project; `close(SAVE_CHANGES)` with suppression on;
+  `close(PROMPT_TO_SAVE_CHANGES)` with suppression off; `SAVE_CHANGES` or
+  `PROMPT_TO_SAVE_CHANGES` on a never-saved project; `app.open` with suppression off on a
+  never-saved project; `close(DO_NOT_SAVE_CHANGES)` with suppression off on a never-saved
+  project. The refusal says "not verified live" for these (an expected save prompt as
+  expected). A script cannot wrap these calls at run time (assigning to `app.open`,
+  `app.newProject` or `app.project.close` changes nothing), so the text check is the only guard.
+  It reads the text only and does not catch, among others: a computed name, an alias,
+  `with (app) { open(f) }`, `(app).open`, `.call`/`.apply`, a comment or escape inside the call, a
+  menu command, or code run from elsewhere at run time (`$.evalFile`, `eval` of a file's text or
+  of text passed in `args`).
 - **The tool owns the undo group and dialog suppression**, so a script that names
   `app.beginUndoGroup`, `app.endUndoGroup`, `app.beginSuppressDialogs` or
   `app.endSuppressDialogs` — even in a comment or a string — is refused before it is sent. If
@@ -546,17 +579,23 @@ override it:
   refused unless `BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS=1`.
 - Every raw-script call, run or refused, writes one audit line to the server's stderr log,
   at every `BRAINFERNO_MCP_LOG_LEVEL` (the level cannot silence it):
-  `[brainferno-mcp-bridge] AUDIT raw-script tool=<tool> app=<app> sha256=<12 hex> len=<n> [count=<n>] via=<via> outcome=<run|refused>[ consent=<operator|flag|declined|failed|needed>]`.
+  `[brainferno-mcp-bridge] AUDIT raw-script tool=<tool> app=<app> sha256=<12 hex> len=<n> [count=<n>] via=<via> outcome=<run|refused>[ consent=<flag|needed>]`.
   `consent` appears only on `ae_run_script` calls whose script closes or replaces the open
-  project, and says how the operator's OK went (`flag` = the model passed `allowProjectSwitch`
-  because the client cannot ask).
+  project: `needed` on the refusal that states the risk, `flag` on the run that
+  `allowProjectSwitch` let through after that refusal (the server cannot check that the operator
+  agreed). A refusal and the run it lets through carry the same `sha256` and `len`, since the
+  run repeats the refused call (`args` left out is recorded as `{}`, so it matches `args: {}`).
+  The run's line is written before the script is sent, so a flagged call that then finds After
+  Effects not connected also writes `outcome=run consent=flag` though nothing was sent, and
+  keeps the OK for a retry: one refusal can be followed by two `run consent=flag` lines.
   It records the first 12 hex digits of a SHA-256 and the length of the script (for
-  `ae_run_script`, of the JSON of `{ script, args }`; for `ps_batch_play`, of the descriptors'
-  JSON, plus their `count`) — never the script itself; on a run the first 200 characters of
-  that payload go to the `debug` log only. `via` is `stdio` for a local
-  session or `http:` plus the first 8 characters of a remote session's id (the same prefix the
-  "remote session … opened" log line shows). When the gate is open the server also writes one
-  `AUDIT raw scripts ENABLED for …` line at startup, saying whether remote sessions are allowed.
+  `ae_run_script`, of the JSON of `{ script, args }`, `args` `{}` when left out; for
+  `ps_batch_play`, of the descriptors' JSON, plus their `count`) — never the script itself; on
+  a run the first 200 characters of that payload go to the `debug` log only. `via` is `stdio`
+  for a local session or `http:` plus the first 8 characters of a remote session's id (the same
+  prefix the "remote session … opened" log line shows). When the gate is open the server also
+  writes one `AUDIT raw scripts ENABLED for …` line at startup, saying whether remote sessions
+  are allowed.
 
 ---
 
@@ -616,8 +655,9 @@ docs/                build plan, protocol, live-run notes (spikes/), Audition AP
   unit-tested but not yet verified against the live CLIs — that run is
   `docs/spikes/15-multi-client-lanes.md`. `ae_run_script` (AE-01) is verified live on After
   Effects 26.5 on Windows (`docs/spikes/06-aftereffects-tools-live.md`), not yet on macOS.
-  Its project-switch OK (asking the operator before a script closes or replaces the open
-  project) is unit-tested; its live check is pending.
+  For its project-switch OK (a refusal stating the risk, then the operator's OK in the chat), a
+  plain-text refusal and a flagged run were seen live there on an earlier build; the
+  refuse-first guard, the current refusal text and the risk texts are unit-tested only.
 - Roadmap: `docs/BUILD_PLAN.md` (Phase 6).
 
 ## License

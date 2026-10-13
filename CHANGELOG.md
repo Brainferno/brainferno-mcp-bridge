@@ -19,8 +19,9 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
 - `cc_eval_script` refuses an After Effects script whose text calls `app.open`, `app.openFast`,
   `app.newProject`, `app.project.close`, `app.quit` or `app.restart` (with a dot or as a quoted
   name in brackets), or names `CloseOptions` (comments and strings included), as plain text with
-  nothing sent, and points to `ae_run_script`, which asks the operator first. Other apps are
-  unchanged. Unit-tested; live check pending.
+  nothing sent, and points to `ae_run_script`, which needs the operator's OK in the chat first.
+  Other apps are unchanged. Checked live on After Effects 26.5 (with an earlier wording of the
+  pointer).
 - `ps_batch_play`: a batch whose results contain an in-band `{ _obj: "error" }` entry now
   returns `ok: false` (an `isError` result) naming the failing descriptor, instead of reporting
   success.
@@ -81,9 +82,10 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   texts against that limit. Its error-shape sentence names the new project-switch refusal; to
   fit, the plain-data list and "to the server log" were cut.
 - New audit line for every raw call, run or refused, on every raw-script tool (`ps_batch_play`
-  had none): `AUDIT raw-script tool=… app=… sha256=<12 hex> len=… [count=…] via=stdio|http:<8 chars> outcome=run|refused[ consent=operator|flag|declined|failed|needed]`
-  (`consent` only on `ae_run_script` calls whose script closes or replaces the open project; see
-  AE-01). It is written at every log level and carries no script text; the first 200 characters of a
+  had none): `AUDIT raw-script tool=… app=… sha256=<12 hex> len=… [count=…] via=stdio|http:<8 chars> outcome=run|refused[ consent=flag|needed]`
+  (`consent` only on `ae_run_script` calls whose script closes or replaces the open project:
+  `needed` on the refusal, `flag` on the run after it; see AE-01). It is written at every log
+  level and carries no script text; the first 200 characters of a
   script that runs moved to the `debug` log (`cc_eval_script` used to put them in a `warn`
   line; see Fixed). When the gate is open the server writes one
   `AUDIT raw scripts ENABLED for …` line at startup; the "raw-script tool is disabled" info
@@ -175,22 +177,39 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   - `suppressDialogs` (default `true`) suppresses and discards After Effects' own warning
     dialogs while the script runs. The texts name the ones verified on After Effects 26.5 (an
     export warning, and the missing-font dialog when the script opens a project) and promise no
-    more. With it on, a script that opens another project with `app.open` while the open one
-    has unsaved changes gets no save prompt: After Effects saves the open project over its file.
-    The description warns of this, and the `suppressDialogs` text says to close with
+    more. With it on, a script that opens or creates another project (`app.open`,
+    `app.openFast`, `app.newProject`) while the open project has a file and unsaved changes gets
+    no save prompt: After Effects saves the open project over its file (seen live). On a project
+    with no file, `app.open` still showed the save prompt, which blocks After Effects;
+    `app.openFast` and `app.newProject` on such a project were not tried. The description warns of
+    this, and the `suppressDialogs` text says to close with
     `app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES)` first to discard the changes.
-  - Before a script that closes or replaces the open project (it calls `app.open`,
-    `app.openFast`, `app.newProject`, `app.project.close`, `app.quit` or `app.restart`, with a
-    dot or as a quoted name in brackets, or names `CloseOptions`), the tool reads the open
-    project (read-only) and asks the operator through MCP elicitation when the client supports
-    it — file name, unsaved changes, and what After Effects does with them, saying which parts
-    were seen live and which are not verified — and runs the script only on a yes. A client that
-    cannot ask gets a plain-text refusal; the new `allowProjectSwitch` (default false) is
-    honoured only then, set after the model passed that refusal on to the operator and they
-    agreed in the chat. Every other outcome is plain text with the script not sent, except a
-    call the client cancels during the check or the question: that call gets no result (the
-    client's own request ends with -32001), and the script is not sent either. In a shared
-    session the question says who is answering. Unit-tested; live check pending.
+  - A script that closes or replaces the open project (it calls `app.open`, `app.openFast`,
+    `app.newProject`, `app.project.close`, `app.quit` or `app.restart`, with a dot or as a quoted
+    name in brackets, or names `CloseOptions`) is never sent on its first call. The tool reads
+    the open project (read-only) and refuses in plain text with the file name, whether there are
+    unsaved changes, and, for each call, what the live run saw After Effects do with them or that
+    it was not tried (a close counts as one `CloseOptions` value only when its own argument is that
+    value written out; any other close gets each value's outcome; with two switch calls or more,
+    the later ones act on the project the first leaves open, and the refusal says so); the model
+    passes that on and asks the operator in the chat. Only if they agree does it call again with
+    the same script, `args` (as sent; left out counts as `{}`) and `suppressDialogs` and the new
+    `allowProjectSwitch: true` (default false), which runs that call once, within 10 minutes of
+    the refusal, in the same session (one MCP connection); a flag with no such refusal gets the
+    refusal instead. The approved call does not read the project again, and the refusal says to
+    call without the flag for a new one if the project changes first. A read-only check that
+    fails, or a call the client cancelled during it, records no refusal. In a shared session the
+    refusal says that the person in the chat answers for whoever is at After Effects. The server
+    cannot tell whether the operator was asked: the guard makes sure the model got the refusal,
+    with the risk, first. There is no question in the MCP client: in the live check, Claude Code
+    2.1.296 in a Windows 11 terminal, in three tries (auto mode twice, manual once), advertised
+    MCP form elicitation, did not show the question, and answered
+    `accept {allowProjectSwitch: false}` by itself (no Elicitation hook in user or project
+    settings; managed settings not checked conclusively). Seen live on After Effects 26.5 on an
+    earlier build of this tool (older refusal wording, a flag with no refuse-first guard): a
+    plain-text refusal, a flagged run, and what the calls tried did with unsaved changes (spike
+    06, which lists what was not tried). The refuse-first guard, the current refusal text and the
+    risk texts are unit-tested only.
   - The tool owns the undo group and the dialog suppression, so a script that names
     `app.beginUndoGroup`, `app.endUndoGroup`, `app.beginSuppressDialogs` or
     `app.endSuppressDialogs` — even in a comment or a string — is refused before it is sent.
@@ -206,8 +225,8 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
     and file or folder pickers still open a modal dialog.
   - The description fits the 2,048 characters Claude Code shows, with the safety text first
     (what the tool does and its one undo step, the error-shape rule, the modal-UI warning, the
-    project switch (the auto-save hazard and the operator's OK), the gate, the envelope); the
-    detail is in the parameters' texts.
+    project switch (the auto-save hazard and the operator's OK in the chat), the gate, the
+    envelope); the detail is in the parameters' texts.
   - Plain-text errors mean your script was not sent: raw scripts disabled, a remote session,
     args refused, a managed call named, a project switch not approved (only the read-only check
     ran), After Effects not connected. A JSON envelope means the
@@ -217,8 +236,9 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
     redaction.
   - `timeoutMs` (at most 30 minutes) overrides the slow timeout; a timeout stops the wait, not
     the script.
-  - The audit payload is the JSON of `{ script, args }`; a call whose `args` are nested too
-    deeply to serialize is still audited, once.
+  - The audit payload is the JSON of `{ script, args }`, with `args` `{}` when left out (as the
+    script gets it); a call whose `args` are nested too deeply to serialize is still audited,
+    once.
   - `cc_get_capabilities` has an `ae_run_script` row.
   - Verified live on After Effects 26.5 (Windows 11, 2026-10-12): one Ctrl-Z for a multi-layer
     script with "Undo <undoGroupName>" in the Edit menu, `bodyLine` for a runtime, native, syntax
@@ -226,13 +246,14 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
     above, and later calls waiting behind a timed-out script. Still unit-tested only: the
     end-call notes (After Effects' second `endUndoGroup` does not fail, and ExtendScript has no
     getter literals to make the wrapper throw), the refused audit line with the gate off, and
-    `Window.alert` or global code that calls `alert`. Not tested at all: opening another project
-    over a never-saved one under suppression; Claude Code's elicitation dialog;
-    `close(DO_NOT_SAVE_CHANGES)` over unsaved changes with suppression on (the live project switch
-    closed a project saved just before); what `app.newProject`, `app.openFast`, `app.quit`,
-    `app.restart` and `close(PROMPT_TO_SAVE_CHANGES)` do with unsaved changes under suppression,
-    what `close(SAVE_CHANGES)` does, and `close(DO_NOT_SAVE_CHANGES)` and `app.open` with
-    suppression off; whether `app.open` can be wrapped at run time.
+    `Window.alert` or global code that calls `alert`. Not tried live: `app.quit` and
+    `app.restart`; `app.openFast` and `app.newProject` with suppression off or on a never-saved
+    project; `close(SAVE_CHANGES)` with suppression on; `close(PROMPT_TO_SAVE_CHANGES)` with
+    suppression off; `close(SAVE_CHANGES)` or `close(PROMPT_TO_SAVE_CHANGES)` on a never-saved
+    project; `app.open` with suppression off on a never-saved project;
+    `close(DO_NOT_SAVE_CHANGES)` with suppression off on a never-saved project. A script cannot
+    wrap `app.open`, `app.newProject` or `app.project.close` at run time (assigning to them
+    changes nothing), so the text scan is the only guard.
   - Shared core, for architect review: `server.ts` passes the raw-script gate to
     `registerAfterEffectsTools`, whose options now require `rawScriptApps`, `remote` and
     `allowRemoteRawScripts`; `raw-script.ts` gains `auditJson`, an audit payload builder that
@@ -240,9 +261,10 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
     (otherwise comment edits); `diagnostics.ts` gains the capabilities row and the
     `cc_eval_script` description and `script` parameter changes (see Changed); `config.ts`
     changes comments only. `raw-script.ts`'s `auditRawCall` takes an optional `consent`
-    (written last as ` consent=…`; other tools' lines unchanged), and its error-shape comment
-    names the project switch; `diagnostics.ts`'s `cc_eval_script` imports `projectSwitchCalls`
-    and `evalSwitchRefusal` from `after-effects.ts` and refuses an After Effects project switch.
+    (`flag` or `needed`, written last as ` consent=…`; other tools' lines unchanged), and its
+    error-shape comment names the project switch; `diagnostics.ts`'s `cc_eval_script` imports
+    `projectSwitchCalls` and `evalSwitchRefusal` from `after-effects.ts` and refuses an After
+    Effects project switch.
 
 **Fixed**
 

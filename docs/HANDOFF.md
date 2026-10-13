@@ -69,7 +69,8 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
   fails after the script ran is added to the envelope's error, keeping the value and logs; one
   that fails after the call itself threw is added to that thrown message. The description
   keeps its safety text within the 2,048 characters Claude Code shows. The audit payload is the
-  JSON of `{ script, args }`, built with the new `auditJson` in `raw-script.ts`.
+  JSON of `{ script, args }` (`args` `{}` when left out), built with the new `auditJson` in
+  `raw-script.ts`.
   `cc_get_capabilities` has an `ae_run_script` row. No panel change: the CEP panel's `eval`
   command carries it.
   - **Verified live on After Effects 26.5 (Windows 11, 2026-10-12)** with the gate set to
@@ -82,33 +83,71 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
     when the script opened a project, and each blocked without it; the texts name those and
     promise no more. Found, and now in the model-facing texts: with suppression on, opening another
     project saves the open one's unsaved changes over its file without asking (close it with
-    `CloseOptions.DO_NOT_SAVE_CHANGES` first to discard them, as Adobe documents it; that probe's
-    call timed out behind an open dialog, so its outcome was read from the files afterwards); After
+    `CloseOptions.DO_NOT_SAVE_CHANGES` first to discard them, which the consent run below saw
+    work without a prompt; that probe's call timed out behind an open dialog, so its outcome was
+    read from the files afterwards); After
     Effects reads a number below about 2.2e-308 as 0 and returns numbers with 15 significant
     digits. Also found: a script cannot read the Undo label (`app.findMenuCommandId` returns 0 for
     it). Details: `docs/spikes/06-aftereffects-tools-live.md`.
-  - **Project-switch OK (unit-tested; live check pending).** A script that closes or replaces
-    the open project is not sent until the operator agrees: `projectSwitchCalls` (the trigger),
-    `PROJECT_INFO` as the read-only check, `askProjectSwitch` (MCP elicitation when the client
-    advertises form mode; otherwise a plain-text refusal and `allowProjectSwitch`).
-    `cc_eval_script` refuses such an After Effects script. The audit line carries `consent=`.
-    Live check: `docs/spikes/06-aftereffects-tools-live.md`, AE-01 consent.
+  - **Project-switch OK, chat only (a refusal and a flagged run seen live on an earlier build;
+    the refuse-first guard and the current texts unit-tested only).** A script that closes or
+    replaces the open project is never sent on its first call: `projectSwitchCalls` (the
+    trigger), `PROJECT_INFO` as the read-only check, then a plain-text refusal (`switchRefusal`,
+    with `riskSentence`: for each call, what the live run below saw it do with unsaved changes, or
+    that it was not tried; a close counts as one `CloseOptions` value only when its own argument
+    is that value, per `closeOptionsOf`) that the model passes on to the operator in the chat.
+    `allowProjectSwitch: true` runs the same call (same script, `args` as sent with `{}` for left
+    out, and `suppressDialogs`) only if this session refused it within the last 10 minutes, once
+    (`SwitchRefusals`, one per `McpServer`; a session is one MCP connection, so in Claude Code a
+    window's subagents and its conversations after `/clear` are expected to share it, not
+    verified live). The approved call does not read the project again; the refusal says so.
+    `cc_eval_script` refuses such an After Effects script and points to `ae_run_script`. The audit
+    line carries `consent=needed` on the refusal and `consent=flag` on the run. The server cannot
+    tell whether the operator was asked: the guard only makes sure a refusal stating the risk
+    reached the model first (the audit line records the pair); the asking happens in the chat,
+    where the operator can see the model's tool calls. Owner decision 2026-10-12: no MCP
+    elicitation, because in the live check Claude Code 2.1.296 in a Windows 11 terminal, in three
+    tries (auto mode twice, after 11 s and 14 s; manual once, after 1 s), advertised form
+    elicitation, did not show the question, and answered `accept {allowProjectSwitch: false}` by
+    itself while the operator saw nothing (no Elicitation hook in user or project settings;
+    managed settings not checked conclusively). **Seen live on After Effects 26.5x89 (Windows 11,
+    2026-10-12) on the earlier build (fe4700c)**, whose refusal had older wording and whose flag
+    ran with no refuse-first guard: a plain-text refusal with the project's name and state, a run
+    after `allowProjectSwitch: true` (audit `refused consent=needed`, then `run consent=flag`),
+    `cc_eval_script`'s refusal; a script cannot wrap `app.open`, `app.project.close` or
+    `app.newProject` (assigning to them is silently ignored), so the text scan is the only guard.
+    What After Effects did with a project's unsaved changes ("saved" = the project has a file):
+
+    | Call | suppressDialogs | Project | Seen live |
+    | --- | --- | --- | --- |
+    | `app.open` | on | saved | no prompt; saved over the file (probe 10, F2) |
+    | `app.openFast` | on | saved | the same (T2) |
+    | `app.newProject` | on | saved | the same (T1) |
+    | `app.open` | on | never saved | After Effects' save prompt anyway, blocking After Effects (the call timed out); after Don't Save the other project was not opened (T3) |
+    | `app.open` | off | saved | save prompt, blocking (the call timed out); after Don't Save the other project opened, file unchanged (T7) |
+    | `close(PROMPT_TO_SAVE_CHANGES)` | on | saved | no prompt; saved over the file (T4) |
+    | `close(DO_NOT_SAVE_CHANGES)` | on / off | saved | no prompt; changes thrown away, file unchanged (T5on / T5) |
+    | `close(DO_NOT_SAVE_CHANGES)` | on | never saved | no prompt; afterwards the open project had no file and no items (t4#0) |
+    | `close(SAVE_CHANGES)` | off | saved | no prompt; saved over the file (T6) |
+
+    Details and the test ids: `docs/spikes/06-aftereffects-tools-live.md`, "AE-01 consent live
+    run".
   - **Still unit-tested only:** the end-call notes — a second `endUndoGroup` does not fail, and
     ExtendScript has no getter literals to make the wrapper throw (R10); the refused audit line
     with the gate off (the refusal text was seen live); `Window.alert` and global code that calls
-    `alert`, not probed live by design; and the server side of the project-switch OK (the scan,
-    the question and its answers against an in-memory client, the plain-text fallback and
-    `allowProjectSwitch`, the 10-minute timeout, the cancel text for a client that cannot show
-    the question, the remote line).
-  - **Not tested at all** (live check pending where the spike 06 AE-01 consent checklist has a
-    step): opening another project over a never-saved one under suppression (not tried live;
-    ae-host has no save prompt to model); Claude Code's elicitation dialog (how it shows the
-    question, what it sends back, and whether a host that cannot show it answers cancel);
-    `close(DO_NOT_SAVE_CHANGES)` over unsaved changes with suppression on (the live project switch
-    closed a project saved just before); what `app.newProject`, `app.openFast`, `app.quit`,
-    `app.restart` and `close(PROMPT_TO_SAVE_CHANGES)` do with unsaved changes under suppression,
-    what `close(SAVE_CHANGES)` does, and `close(DO_NOT_SAVE_CHANGES)` and `app.open` with
-    suppression off; and whether `app.open` can be wrapped at run time.
+    `alert`, not probed live by design; and the refuse-first guard (a flag with no matching
+    refusal is refused; no flag, or `false`, is never let through; the key covers script, `args`
+    as sent and `suppressDialogs`; one use; 10 minutes; 64 per session; per session; the OK kept
+    when After Effects is not connected; nothing recorded after a failed or cancelled check), the
+    current refusal text, the remote line and the risk texts (`closeOptionsOf`'s per-close rule,
+    the later-calls sentence, the "as it is now" sentence).
+  - **Not tried live:** `app.quit` and `app.restart` (any case); `app.openFast` and
+    `app.newProject` with suppression off or on a never-saved project; `close(SAVE_CHANGES)` with
+    suppression on; `close(PROMPT_TO_SAVE_CHANGES)` with suppression off; `close(SAVE_CHANGES)` or
+    `close(PROMPT_TO_SAVE_CHANGES)` on a never-saved project; `app.open` with suppression off on a
+    never-saved project; `close(DO_NOT_SAVE_CHANGES)` with suppression off on a never-saved
+    project. The refusal says "not verified live" for each of these, and an expected save prompt
+    as expected.
 - **macOS run on 2026-08-28** (macOS 26, Adobe 2026 apps, Node 26): panels, Illustrator via
   osascript, previews, ffmpeg all fine as written. Two real bugs fixed — the aerender path
   (`Folder.appPackage` is the `.app` itself on macOS) and Media Encoder (nested console bundle,

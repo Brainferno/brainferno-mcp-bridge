@@ -421,8 +421,13 @@ export function auditRawCall(call: {
   count?: number;
   outcome: "run" | "refused";
   via: string;
-  /** ae_run_script, a script that closes or replaces the open project: how the operator's OK went (AE-01). */
-  consent?: "operator" | "flag" | "declined" | "failed" | "needed" | undefined;
+  /**
+   * ae_run_script, a script that closes or replaces the open project (AE-01): "needed" on the refusal that shows the
+   * risk, "flag" on the run allowProjectSwitch: true let through after it (the model sets the flag once the operator
+   * agreed in the chat; the server cannot check that). The run line is written before dispatch, so a flagged call that
+   * then finds After Effects not connected has one too, and keeps its OK for a retry.
+   */
+  consent?: "flag" | "needed" | undefined;
 }): void {
   const hash = createHash("sha256").update(call.payload).digest("hex").slice(0, 12);
   const count = call.count === undefined ? "" : ` count=${call.count}`;
