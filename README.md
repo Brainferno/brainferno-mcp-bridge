@@ -247,7 +247,7 @@ Open it once per app; it connects on its own and shows a log and a kill switch.
 
 ### 4. Talk to it
 
-In Claude Code: `/mcp` shows **brainferno** connected. Try: *"Which Adobe apps are
+In Claude Code: `/mcp` shows **brainferno-adobe-bridge** connected. Try: *"Which Adobe apps are
 connected?"* (`cc_connected_apps`), then anything from the examples above.
 
 ### Other MCP clients: Codex CLI, Gemini CLI, and more
@@ -257,10 +257,10 @@ The installer registers the server with every client CLI it finds. To do it by h
 line):
 
 ```bash
-codex mcp add brainferno --env BRAINFERNO_MCP_DEFAULT_WAIT=false \
+codex mcp add brainferno-adobe-bridge --env BRAINFERNO_MCP_DEFAULT_WAIT=false \
   --env BRAINFERNO_MCP_PREVIEW=path --env BRAINFERNO_MCP_JOB_WAIT_SECONDS=50 \
   -- node "<path>/dist/index.js"
-gemini mcp add -s user -e BRAINFERNO_MCP_DEFAULT_WAIT=false brainferno node "<path>/dist/index.js"
+gemini mcp add -s user -e BRAINFERNO_MCP_DEFAULT_WAIT=false brainferno-adobe-bridge node "<path>/dist/index.js"
 ```
 
 The env vars adapt the server to each client — Claude Code runs without them:
@@ -288,19 +288,19 @@ installer prints the exact line). On the other computer:
 
 ```bash
 claude mcp add --scope user --transport http \
-  --header "Authorization: Bearer <token>" brainferno http://<studio-pc>:7898/mcp
+  --header "Authorization: Bearer <token>" brainferno-adobe-bridge http://<studio-pc>:7898/mcp
 ```
 
 The Adobe apps, panels, media and previews all stay on the studio PC; only commands and
 results travel. The wire is plain HTTP — use a trusted LAN, a VPN, or Tailscale. The panels'
 own hub never leaves loopback. An SSH alternative needs no server setting at all:
-`claude mcp add brainferno -- ssh user@studio-pc node <path>/packages/server/dist/index.js`.
+`claude mcp add brainferno-adobe-bridge -- ssh user@studio-pc node <path>/packages/server/dist/index.js`.
 
 ### Updating
 
 npm: `npm install -g brainferno-mcp-bridge@latest`. Source: `git pull && npm install && npm run build`.
 Then re-run the installer (your choices are
-kept) and reconnect in Claude Code (`/mcp` → brainferno → reconnect). Panels pick up changes
+kept) and reconnect in Claude Code (`/mcp` → brainferno-adobe-bridge → reconnect). Panels pick up changes
 on reload (UXP Developer Tool → Reload; CEP on reopen).
 
 ---

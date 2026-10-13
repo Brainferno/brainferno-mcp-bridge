@@ -6,6 +6,15 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
 
 **Breaking**
 
+- The installer now registers the server as `brainferno-adobe-bridge` (was `brainferno`) in
+  Claude Code, Codex CLI and Gemini CLI, and removes the old `brainferno` and `adobe-cc` entries
+  first. Tool names in clients change with it (Claude Code: `mcp__brainferno-adobe-bridge__…`),
+  so permission rules that name `mcp__brainferno__…` need the new prefix. In Claude Code the
+  installer reads the old entry first and keeps its `BRAINFERNO_MCP_*` env (such as
+  `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS`) in the new one; it names, without values, any other env it
+  does not carry, and for Codex and Gemini it says to add hand-added env again. An entry in a
+  project's `.mcp.json` is not removed: rename it there by hand. Re-run `npm run install-cc` to switch. The npm package, the
+  `~/.brainferno-mcp-bridge/` folder and the `BRAINFERNO_MCP_*` variables keep their names.
 - `cc_eval_script` and `ps_batch_play` now return the raw-script envelope
   `{ ok, error?: { message, line, bodyLine }, durationMs, value, logs, logsDropped? }`, keys in
   that order. `ps_batch_play`'s results array moved under `value`.

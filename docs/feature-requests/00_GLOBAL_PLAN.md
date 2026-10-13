@@ -53,7 +53,7 @@ From `~/.claude/projects/…brainferno-mcp-bridge/memory/` into `docs/spikes/` (
 Keep `live-verify-routine` as memory (it is a personal routine; the same steps are in `HANDOFF.md`). Update `project-status` (it says v0.2.2) or delete it and rely on `HANDOFF.md` and `CHANGELOG.md`. Leave one-line pointers in `MEMORY.md`.
 
 ### G5 — Turn on the raw-script tools
-Add `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS=1` to `mcpServers.brainferno.env` in `~/.claude.json` (the `env` object is empty today) and restart Claude Code. This enables the raw-script tools (`cc_eval_script`, `ps_batch_play` and, since `AE-01`, `ae_run_script`). They are raw-script escape hatches, so this is the owner's call. Prompt `X-01` makes the gate discoverable.
+Add `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS=1` to `mcpServers["brainferno-adobe-bridge"].env` in `~/.claude.json` (the `env` object is empty today) and restart Claude Code. This enables the raw-script tools (`cc_eval_script`, `ps_batch_play` and, since `AE-01`, `ae_run_script`). They are raw-script escape hatches, so this is the owner's call. Prompt `X-01` makes the gate discoverable.
 
 ### G6 — Reinstall the After Effects panel
 The only installed copy is `C:\Program Files (x86)\Common Files\Adobe\CEP\extensions\Brainferno MCP Bridge` with `PANEL_VERSION = "0.2.0"`. The server is 0.3.2. There is no dev junction in `%APPDATA%\Adobe\CEP\extensions` (the memory note describing one is out of date on this machine). New tools still work because the `eval` command is generic. Reinstall with `npm run install-cc`, keep exactly one install, and confirm which copy After Effects loads. Prompt `X-02` adds a version-mismatch warning.

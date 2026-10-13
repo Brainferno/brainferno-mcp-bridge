@@ -7,7 +7,7 @@ import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 
 import { DEFAULT_ILLUSTRATOR_MCP_URL, migrateLegacyUserDir, readUserConfig, userConfigPath } from "../config.js";
-import { AME_INI_SEED, APP_CHOICES, DEFAULT_HTTP_PORT, appsNeed, checkIllustratorKey, detectInstalledApps, extractIllustratorKey, extractIllustratorUrl, finderCopyScript, findIllustratorApps, firewallCommands, lanAddresses, mergeUserConfig, parseClients, pickApps, platformPaths, registrationPlans, rewriteAmeIni, type ClientPlan, type InstallMode } from "./lib.js";
+import { AME_INI_SEED, APP_CHOICES, DEFAULT_HTTP_PORT, appsNeed, carryEnv, checkIllustratorKey, envFromMcpGet, detectInstalledApps, extractIllustratorKey, extractIllustratorUrl, finderCopyScript, findIllustratorApps, firewallCommands, lanAddresses, mergeUserConfig, MCP_SERVER_NAME, parseClients, pickApps, platformPaths, registrationPlans, rewriteAmeIni, type ClientPlan, type InstallMode } from "./lib.js";
 
 /**
  * Interactive installer:
@@ -325,11 +325,23 @@ async function main(): Promise<void> {
   const wantRegister = detectedClients.length > 0 && (flag("register") || (!flag("yes") && (await ask(`Register with ${detectedClients.map((p) => p.label).join(", ")} now? (y/n)`, "y")).toLowerCase().startsWith("y")));
   if (wantRegister) {
     for (const p of detectedClients) {
+      // Read the entries about to go, so env the operator added by hand (such as
+      // BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS) moves to the new one; the current name is read last and wins.
+      const oldEnv: Record<string, string> = {};
+      for (const l of p.lookups) {
+        const got = run(l);
+        if (got.code === 0) Object.assign(oldEnv, envFromMcpGet(got.out));
+      }
+      const { add, carried, dropped } = carryEnv(p, oldEnv);
       // Replace our own entry, and retire stale or pre-rename names; removal failures are fine.
-      for (const r of p.removals) run(r);
-      const res = run(p.add);
-      if (res.code === 0) ok(`${p.label}: registered as 'brainferno'`);
-      else warn(`${p.label}: registration failed (${res.out.trim().split("\n")[0] ?? ""}) — run the line above yourself`);
+      let removed = false;
+      for (const r of p.removals) if (run(r).code === 0) removed = true;
+      const res = run(add);
+      if (res.code === 0) ok(`${p.label}: registered as '${MCP_SERVER_NAME}'${carried.length ? ` (kept ${carried.join(", ")} from the old entry)` : ""}`);
+      else warn(`${p.label}: registration failed (${res.out.trim().split("\n")[0] ?? ""}) — run the line above yourself${carried.length ? `, adding back ${carried.join(", ")}` : ""}`);
+      // Names only: a value may be a secret.
+      if (dropped.length) warn(`${p.label}: not carried over from the old entry: ${dropped.join(", ")} — add them again by hand if you need them`);
+      else if (removed && p.lookups.length === 0) say(`  ${p.label}: env you added by hand to an earlier entry is not carried over — add it again if you need it.`);
     }
   }
   if (mode === "shared") {
@@ -343,7 +355,7 @@ async function main(): Promise<void> {
     say("  The wire is plain HTTP: use it on a trusted LAN, a VPN, or Tailscale.");
   }
   say("");
-  say("Done. Restart the server to apply (Claude Code: /mcp → brainferno → reconnect; Codex/Gemini: start a new session).");
+  say(`Done. Restart the server to apply (Claude Code: /mcp → ${MCP_SERVER_NAME} → reconnect; Codex/Gemini: start a new session).`);
   rl.close();
 }
 

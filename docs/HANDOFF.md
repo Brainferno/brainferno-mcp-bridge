@@ -160,10 +160,10 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
 
 ## Working routine that saved the most time
 
-- Server change: `npm run build`, kill the running server, then `/mcp` → brainferno →
+- Server change: `npm run build`, kill the running server, then `/mcp` → brainferno-adobe-bridge →
   reconnect in Claude Code. A plain reconnect reuses the old process.
 - **Kill the right server.** With more than one Claude Code window open, each runs its own
-  brainferno server, and the `pid` in `~/.brainferno-mcp-bridge/bridge.json` is simply the
+  brainferno-adobe-bridge server, and the `pid` in `~/.brainferno-mcp-bridge/bridge.json` is simply the
   server that started last — it may belong to another window. Find yours by its parent: the
   `node …\packages\server\dist\index.js` process whose parent is this session's `claude.exe`
   (`Get-CimInstance Win32_Process` shows `ParentProcessId` and `CommandLine`). A panel stays on
@@ -285,7 +285,7 @@ last Windows run, so step 6 is not optional.
 5. **Open the panels.** After Effects / Audition: Window → Extensions → Brainferno MCP Bridge.
    Photoshop / Premiere Pro: load `packages/panel-uxp` and `packages/panel-uxp-ppro` in the UXP
    Developer Tool (Premiere needs Settings → Plugins → Enable developer mode, then a restart).
-   Then `/mcp` → brainferno → reconnect, and `cc_connected_apps` should list them.
+   Then `/mcp` → brainferno-adobe-bridge → reconnect, and `cc_connected_apps` should list them.
 6. **Re-verify the lanes the macOS work touched.** Done on the primary Windows 11 machine
    2026-08-30 — all five checks below green against the live Adobe 2026 apps. Still required on
    any *other* Windows machine picking this up. The Windows branches were kept identical and

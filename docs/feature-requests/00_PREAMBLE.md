@@ -53,7 +53,7 @@ File: `packages/server/test/after-effects-tools.test.ts`.
 3. Tool counts: **never hand-write them.** Since `X-03`, `packages/server/test/tool-counts.test.ts` counts the live registry and fails, printing the right number, when the README's per-app headers or total, or the "Expect N tools" line in `docs/HANDOFF.md`, disagree — copy the number it prints.
 4. The matching spike doc gains a line for any new quirk you hit.
 5. Live-verify on a real Adobe app when the prompt says so:
-   - Server change: `npm run build`, kill the server pid in `~/.brainferno-mcp-bridge/bridge.json` (`taskkill /PID <pid> /F`), then `/mcp` → `brainferno` → reconnect. A plain reconnect reuses the old process.
+   - Server change: `npm run build`, kill the server pid in `~/.brainferno-mcp-bridge/bridge.json` (`taskkill /PID <pid> /F`), then `/mcp` → `brainferno-adobe-bridge` → reconnect. A plain reconnect reuses the old process.
    - UXP panel change (Photoshop, Premiere): reload in the UXP Developer Tool.
    - CEP panel change (After Effects, Audition): close and reopen the panel.
    - Stale servers can hold port 7897; kill them and delete a dead-owner `bridge.json` before reconnecting.
