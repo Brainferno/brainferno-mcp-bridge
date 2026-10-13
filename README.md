@@ -98,6 +98,8 @@ single-frame preview, render queue, and headless rendering through `aerender` (t
 Plus a raw ExtendScript tool (`ae_run_script`) that runs a whole script as one undo step and is
 always listed but refuses until you enable raw scripts for After Effects — see
 [Raw scripts](#raw-scripts-opt-in). It is verified live on Windows (After Effects 26.5).
+A script that closes or replaces the open project asks the operator first, in the MCP client
+(unit-tested; live check pending).
 
 ### Premiere Pro — 29 tools
 Project, sequences and items, a full sequence read (every track and clip with times),
@@ -357,8 +359,8 @@ The wire protocol is documented in [`docs/protocol.md`](docs/protocol.md).
 | `ame_*` (6) | Media Encoder (headless) | Encode media / `.prproj` sequence / FCP XML with an `.epr` preset; status, history, cancel, service start/stop — [live run](docs/spikes/10-media-encoder-live.md), [macOS](docs/spikes/13-macos-live.md) |
 | `audio_*` (9) | ffmpeg | Probe, R128 measure + two-pass normalize, convert/extract, trim, trim silence, denoise, mix, waveform image |
 | `pipeline_*` (4) | cross-app | `ps_to_ae`, `render_and_import`, `audio_roundtrip`, `ai_to_ps` — one call, one job, failure names the step + recovery tool — [live run](docs/spikes/09-pipelines-live.md) |
-| `cc_eval_script` | After Effects, Illustrator, Audition | Raw ExtendScript escape hatch — always listed; refuses unless enabled (**opt-in**, `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS`) — see `cc_get_capabilities` |
-| `ae_run_script` | After Effects | Raw ExtendScript as one undo step, with `__args` and After Effects' warning dialogs suppressed — always listed; refuses unless enabled for After Effects (**opt-in**, same switch) — [live run](docs/spikes/06-aftereffects-tools-live.md) on Windows |
+| `cc_eval_script` | After Effects, Illustrator, Audition | Raw ExtendScript escape hatch — always listed; refuses unless enabled (**opt-in**, `BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS`) — see `cc_get_capabilities`; refuses an After Effects script that closes or replaces the open project (use `ae_run_script`) |
+| `ae_run_script` | After Effects | Raw ExtendScript as one undo step, with `__args` and After Effects' warning dialogs suppressed — always listed; refuses unless enabled for After Effects (**opt-in**, same switch); a script that closes or replaces the open project needs the operator's OK, asked in the client (unit-tested; live check pending) — [live run](docs/spikes/06-aftereffects-tools-live.md) on Windows |
 | `ps_batch_play` | Photoshop | Raw batchPlay descriptors — always listed; refuses unless enabled for Photoshop (**opt-in**, same switch) |
 
 Tools are always advertised for the apps you chose, even when an app is closed — a closed
@@ -383,7 +385,8 @@ server env — `1` (or `all`) for every app with a raw-script tool, or a comma l
 `after_effects,photoshop` — and restarts. Remote (*shared*) sessions are refused even then
 unless `BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS=1` is also set.
 `cc_get_capabilities` shows the calling session which tools are enabled and how to enable the
-rest.
+rest. `cc_eval_script` does not send an After Effects script that closes or replaces the open
+project; `ae_run_script` runs it after asking the operator (below).
 
 They all return the same envelope, keys in this order:
 
@@ -423,9 +426,9 @@ After Effects 26.5 on Windows; the probes are in `docs/spikes/06-aftereffects-to
 - **Dialogs.** `suppressDialogs` (default on) suppresses and discards After Effects' own warning
   dialogs while the script runs. It was verified on an export warning and on the missing-font
   dialog shown when the script opens a project, and is not promised for every dialog.
-  **With it on, a script that opens another project while the open one has unsaved changes gets
-  no save prompt: After Effects saves the open project over its file, those changes included.**
-  To discard them instead, close it first with
+  **With it on, a script that opens another project with `app.open` while the open one has
+  unsaved changes gets no save prompt: After Effects saves the open project over its file, those
+  changes included.** To discard them instead, close it first with
   `app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES)`. Modal UI the script opens itself is
   not covered. A bare `alert`, `confirm` or `prompt` written in the script's own text fails
   the call instead of opening a dialog, and says what to do instead: `__log(msg)` for `alert`;
@@ -435,6 +438,33 @@ After Effects 26.5 on Windows; the probes are in `docs/spikes/06-aftereffects-to
   that calls `alert`, `confirm` or `prompt`; ScriptUI dialogs; file or folder pickers; a menu
   command that opens a dialog. (That list was not probed live, by design: each one would block
   After Effects.)
+- **Closing or replacing the open project needs the operator's OK** (unit-tested; live check
+  pending). A script whose text calls `app.open`, `app.openFast`, `app.newProject`,
+  `app.project.close`, `app.quit` or `app.restart` (with a dot or as a quoted name in brackets,
+  such as `app['open']`), or names `CloseOptions` — comments and strings included — is not sent
+  until the operator agrees. The tool first reads the open project (`ae_project_info`'s
+  read-only script). When the client supports MCP elicitation, it asks there, giving the file
+  name (or "never saved"), whether there are unsaved changes, and what After Effects does with
+  them, saying which parts were seen live. With `suppressDialogs` on, `app.open` over a saved
+  project was seen to save them over the file without asking; the other calls, and `app.open` on
+  a never-saved project, were not tried over unsaved changes, so what happens to them, and
+  whether After Effects asks, is not verified (they may be saved or lost). As Adobe documents it,
+  `CloseOptions.DO_NOT_SAVE_CHANGES` discards them and `CloseOptions.SAVE_CHANGES` saves them;
+  `CloseOptions.PROMPT_TO_SAVE_CHANGES` may show After Effects' own save prompt. None of the
+  three was verified live. The question itself never appears in After Effects. A client that
+  cannot ask gets a plain-text refusal stating the risk; the model tells the operator what it
+  says, asks in the chat, and calls again with `allowProjectSwitch: true` only if they agreed.
+  With a client that can ask, that flag does not skip the question. A decline, a dismissed
+  question, an error or no answer within 10 minutes means the script is not sent. In a shared
+  (remote) session the question goes to that session's client, whose user answers for whoever
+  is at After Effects, and the question says so. The question is a snapshot taken before the
+  wait: changes the operator makes in After Effects while it is open are not re-checked. A
+  client that advertises form elicitation but hands the form to its own model (auto-fill) would
+  let the model answer, and the server cannot tell; Claude Code shows it to the person (live
+  check pending). The check reads the text only and does not catch, among others: a computed
+  name, an alias, `with (app) { open(f) }`, `(app).open`, `.call`/`.apply`, a comment or escape
+  inside the call, a menu command, or code run from elsewhere at run time (`$.evalFile`, `eval`
+  of a file's text or of text passed in `args`).
 - **The tool owns the undo group and dialog suppression**, so a script that names
   `app.beginUndoGroup`, `app.endUndoGroup`, `app.beginSuppressDialogs` or
   `app.endSuppressDialogs` — even in a comment or a string — is refused before it is sent. If
@@ -446,10 +476,12 @@ After Effects 26.5 on Windows; the probes are in `docs/spikes/06-aftereffects-to
 - **A timeout stops the wait, not the script:** After Effects keeps running it, and later
   After Effects calls wait behind it.
 
-**Reading a raw-script error:** a tool error in plain text means nothing was sent to the app
-(raw scripts disabled, app not enabled, app not connected, or args or script refused
-(`ae_run_script`)). A tool error whose text is a JSON envelope means the script or batch *was*
-sent and may have partly run — check the document before re-running it.
+**Reading a raw-script error:** a tool error in plain text means your script was not sent to
+the app (raw scripts disabled, app not enabled, app not connected, args or script refused
+(`ae_run_script`), an After Effects script that closes or replaces the open project
+(`cc_eval_script`), or the operator's OK for such a script not given (`ae_run_script`; only its
+read-only project check may have run)). A tool error whose text is a JSON envelope means the
+script or batch *was* sent and may have partly run — check the document before re-running it.
 
 ---
 
@@ -514,7 +546,10 @@ override it:
   refused unless `BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS=1`.
 - Every raw-script call, run or refused, writes one audit line to the server's stderr log,
   at every `BRAINFERNO_MCP_LOG_LEVEL` (the level cannot silence it):
-  `[brainferno-mcp-bridge] AUDIT raw-script tool=<tool> app=<app> sha256=<12 hex> len=<n> [count=<n>] via=<via> outcome=<run|refused>`.
+  `[brainferno-mcp-bridge] AUDIT raw-script tool=<tool> app=<app> sha256=<12 hex> len=<n> [count=<n>] via=<via> outcome=<run|refused>[ consent=<operator|flag|declined|failed|needed>]`.
+  `consent` appears only on `ae_run_script` calls whose script closes or replaces the open
+  project, and says how the operator's OK went (`flag` = the model passed `allowProjectSwitch`
+  because the client cannot ask).
   It records the first 12 hex digits of a SHA-256 and the length of the script (for
   `ae_run_script`, of the JSON of `{ script, args }`; for `ps_batch_play`, of the descriptors'
   JSON, plus their `count`) — never the script itself; on a run the first 200 characters of
@@ -581,6 +616,8 @@ docs/                build plan, protocol, live-run notes (spikes/), Audition AP
   unit-tested but not yet verified against the live CLIs — that run is
   `docs/spikes/15-multi-client-lanes.md`. `ae_run_script` (AE-01) is verified live on After
   Effects 26.5 on Windows (`docs/spikes/06-aftereffects-tools-live.md`), not yet on macOS.
+  Its project-switch OK (asking the operator before a script closes or replaces the open
+  project) is unit-tested; its live check is pending.
 - Roadmap: `docs/BUILD_PLAN.md` (Phase 6).
 
 ## License

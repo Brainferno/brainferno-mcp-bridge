@@ -5,9 +5,11 @@
  * these; none of them re-implements a piece.
  *
  * Error-shape rule (stated in every tool's description): a tool error with PLAIN TEXT
- * means nothing was dispatched (gate off, app not enabled, app not connected, args or
- * script refused (ae_run_script)); a tool error whose text is a JSON ENVELOPE means the
- * script/batch was sent and may have partly run.
+ * means the caller's script was not dispatched (gate off, app not enabled, app not
+ * connected, args or script refused, an After Effects script that closes or replaces the
+ * open project sent to cc_eval_script, or a project switch the operator did not approve
+ * (ae_run_script), whose read-only project check may have run); a tool error whose text
+ * is a JSON ENVELOPE means the script/batch was sent and may have partly run.
  */
 
 import { createHash } from "node:crypto";
@@ -419,12 +421,15 @@ export function auditRawCall(call: {
   count?: number;
   outcome: "run" | "refused";
   via: string;
+  /** ae_run_script, a script that closes or replaces the open project: how the operator's OK went (AE-01). */
+  consent?: "operator" | "flag" | "declined" | "failed" | "needed" | undefined;
 }): void {
   const hash = createHash("sha256").update(call.payload).digest("hex").slice(0, 12);
   const count = call.count === undefined ? "" : ` count=${call.count}`;
+  const consent = call.consent === undefined ? "" : ` consent=${call.consent}`;
   log.audit(
     `raw-script tool=${call.tool} app=${call.app} sha256=${hash} len=${call.payload.length}${count} ` +
-      `via=${call.via} outcome=${call.outcome}`,
+      `via=${call.via} outcome=${call.outcome}${consent}`,
   );
   if (call.outcome === "run") log.debug(`raw-script ${call.tool} ${call.app} [${hash}]: ${logExcerpt(call.payload)}`);
 }
