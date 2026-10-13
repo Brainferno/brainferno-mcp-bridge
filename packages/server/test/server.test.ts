@@ -31,6 +31,7 @@ import {
   rawScriptWrapper,
 } from "../src/tools/raw-script.js";
 import { SERVER_VERSION } from "../src/version.js";
+import { MCP_SERVER_NAME } from "../src/install/lib.js";
 import { ScriptError } from "../src/bridge/types.js";
 import { setRedactionSecrets } from "../src/tools/echo.js";
 import { scriptErrorText } from "../src/tools/result.js";
@@ -440,6 +441,10 @@ describe("tool descriptions a client shows whole (AE-01 R1, R11)", () => {
         .map(([k, p]) => `${t.name}.${k}: ${p.description!.length}`),
     );
     expect(overParams).toEqual([]);
+    // Clients prefix each tool with the registered server name (Claude Code: mcp__<server>__<tool>)
+    // and allow 64 characters in all.
+    const tooLong = names.map((n) => `mcp__${MCP_SERVER_NAME}__${n}`).filter((n) => n.length > 64);
+    expect(tooLong).toEqual([]);
     // Each raw tool's gate sentence is inside the cut, so the model learns how the tool is enabled.
     for (const raw of ["ae_run_script", "cc_eval_script"]) {
       const d = tools.find((t) => t.name === raw)!.description!;

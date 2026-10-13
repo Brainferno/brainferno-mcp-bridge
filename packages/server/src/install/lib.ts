@@ -259,10 +259,19 @@ export function firewallCommands(platform: NodeJS.Platform, mode: InstallMode, p
   return [del, ["netsh", "advfirewall", "firewall", "add", "rule", `name=${name}`, "dir=in", "action=allow", "protocol=TCP", `localport=${port}`, "profile=private"]];
 }
 
+/**
+ * The name each MCP client registers the server under. Clients build tool names from it
+ * (`mcp__brainferno-adobe-bridge__ae_run_script` in Claude Code); the longest such name is 58
+ * characters, within the 64 that clients allow.
+ */
+export const MCP_SERVER_NAME = "brainferno-adobe-bridge";
+/** Earlier registration names, removed before each add so a client is never left with two. */
+export const LEGACY_SERVER_NAMES: readonly string[] = ["brainferno", "adobe-cc"];
+
 /** The `claude mcp add` lines to print/run. */
 export function mcpAddCommands(o: { mode: InstallMode; distIndex: string; port: number; token: string; addresses: string[] }): { local: string; remote: string[] } {
-  const local = `claude mcp add --scope user brainferno -- node "${o.distIndex}"`;
-  const remote = o.mode === "shared" ? o.addresses.map((a) => `claude mcp add --scope user --transport http --header "Authorization: Bearer ${o.token}" brainferno http://${a}:${o.port}/mcp`) : [];
+  const local = `claude mcp add --scope user ${MCP_SERVER_NAME} -- node "${o.distIndex}"`;
+  const remote = o.mode === "shared" ? o.addresses.map((a) => `claude mcp add --scope user --transport http --header "Authorization: Bearer ${o.token}" ${MCP_SERVER_NAME} http://${a}:${o.port}/mcp`) : [];
   return { local, remote };
 }
 
@@ -300,6 +309,11 @@ export interface ClientPlan {
   probe: string[];
   /** Run before `add`; failures are ignored (stale or renamed entries). */
   removals: string[][];
+  /**
+   * Run before the removals to read each entry they retire (`claude mcp get <name>`), so env the
+   * operator added by hand can be carried into the new entry (`carryEnv`). Claude Code only.
+   */
+  lookups: string[][];
   /** Registration argv. */
   add: string[];
   /** The same registration as one printable line. */
@@ -313,6 +327,8 @@ export function registrationPlans(o: { mode: InstallMode; distIndex: string; por
   const chosen = o.clients ?? MCP_CLIENTS;
   const plans: ClientPlan[] = [];
   const urls = o.addresses.map((a) => `http://${a}:${o.port}/mcp`);
+  // The old names, then the current one (a re-run replaces it).
+  const names = [...LEGACY_SERVER_NAMES, MCP_SERVER_NAME];
 
   if (chosen.includes("claude")) {
     const cmds = mcpAddCommands(o);
@@ -320,11 +336,9 @@ export function registrationPlans(o: { mode: InstallMode; distIndex: string; por
       client: "claude",
       label: "Claude Code",
       probe: ["claude", "--version"],
-      removals: ["user", "local"].flatMap((scope) => [
-        ["claude", "mcp", "remove", "--scope", scope, "brainferno"],
-        ["claude", "mcp", "remove", "--scope", scope, "adobe-cc"],
-      ]),
-      add: ["claude", "mcp", "add", "--scope", "user", "brainferno", "--", "node", o.distIndex],
+      removals: ["user", "local"].flatMap((scope) => names.map((n) => ["claude", "mcp", "remove", "--scope", scope, n])),
+      lookups: names.map((n) => ["claude", "mcp", "get", n]),
+      add: ["claude", "mcp", "add", "--scope", "user", MCP_SERVER_NAME, "--", "node", o.distIndex],
       addLine: cmds.local,
       remoteLines: cmds.remote,
     });
@@ -336,15 +350,16 @@ export function registrationPlans(o: { mode: InstallMode; distIndex: string; por
       client: "codex",
       label: "Codex CLI",
       probe: ["codex", "--version"],
-      removals: [["codex", "mcp", "remove", "brainferno"]],
-      add: ["codex", "mcp", "add", "brainferno", ...envArgs, "--", "node", o.distIndex],
-      addLine: `codex mcp add brainferno ${envArgs.join(" ")} -- node "${o.distIndex}"`,
+      removals: names.map((n) => ["codex", "mcp", "remove", n]),
+      lookups: [],
+      add: ["codex", "mcp", "add", MCP_SERVER_NAME, ...envArgs, "--", "node", o.distIndex],
+      addLine: `codex mcp add ${MCP_SERVER_NAME} ${envArgs.join(" ")} -- node "${o.distIndex}"`,
       // Codex reads the bearer token from an env var, not a header: point it at a TOML block.
       remoteLines:
         o.mode === "shared"
           ? [
               "in ~/.codex/config.toml:",
-              "  [mcp_servers.brainferno]",
+              `  [mcp_servers.${MCP_SERVER_NAME}]`,
               `  url = "${urls[0] ?? ""}"`,
               ...urls.slice(1).map((u) => `  # or: url = "${u}"`),
               '  bearer_token_env_var = "BRAINFERNO_MCP_TOKEN"',
@@ -360,18 +375,52 @@ export function registrationPlans(o: { mode: InstallMode; distIndex: string; por
       client: "gemini",
       label: "Gemini CLI",
       probe: ["gemini", "--version"],
-      removals: [["gemini", "mcp", "remove", "-s", "user", "brainferno"]],
-      add: ["gemini", "mcp", "add", "-s", "user", ...envArgs, "brainferno", "node", o.distIndex],
-      addLine: `gemini mcp add -s user ${envArgs.join(" ")} brainferno node "${o.distIndex}"`,
+      removals: names.map((n) => ["gemini", "mcp", "remove", "-s", "user", n]),
+      lookups: [],
+      add: ["gemini", "mcp", "add", "-s", "user", ...envArgs, MCP_SERVER_NAME, "node", o.distIndex],
+      addLine: `gemini mcp add -s user ${envArgs.join(" ")} ${MCP_SERVER_NAME} node "${o.distIndex}"`,
       remoteLines:
         o.mode === "shared"
           ? [
               'in ~/.gemini/settings.json, under "mcpServers":',
-              ...urls.map((u) => `  "brainferno": { "httpUrl": "${u}", "headers": { "Authorization": "Bearer ${o.token}" } }`),
+              ...urls.map((u) => `  "${MCP_SERVER_NAME}": { "httpUrl": "${u}", "headers": { "Authorization": "Bearer ${o.token}" } }`),
             ]
           : [],
     });
   }
 
   return plans;
+}
+
+/**
+ * The env of one server as `claude mcp get <name>` prints it: the indented `KEY=value` lines
+ * under "Environment:". The value is everything after the first `=`.
+ */
+export function envFromMcpGet(out: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  let inEnv = false;
+  for (const line of out.split(/\r?\n/)) {
+    if (/^\s*Environment:\s*$/.test(line)) { inEnv = true; continue; }
+    if (!inEnv) continue;
+    const m = /^\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line);
+    if (!m) break;
+    env[m[1]!] = m[2]!;
+  }
+  return env;
+}
+
+/**
+ * The plan's add with the `BRAINFERNO_MCP_*` env an old entry carried (Claude Code's `-e`, before
+ * the name). Other keys are not ours to copy, and a value with characters the Windows shell could
+ * read (anything but letters, digits and `_.,:/\-`) is not passed through it: `dropped` names both so
+ * the installer can say so. Values are passed on, never printed.
+ */
+export function carryEnv(plan: ClientPlan, env: Record<string, string>): { add: string[]; carried: string[]; dropped: string[] } {
+  const keys = Object.keys(env);
+  const carried = plan.client === "claude" ? keys.filter((k) => k.startsWith("BRAINFERNO_MCP_") && /^[A-Za-z0-9_.,:\/\\-]*$/.test(env[k]!)) : [];
+  const dropped = keys.filter((k) => !carried.includes(k));
+  if (carried.length === 0) return { add: plan.add, carried, dropped };
+  const at = plan.add.indexOf(MCP_SERVER_NAME);
+  const flags = carried.flatMap((k) => ["-e", `${k}=${env[k]}`]);
+  return { add: [...plan.add.slice(0, at), ...flags, ...plan.add.slice(at)], carried, dropped };
 }
