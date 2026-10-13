@@ -89,8 +89,8 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
     Effects reads a number below about 2.2e-308 as 0 and returns numbers with 15 significant
     digits. Also found: a script cannot read the Undo label (`app.findMenuCommandId` returns 0 for
     it). Details: `docs/spikes/06-aftereffects-tools-live.md`.
-  - **Project-switch OK, chat only (a refusal and a flagged run seen live on an earlier build;
-    the refuse-first guard and the current texts unit-tested only).** A script that closes or
+  - **Project-switch OK, chat only (the refuse-first guard verified live on the current build,
+    2026-10-13; the per-close and later-calls risk texts unit-tested only).** A script that closes or
     replaces the open project is never sent on its first call: `projectSwitchCalls` (the
     trigger), `PROJECT_INFO` as the read-only check, then a plain-text refusal (`switchRefusal`,
     with `riskSentence`: for each call, what the live run below saw it do with unsaved changes, or
@@ -116,7 +116,11 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
     after `allowProjectSwitch: true` (audit `refused consent=needed`, then `run consent=flag`),
     `cc_eval_script`'s refusal; a script could not wrap `app.open`, `app.project.close` or
     `app.newProject` (assigning to them was silently ignored; the other calls were not probed), so
-    the text scan is the only guard.
+    the text scan is the only guard. **Rechecked live on After Effects 26.5x89 (Windows 11,
+    2026-10-13) on build 0fcaffd, from Claude Code:** the refusal in its current wording (a project
+    with no file, the "not verified live" and "as it is now" sentences); a flag with no matching
+    refusal refused; a flag sent 10 min 4 s after the refusal refused as expired; the approved
+    call run once; its second use refused. Claude Code's MCP log kept no per-call audit lines.
     What After Effects did with a project's unsaved changes ("saved" = the project has a file):
 
     | Call | suppressDialogs | Project | Seen live |
@@ -136,12 +140,11 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
   - **Still unit-tested only:** the end-call notes — a second `endUndoGroup` does not fail, and
     ExtendScript has no getter literals to make the wrapper throw (R10); the refused audit line
     with the gate off (the refusal text was seen live); `Window.alert` and global code that calls
-    `alert`, not probed live by design; and the refuse-first guard (a flag with no matching
-    refusal is refused; no flag, or `false`, is never let through; the key covers script, `args`
-    as sent and `suppressDialogs`; one use; 10 minutes; 64 per session; per session; the OK kept
-    when After Effects is not connected; nothing recorded after a failed or cancelled check), the
-    current refusal text, the remote line and the risk texts (`closeOptionsOf`'s per-close rule,
-    the later-calls sentence, the "as it is now" sentence).
+    `alert`, not probed live by design; and these parts of the refuse-first guard: `false` is
+    never let through; the key's `suppressDialogs` part; 64 per session; per session; the OK kept
+    when After Effects is not connected; nothing recorded after a failed or cancelled check; the
+    remote line; and the risk texts `closeOptionsOf`'s per-close rule and the later-calls
+    sentence.
   - **Not tried live:** `app.quit` and `app.restart` (any case); `app.openFast` and
     `app.newProject` with suppression off or on a never-saved project; `close(SAVE_CHANGES)` with
     suppression on; `close(PROMPT_TO_SAVE_CHANGES)` with suppression off; `close(SAVE_CHANGES)` or

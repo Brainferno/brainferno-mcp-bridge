@@ -99,8 +99,8 @@ Plus a raw ExtendScript tool (`ae_run_script`) that runs a whole script as one u
 always listed but refuses until you enable raw scripts for After Effects — see
 [Raw scripts](#raw-scripts-opt-in). It is verified live on Windows (After Effects 26.5).
 A script that closes or replaces the open project is refused until the operator agrees in the
-chat (a refusal and a flagged run were seen live on an earlier build; the current guard and its
-texts are unit-tested only).
+chat (seen live: the refusal, a flag with no refusal refused, the 10-minute limit, one approved
+run, and its second use refused).
 
 ### Premiere Pro — 29 tools
 Project, sequences and items, a full sequence read (every track and clip with times),
@@ -473,10 +473,13 @@ After Effects 26.5 on Windows; the probes are in `docs/spikes/06-aftereffects-to
   Windows 11 terminal, in three tries (auto mode twice, manual once), advertised MCP form
   elicitation, did not show the question, and answered `accept {allowProjectSwitch: false}` by
   itself (no Elicitation hook in user or project settings; managed settings not checked
-  conclusively). A plain-text refusal and a flagged run were seen live on an earlier build of this
-  tool (After Effects 26.5, Windows 11), whose refusal had older wording and whose flag ran with no
-  refuse-first guard; the guard, the current refusal text and the risk texts are unit-tested
-  only. What After Effects did with a project's unsaved changes in that run:
+  conclusively). Seen live on the current build (After Effects 26.5, Windows 11, 2026-10-13,
+  driven from Claude Code): the refusal in its current wording, a flag with no matching refusal
+  refused, a flag sent 10 min 4 s after the refusal refused as expired, the approved call run once,
+  and its second use refused. Still unit-tested only: the 64-refusal cap, the key's
+  `suppressDialogs` part, the OK kept when After Effects is not connected, a failed or cancelled
+  check, the remote line, and the per-close and later-calls risk texts. What After Effects did
+  with a project's unsaved changes in the earlier live run (2026-10-12):
 
   | Call | `suppressDialogs` | Project | Seen live |
   | --- | --- | --- | --- |
@@ -661,9 +664,9 @@ docs/                build plan, protocol, live-run notes (spikes/), Audition AP
   unit-tested but not yet verified against the live CLIs — that run is
   `docs/spikes/15-multi-client-lanes.md`. `ae_run_script` (AE-01) is verified live on After
   Effects 26.5 on Windows (`docs/spikes/06-aftereffects-tools-live.md`), not yet on macOS.
-  For its project-switch OK (a refusal stating the risk, then the operator's OK in the chat), a
-  plain-text refusal and a flagged run were seen live there on an earlier build; the
-  refuse-first guard, the current refusal text and the risk texts are unit-tested only.
+  Its project-switch OK (a refusal stating the risk, then the operator's OK in the chat) is
+  verified live there too, from Claude Code; the per-close and later-calls risk texts are
+  unit-tested only.
 - Roadmap: `docs/BUILD_PLAN.md` (Phase 6).
 
 ## License

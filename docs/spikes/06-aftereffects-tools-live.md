@@ -190,9 +190,8 @@ Driven entirely from Claude Code through the hub and the Brainferno MCP Bridge C
     within the last 10 minutes, once (`SwitchRefusals` in `after-effects.ts`). The server cannot
     tell whether the operator was asked: the guard only makes sure the refusal, with the risk,
     reached the model first; the asking happens in the chat, where the operator can see the
-    model's tool calls. That guard, the current refusal text and the risk texts are unit-tested
-    only; F1 and F2 saw the earlier build's refusal (older wording) and a flagged run with no
-    guard.
+    model's tool calls. F1 and F2 saw the earlier build's refusal (older wording) and a flagged
+    run with no guard; the recheck below saw the guard on the current build.
   - **A script could not wrap the three triggers tried.** `app.open` is a native function;
     assigning `app[n] = function () {}` (with `n` computed) raised no error and changed nothing,
     and the same for `app.project.close` and `app.newProject`. `app.openFast`, `app.quit`,
@@ -224,6 +223,31 @@ Driven entirely from Claude Code through the hub and the Brainferno MCP Bridge C
     prompt with suppression off is marked expected), and states nothing else about them.
   - The checklist this run followed (Claude Code's dialog, the fallback, the wrap probe, the
     trigger table) is done; its open points are the "Not tried" list above.
+- **AE-01 chat-only recheck — After Effects 26.5x89, Windows 11, 2026-10-13, build 0fcaffd.**
+  Claude Code (this repo's session) drove `ae_run_script` through its own MCP connection, gate set
+  to `after_effects`, on an untitled project with no file and 0 items. Script:
+  `if (__args.go) { app.newProject(); }\napp.project.numItems` with `args` `{go: false}`, so
+  `app.newProject` never ran.
+  - R1: no flag → plain-text refusal in the current wording: `app.newProject (line 1)`, "never
+    been saved (no file), 0 items; it has no unsaved changes right now", the "Not verified live
+    (suppressDialogs on, a project with no file)" clause for `app.newProject`, the "as it is now"
+    sentence and the `cc_eval_script` warning.
+  - R2: `allowProjectSwitch: true` with `args` `{go: false, t: 2}` (never refused) → refused, with
+    the lead sentence "allowProjectSwitch is honoured only for …" and the full risk.
+  - R3: the model asked the operator in the chat; they agreed. The flagged retry came **10 min 4 s**
+    after R1 (19:28:05 → 19:38:09 UTC in Claude Code's MCP log) and was refused as expired, with
+    the same lead sentence: the 10-minute limit, seen live. That refusal recorded a new one; the
+    same flagged call, sent again at once under the operator's same OK, **ran**: `ok: true`,
+    `value: 0`, 518 ms.
+  - R4: the same flagged call again → refused (one use).
+  - Audit lines were not seen: Claude Code's MCP log for the server kept its stderr from start-up
+    only, not per call. The `refused consent=needed` / `run consent=flag` pair was seen in the
+    2026-10-12 run (F1, F2).
+  - Not rechecked live: the 64-refusal cap, a second session, `suppressDialogs` as part of the key,
+    the OK kept when After Effects is not connected, a failed or cancelled check, the remote line,
+    `closeOptionsOf` and the later-calls sentence. They stay unit-tested only.
+  - Follow-up: an operator who steps away can take longer than 10 minutes to answer; the model then
+    gets the expiry refusal and must ask for the call again (it did here, and the retry ran).
 
 - aerender reads the project **from disk**: `ae_render_comp` saves first, and needs a project
   that has been saved once (`ae_save_project` with a path).

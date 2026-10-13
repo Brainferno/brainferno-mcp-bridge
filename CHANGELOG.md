@@ -207,11 +207,12 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
     2.1.296 in a Windows 11 terminal, in three tries (auto mode twice, manual once), advertised
     MCP form elicitation, did not show the question, and answered
     `accept {allowProjectSwitch: false}` by itself (no Elicitation hook in user or project
-    settings; managed settings not checked conclusively). Seen live on After Effects 26.5 on an
-    earlier build of this tool (older refusal wording, a flag with no refuse-first guard): a
-    plain-text refusal, a flagged run, and what the calls tried did with unsaved changes (spike
-    06, which lists what was not tried). The refuse-first guard, the current refusal text and the
-    risk texts are unit-tested only.
+    settings; managed settings not checked conclusively). Seen live on After Effects 26.5:
+    what the calls tried did with unsaved changes (spike 06, which lists what was not tried), and,
+    on this build from Claude Code, the refusal, a flag with no refusal refused, a flag after
+    10 minutes refused, one approved run and its second use refused. The 64-refusal cap, the
+    not-connected and failed-check paths, the remote line and the per-close and later-calls risk
+    texts are unit-tested only.
   - The tool owns the undo group and the dialog suppression, so a script that names
     `app.beginUndoGroup`, `app.endUndoGroup`, `app.beginSuppressDialogs` or
     `app.endSuppressDialogs` — even in a comment or a string — is refused before it is sent.
