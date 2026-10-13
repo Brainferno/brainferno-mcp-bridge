@@ -2062,8 +2062,9 @@ const AE_MANAGED_CALL = /\b(?:begin|end)(?:UndoGroup|SuppressDialogs)\b/;
  * (app['open'], app["project"].close, app["project"]["close"]); whitespace is allowed around the dots and brackets
  * and before "("; a comment or string that names one counts. Used by ae_run_script (which refuses such a script until
  * the operator agrees in the chat) and by cc_eval_script (which refuses such an After Effects script and points to
- * ae_run_script). A script cannot wrap these calls at run time (in the AE-01 consent live run, assigning to app.open,
- * app.newProject or app.project.close was silently ignored), so this text scan is the only guard. A guard against
+ * ae_run_script). In the AE-01 consent live run a script could not wrap app.open, app.newProject or app.project.close
+ * (assigning a function to each was silently ignored); app.openFast, app.quit, app.restart and other ways to wrap were
+ * not probed. This text scan is the only guard. A guard against
  * honest mistakes, not adversaries. Not caught, each pinned in T2: a computed name (app["op" + "en"], app[name]); a Unicode
  * escape in a name, dotted or quoted; an alias of app, app.open or app.project (without CloseOptions); (app).open;
  * .call/.apply; a comment inside the call chain; with (app) { open(f) }; a menu command run by id
@@ -2170,8 +2171,8 @@ const CLOSE_OPTION_ARG = (() => {
   const names = CLOSE_OPTIONS.join("|");
   return new RegExp(String.raw`\s*CloseOptions\s*(?:\.\s*(${names})|\[\s*(?:'(${names})'|"(${names})")\s*\])\s*\)`, "y");
 })();
-/** A close's argument that starts with CloseOptions. Sticky, as CLOSE_OPTION_ARG. */
-const CLOSE_OPTIONS_ARG_START = /\s*CloseOptions(?![\w$])/y;
+/** A close with no argument (a File's close()): only whitespace before its `)`. Sticky, as CLOSE_OPTION_ARG. */
+const EMPTY_CLOSE_ARG = /\s*\)/y;
 /** `.close(` or `['close'](` / `["close"](` on any object, whitespace allowed; the match ends where the argument starts. */
 const ANY_CLOSE_CALL = /(?:\.\s*close|\[\s*(?:'close'|"close")\s*\])\s*\(/g;
 /** Each mention of CloseOptions, as AE_PROJECT_SWITCH reads it (comments and strings count). */
@@ -2185,24 +2186,37 @@ function closeOptionArg(script: string, at: number): { option: CloseOption; at: 
   return { option: (m[1] ?? m[2] ?? m[3]) as CloseOption, at: at + m[0].indexOf("CloseOptions") };
 }
 
+/** Whether a close's argument (from `at`, just after its `(`) is empty, as a File's close() is. */
+function emptyCloseArg(script: string, at: number): boolean {
+  EMPTY_CLOSE_ARG.lastIndex = at;
+  return EMPTY_CLOSE_ARG.test(script);
+}
+
 /**
  * The CloseOptions values whose outcome a refusal states for the closes in `script`, judged per close (fix A1; never a
  * value named elsewhere in the text): a close stands for one value only when its own argument is that value, written
  * out (CloseOptions.X or CloseOptions['X'] / ["X"]). Every other close stands for all three: a close through app.project
- * whose argument is a variable, a number, a computed name, more than the value or nothing; and a CloseOptions named
- * anywhere but as a close's whole argument (a variable, a comment, a close through an alias the text does not show
- * whole). The union over all closes: the values in order of first appearance, or all three in CLOSE_OPTIONS' order;
- * none when the scan sees no close.
+ * whose argument is a variable, a number, a computed name, more than the value or nothing; a close on any other object
+ * whose argument is anything but empty or one value (round-2 fix B2: an alias of app.project the text does not show;
+ * a File's or a window's close with an argument over-warns, the safe direction); and a CloseOptions named anywhere
+ * but as a close's whole argument (a variable, a comment). The union over all closes: the values in order of first
+ * appearance, or all three in CLOSE_OPTIONS' order; none when the scan sees no close (no CloseOptions named, no close
+ * through app.project), whatever other closes the text has.
  */
 export function closeOptionsOf(script: string): CloseOption[] {
   const values: CloseOption[] = [];
   const whole = new Set<number>(); // where a CloseOptions that is a close's whole argument starts
   let closes = false;
   let unclear = false;
-  // Every close, on app.project or an alias, whose whole argument is one value (a File's close() has none: skipped).
+  // Every close, on app.project or any other object, whose whole argument is one value; any other with an argument
+  // is unclear (a File's close() has none: skipped).
   for (const m of script.matchAll(ANY_CLOSE_CALL)) {
-    const arg = closeOptionArg(script, m.index + m[0].length);
-    if (arg === null) continue;
+    const at = m.index + m[0].length;
+    const arg = closeOptionArg(script, at);
+    if (arg === null) {
+      if (!emptyCloseArg(script, at)) unclear = true;
+      continue;
+    }
     whole.add(arg.at);
     if (!values.includes(arg.option)) values.push(arg.option);
   }
@@ -2223,22 +2237,25 @@ export function closeOptionsOf(script: string): CloseOption[] {
 
 /**
  * How many switch calls the text shows (fix C1): each call the scan names (app.open, app.openFast, app.newProject,
- * app.quit, app.restart, a close through app.project), and each close through an alias whose argument starts with
- * CloseOptions. A CloseOptions named elsewhere is no call.
+ * app.quit, app.restart, a close through app.project), and, once the scan sees a close (CloseOptions named, or a close
+ * through app.project), each close on any other object with an argument, as closeOptionsOf reads them (round-2 fix
+ * B2). A CloseOptions named elsewhere is no call; nor is a close with no argument (a File's).
  */
 function switchCallCount(script: string): number {
   let count = 0;
+  let closes = false;
   const viaProject = new Set<number>(); // where the argument of a close through app.project starts
   for (const m of script.matchAll(AE_PROJECT_SWITCH)) {
-    if (m[2] !== undefined) continue;
+    const close = switchName(m) === "close";
+    if (m[2] !== undefined || close) closes = true;
+    if (m[2] !== undefined) continue; // CloseOptions: no call by itself
     count++;
-    if (switchName(m) === "close") viaProject.add(m.index + m[0].length);
+    if (close) viaProject.add(m.index + m[0].length);
   }
+  if (!closes) return count;
   for (const m of script.matchAll(ANY_CLOSE_CALL)) {
     const at = m.index + m[0].length;
-    if (viaProject.has(at)) continue;
-    CLOSE_OPTIONS_ARG_START.lastIndex = at;
-    if (CLOSE_OPTIONS_ARG_START.test(script)) count++;
+    if (!viaProject.has(at) && !emptyCloseArg(script, at)) count++;
   }
   return count;
 }
@@ -2312,10 +2329,14 @@ function stateSentence(s: ProjectState): string {
   return `The open project ${which}, ${items}; ${dirty}.`;
 }
 
-/** The end of a risk for two switch calls or more: each clause is judged on the project open now (fix C1). */
+/**
+ * The end of a risk for two switch calls or more: each clause is judged on the project open now (fix C1). The later
+ * calls act on whatever project the first one leaves open, which can be this same one: in T3, after Don't Save, the
+ * unsaved project stayed open (round-2 fix A1).
+ */
 const LATER_CALLS =
-  "These clauses describe the project open now; after the first of these calls a different project is open (one with no " +
-  "file after a close or app.newProject), and the later calls act on that one.";
+  "These clauses describe the project open now; the later calls act on the project the first one leaves open (which can " +
+  "be this same project).";
 
 /**
  * What After Effects does with unsaved changes for each call `script` makes, scoped to what the AE-01 consent live run
@@ -2354,7 +2375,7 @@ export function riskSentence(script: string, s: ProjectState, suppress: boolean)
     );
   }
   const quits = items.filter((n) => QUIT_CALLS.has(n));
-  if (quits.length > 0) parts.push(`${andList(quits)} also ${agree(quits, "closes", "close")} After Effects itself.`);
+  if (quits.length > 0) parts.push(`${andList(quits)} ${agree(quits, "is", "are")} meant to close After Effects itself (not verified live).`);
   if (calls.length > 1 || switchCallCount(script) > 1) parts.push(LATER_CALLS);
   return parts.join(" ");
 }
@@ -2596,8 +2617,9 @@ const RUN_SCRIPT_ARGS_TEXT =
  * tool's own plain-text refusal was passed on to the operator and they agreed in the chat, the refuse-first guard
  * (SwitchRefusals: the same call, args as sent, refused in this session within 10 minutes, once), which calls count,
  * what was seen live with suppression on, by the project's state (probe 10; the consent live run's T1, T2, T4, T5on,
- * T3), that every other case (app.quit and app.restart among them) was not tried and the refusal marks each one "not
- * verified live" (fix B1), and a short list of what the text-only scan does not catch, which says it is not complete
+ * T3), that every other case is in the refusal, as seen live (T5, T6, T7, t4#0) or marked "not verified live", and
+ * that app.quit and app.restart were not tried (round-2 fix B1), and a short list of what the text-only scan does not
+ * catch, which says it is not complete
  * (the full list is AE_PROJECT_SWITCH's comment, pinned by T2). Each refusal names the outcome for its own calls
  * (riskSentence).
  */
@@ -2610,8 +2632,8 @@ const RUN_SCRIPT_ALLOW_SWITCH_TEXT =
   "or app.restart, or names CloseOptions (comments and strings count). Seen live with suppressDialogs on, for a " +
   "project with a file: app.open, app.openFast, app.newProject and close(CloseOptions.PROMPT_TO_SAVE_CHANGES) saved " +
   "its unsaved changes over the file without asking; close(CloseOptions.DO_NOT_SAVE_CHANGES) threw them away. For a " +
-  "never-saved project, app.open still showed After Effects' save prompt, which blocks After Effects. Other cases, " +
-  "app.quit and app.restart among them, were not tried; the refusal marks each one \"not verified live\". Ignored for " +
+  "never-saved project, app.open still showed After Effects' save prompt, which blocks After Effects. Every other case " +
+  "is in the refusal, as seen live or marked \"not verified live\"; app.quit and app.restart were not tried. Ignored for " +
   "a script that names none of these. The check reads the text only and does not catch, among others: a call " +
   "through an alias, a computed name, with (app), (app).open, .call/.apply, a comment or escape inside the call, a " +
   "menu command, or code run from elsewhere at run time ($.evalFile, or eval of a file's text or of text passed in " +

@@ -84,7 +84,7 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
     promise no more. Found, and now in the model-facing texts: with suppression on, opening another
     project saves the open one's unsaved changes over its file without asking (close it with
     `CloseOptions.DO_NOT_SAVE_CHANGES` first to discard them, which the consent run below saw
-    work without a prompt; that probe's call timed out behind an open dialog, so its outcome was
+    work without a prompt; AE-01 probe 10's call timed out behind an open dialog, so its outcome was
     read from the files afterwards); After
     Effects reads a number below about 2.2e-308 as 0 and returns numbers with 15 significant
     digits. Also found: a script cannot read the Undo label (`app.findMenuCommandId` returns 0 for
@@ -114,8 +114,9 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
     2026-10-12) on the earlier build (fe4700c)**, whose refusal had older wording and whose flag
     ran with no refuse-first guard: a plain-text refusal with the project's name and state, a run
     after `allowProjectSwitch: true` (audit `refused consent=needed`, then `run consent=flag`),
-    `cc_eval_script`'s refusal; a script cannot wrap `app.open`, `app.project.close` or
-    `app.newProject` (assigning to them is silently ignored), so the text scan is the only guard.
+    `cc_eval_script`'s refusal; a script could not wrap `app.open`, `app.project.close` or
+    `app.newProject` (assigning to them was silently ignored; the other calls were not probed), so
+    the text scan is the only guard.
     What After Effects did with a project's unsaved changes ("saved" = the project has a file):
 
     | Call | suppressDialogs | Project | Seen live |

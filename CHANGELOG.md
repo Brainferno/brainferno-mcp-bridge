@@ -20,8 +20,9 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   `app.newProject`, `app.project.close`, `app.quit` or `app.restart` (with a dot or as a quoted
   name in brackets), or names `CloseOptions` (comments and strings included), as plain text with
   nothing sent, and points to `ae_run_script`, which needs the operator's OK in the chat first.
-  Other apps are unchanged. Checked live on After Effects 26.5 (with an earlier wording of the
-  pointer).
+  Other apps are unchanged. Checked live on After Effects 26.5 with one script that calls
+  `app.open` in dot form (with an earlier wording of the pointer); the other calls, the bracket
+  form and `CloseOptions` are unit-tested only.
 - `ps_batch_play`: a batch whose results contain an in-band `{ _obj: "error" }` entry now
   returns `ok: false` (an `isError` result) naming the failing descriptor, instead of reporting
   success.
@@ -190,7 +191,8 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
     the open project (read-only) and refuses in plain text with the file name, whether there are
     unsaved changes, and, for each call, what the live run saw After Effects do with them or that
     it was not tried (a close counts as one `CloseOptions` value only when its own argument is that
-    value written out; any other close gets each value's outcome; with two switch calls or more,
+    value written out; any other close the scan sees gets each value's outcome, as the README
+    details; with two switch calls or more,
     the later ones act on the project the first leaves open, and the refusal says so); the model
     passes that on and asks the operator in the chat. Only if they agree does it call again with
     the same script, `args` (as sent; left out counts as `{}`) and `suppressDialogs` and the new
@@ -251,9 +253,10 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
     project; `close(SAVE_CHANGES)` with suppression on; `close(PROMPT_TO_SAVE_CHANGES)` with
     suppression off; `close(SAVE_CHANGES)` or `close(PROMPT_TO_SAVE_CHANGES)` on a never-saved
     project; `app.open` with suppression off on a never-saved project;
-    `close(DO_NOT_SAVE_CHANGES)` with suppression off on a never-saved project. A script cannot
+    `close(DO_NOT_SAVE_CHANGES)` with suppression off on a never-saved project. A script could not
     wrap `app.open`, `app.newProject` or `app.project.close` at run time (assigning to them
-    changes nothing), so the text scan is the only guard.
+    changed nothing; the other calls and other ways to wrap were not probed), so the text scan is
+    the only guard.
   - Shared core, for architect review: `server.ts` passes the raw-script gate to
     `registerAfterEffectsTools`, whose options now require `rawScriptApps`, `remote` and
     `allowRemoteRawScripts`; `raw-script.ts` gains `auditJson`, an audit payload builder that
