@@ -234,9 +234,10 @@ export function registerDiagnosticTools(
         auditRawCall({ tool: "cc_eval_script", app: appId, payload: script, outcome: "refused", via });
         return errorResult(gate.reason);
       }
-      // AE-01: an After Effects script that closes or replaces the open project goes through ae_run_script, which asks
-      // the operator first — one consent path. Whenever this gate is open for After Effects, ae_run_script is listed and
-      // its gate is open too (same config, After Effects enabled). Nothing is dispatched: plain text.
+      // AE-01: an After Effects script that closes or replaces the open project goes through ae_run_script, which needs
+      // the operator's OK in the chat first — one consent path. Whenever this gate is open for After Effects,
+      // ae_run_script is listed and its gate is open too (same config, After Effects enabled). Nothing is dispatched:
+      // plain text.
       const switches = appId === "after_effects" ? projectSwitchCalls(script) : [];
       if (switches.length > 0) {
         auditRawCall({ tool: "cc_eval_script", app: appId, payload: script, outcome: "refused", via });

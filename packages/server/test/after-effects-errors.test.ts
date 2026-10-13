@@ -2102,13 +2102,11 @@ describe("After Effects call sites (R4)", () => {
     const lines = AE_SRC.split("\n");
     const [first, last] = span(lines, /^export function registerAfterEffectsTools\(/);
     const body = lines.slice(first, last + 1).join("\n");
-    // `mcp` is the parameter and is used twice: to build the wrapper every registration goes through, and to reach
-    // the session's low-level Server (what its client advertised, and elicitation: ae_run_script's project-switch OK).
-    // It never registers a tool itself.
-    expect(body.match(/(?<![\w-])mcp(?![\w-])/g)).toHaveLength(3);
+    // `mcp` is the parameter and is used once: to build the wrapper every registration goes through. It never
+    // registers a tool itself, and nothing reaches its low-level Server (AE-01 consent is the chat's, not the client's).
+    expect(body.match(/(?<![\w-])mcp(?![\w-])/g)).toHaveLength(2);
     expect(body).toContain("const server = withToolContext(mcp, ");
-    expect(body).toContain("const operator = mcp.server;");
-    expect(body).not.toMatch(/\bmcp\.(registerTool|tool)\(/);
+    expect(body).not.toMatch(/\bmcp\.(registerTool|tool|server)\b/);
     const registrations = lines.flatMap((l, i) => (/registerTool\(/.test(l) ? [i] : []));
     expect(registrations.length).toBeGreaterThan(30);
     for (const i of registrations) {

@@ -34,7 +34,16 @@ import { SERVER_VERSION } from "../src/version.js";
 import { ScriptError } from "../src/bridge/types.js";
 import { setRedactionSecrets } from "../src/tools/echo.js";
 import { scriptErrorText } from "../src/tools/result.js";
-import { AE_PRELUDE_LINES, LIST_INSTALLED_EFFECTS, applyEffectScript, getCompScript, getLayerScript, runRawScript, wrapAe } from "../src/tools/after-effects.js";
+import {
+  AE_PRELUDE_LINES,
+  LIST_INSTALLED_EFFECTS,
+  PROJECT_INFO,
+  applyEffectScript,
+  getCompScript,
+  getLayerScript,
+  runRawScript,
+  wrapAe,
+} from "../src/tools/after-effects.js";
 import { aeHost, panelReply, type AeHost } from "./ae-host.js";
 import { hostEval, runJsxFile } from "./host-vm.js";
 
@@ -632,7 +641,7 @@ describe("cc_eval_script with the gate open for After Effects", () => {
   });
 
   // AE-01 consent (CS-1): one consent path. An After Effects script that closes or replaces the open project goes
-  // through ae_run_script, which asks the operator; cc_eval_script refuses it, sending nothing.
+  // through ae_run_script, which needs the operator's OK in the chat; cc_eval_script refuses it, sending nothing.
   const SWITCH = "app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES);\napp.open(new File(__args.p));\n1";
   const REFUSED_CC = /^raw-script tool=cc_eval_script app=after_effects sha256=[0-9a-f]{12} len=\d+ via=stdio outcome=refused$/;
 
@@ -645,14 +654,14 @@ describe("cc_eval_script with the gate open for After Effects", () => {
         SWITCH,
         "cc_eval_script did not send this script: it calls app.project.close (line 1), app.open (line 2), which close or " +
           "replace the open After Effects project (a comment or string that names one counts) — run it with ae_run_script, " +
-          "which asks the operator first and sends it only if they agree.",
+          "which needs the operator's OK in the chat first and says what to tell them.",
       ],
       // A script that suppresses dialogs itself would get probe 10's silent save-over here.
       [
         "app.beginSuppressDialogs();\napp.open(new File(p));\n1",
         "cc_eval_script did not send this script: it calls app.open (line 2), which closes or replaces the open After " +
-          "Effects project (a comment or string that names one counts) — run it with ae_run_script, which asks the " +
-          "operator first and sends it only if they agree.",
+          "Effects project (a comment or string that names one counts) — run it with ae_run_script, which needs the " +
+          "operator's OK in the chat first and says what to tell them.",
       ],
     ];
     for (const [script, text] of cases) {
@@ -667,6 +676,45 @@ describe("cc_eval_script with the gate open for After Effects", () => {
     expect(cmds).toEqual([]);
     panel.close();
     await s.close();
+  });
+
+  it("T29b: each McpServer createMcpServer builds (index.ts: one per stdio session and one per remote session) keeps its own project-switch refusals", async () => {
+    const rt = buildRuntime({ ...config, ...AE_ONLY });
+    await rt.bridge.ready();
+    const panel = await connectPanel(rt.bridge.port(), "after_effects");
+    const STATE = { path: "C:\\p\\a.aep", numItems: 1, bitsPerChannel: 8, dirty: true, version: "26.5" };
+    const cmds = recordCmds(panel, (f) =>
+      reply(panel, f.id, f.params.script === PROJECT_INFO ? STATE : { ok: true, value: 1, logs: [], logsDropped: 0 }),
+    );
+    const open = async () => {
+      const server = createMcpServer(rt);
+      const [ct, st] = InMemoryTransport.createLinkedPair();
+      const c = new Client({ name: "s", version: "0" });
+      await Promise.all([c.connect(ct), server.connect(st)]);
+      return { c, server };
+    };
+    const a = await open();
+    const b = await open();
+    const call = (c: Client, flag: boolean) =>
+      c.callTool({ name: "ae_run_script", arguments: { script: "app.open(f)", ...(flag ? { allowProjectSwitch: true } : {}) } });
+    const refused = await call(a.c, false);
+    expect(refused.isError).toBe(true);
+    expect(textOf(refused)).toMatch(/^ae_run_script did not send this script: it calls app\.open \(line 1\)/);
+    // a's refusal does not let b's flagged call through...
+    const inB = await call(b.c, true);
+    expect(inB.isError).toBe(true);
+    expect(textOf(inB)).toMatch(/^allowProjectSwitch is honoured only for the same script, args \(as sent\) and suppressDialogs that this tool refused in this session/);
+    // ...but it does let a's.
+    const inA = await call(a.c, true);
+    expect(inA.isError).toBeFalsy();
+    await settle();
+    expect(cmds.map((f) => (f.params.script === PROJECT_INFO ? "check" : "script"))).toEqual(["check", "check", "script"]);
+    for (const s of [a, b]) {
+      await s.c.close();
+      await s.server.close();
+    }
+    panel.close();
+    await rt.bridge.close();
   });
 
   it("T30: the project-switch refusal is After Effects only: Audition's app.open is sent as before", async () => {
