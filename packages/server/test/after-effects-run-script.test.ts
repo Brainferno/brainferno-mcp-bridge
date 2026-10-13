@@ -1,9 +1,13 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { RequestOptions } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import { ElicitRequestSchema, type ClientCapabilities, type ElicitRequest, type ElicitResult } from "@modelcontextprotocol/sdk/types.js";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 
 import {
@@ -15,17 +19,28 @@ import {
   type EvalOptions,
   type JsonValue,
 } from "../src/bridge/types.js";
+import { startHttpServer } from "../src/http.js";
 import { log } from "../src/logging.js";
 import {
+  PROJECT_INFO,
+  RUN_SCRIPT_CONSENT_TIMEOUT_MS,
   RUN_SCRIPT_DESCRIPTION,
   RUN_SCRIPT_MANAGED_REFUSAL,
   aeArgsLiteral,
+  evalSwitchRefusal,
   locateAeError,
+  projectState,
+  projectSwitchCalls,
   registerAfterEffectsTools,
   runRawScript,
+  switchAskFailed,
+  switchDeclined,
+  switchQuestion,
+  switchUnasked,
   type AfterEffectsToolOptions,
 } from "../src/tools/after-effects.js";
 import { currentToolCall, type ToolCall } from "../src/tools/call-context.js";
+import { setRedactionSecrets } from "../src/tools/echo.js";
 import {
   RAW_SCRIPTS_DISABLED_MESSAGE,
   REMOTE_RAW_SCRIPTS_REFUSED_MESSAGE,
@@ -75,7 +90,17 @@ const textOf = (r: unknown) => (r as { content: { text: string }[] }).content[0]
 const isError = (r: unknown) => (r as { isError?: boolean }).isError === true;
 const envOf = (r: unknown) => JSON.parse(textOf(r)) as Record<string, any>;
 
-async function session(gate: Gate, evaluate: Evaluate = () => null, opts: { sessionId?: string } = {}) {
+/** How the test client answers elicitation/create (AE-01 consent). */
+type Answer = (params: ElicitRequest["params"]) => ElicitResult | Promise<ElicitResult>;
+interface SessionOptions {
+  sessionId?: string;
+  /** The client's elicitation capability, e.g. { form: {} }; the client advertises none when absent. */
+  elicitation?: ClientCapabilities["elicitation"];
+  /** The client's answer to a question; registered only together with `elicitation` (the SDK requires both). */
+  answer?: Answer;
+}
+
+async function session(gate: Gate, evaluate: Evaluate = () => null, opts: SessionOptions = {}) {
   const calls: Call[] = [];
   const bridge: AppBridge = {
     appId: "after_effects",
@@ -91,11 +116,35 @@ async function session(gate: Gate, evaluate: Evaluate = () => null, opts: { sess
   registerAfterEffectsTools(server, bridge, { ...gate });
   const [ct, st] = InMemoryTransport.createLinkedPair();
   if (opts.sessionId !== undefined) st.sessionId = opts.sessionId;
-  const client = new Client({ name: "ae01", version: "0" });
+  const client = new Client({ name: "ae01", version: "0" }, opts.elicitation ? { capabilities: { elicitation: opts.elicitation } } : undefined);
+  const asked: ElicitRequest["params"][] = [];
+  const answer = opts.answer;
+  if (opts.elicitation && answer) {
+    client.setRequestHandler(ElicitRequestSchema, async (req) => {
+      asked.push(req.params);
+      return answer(req.params);
+    });
+  }
   await Promise.all([client.connect(ct), server.connect(st)]);
+  // The server receiving the client's notifications/cancelled. The SDK aborts the tool call's signal in a microtask it
+  // queues while delivering that message (InMemoryTransport delivers synchronously), so the abort has run by the time
+  // a later task starts: T14 and T14b order on this, not on timers.
+  let cancelSeen = () => {};
+  const cancelled = new Promise<void>((resolve) => (cancelSeen = resolve));
+  const deliver = st.onmessage;
+  st.onmessage = (message, extra) => {
+    deliver?.(message, extra);
+    if ("method" in message && message.method === "notifications/cancelled") cancelSeen();
+  };
   return {
     calls,
-    run: (args: Record<string, unknown>) => client.callTool({ name: "ae_run_script", arguments: args }),
+    /** Every question the client was asked (elicitation/create params), in order. */
+    asked,
+    /** Resolves once the server has received a notifications/cancelled from the client. */
+    cancelled,
+    mcp: server,
+    client,
+    run: (args: Record<string, unknown>, options?: RequestOptions) => client.callTool({ name: "ae_run_script", arguments: args }, undefined, options),
     tool: async () => (await client.listTools()).tools.find((t) => t.name === "ae_run_script"),
     close: async () => {
       await client.close();
@@ -408,9 +457,9 @@ describe("ae_run_script: metadata", () => {
     expect(tool!.title).toBe("After Effects: run a raw ExtendScript as one undo step");
     expect(tool!.annotations).toMatchObject({ destructiveHint: true, openWorldHint: true });
     const props = tool!.inputSchema["properties"] as Record<string, { description?: string }>;
-    expect(Object.keys(props).sort()).toEqual(["args", "script", "suppressDialogs", "timeoutMs", "undoGroupName"]);
+    expect(Object.keys(props).sort()).toEqual(["allowProjectSwitch", "args", "script", "suppressDialogs", "timeoutMs", "undoGroupName"]);
     for (const [name, p] of Object.entries(props)) expect(p.description ?? "", name).not.toBe("");
-    for (const name of ["undoGroupName", "suppressDialogs", "args"]) expect(props[name]!.description, name).toMatch(/[Dd]efaults to/);
+    for (const name of ["undoGroupName", "suppressDialogs", "args", "allowProjectSwitch"]) expect(props[name]!.description, name).toMatch(/[Dd]efaults to/);
     expect(props["timeoutMs"]!.description).toContain("BRAINFERNO_MCP_EVAL_TIMEOUT_MS");
     expect(props["timeoutMs"]!.description).not.toMatch(/\d\s*ms/); // F7: the number lives in config, not here
     expect(tool!.inputSchema["required"]).toEqual(["script"]);
@@ -427,18 +476,21 @@ describe("ae_run_script: metadata", () => {
     // Claude Code cuts a tool description at 2,048 characters; measured as tools/list delivers it.
     expect(d.length).toBeLessThanOrEqual(2048);
 
-    // The auto-save hazard the live run found (AE-01 probe 10): safety text, so it sits in the modal-UI part and
-    // ends well before the cut, whatever follows it.
-    const autoSave =
-      "With it on, opening another project saves the open one's unsaved changes over its file without asking (see suppressDialogs).";
+    // The auto-save hazard the live run found (AE-01 probe 10), scoped to app.open (the call it was seen with), and
+    // the operator's OK it now needs (AE-01 consent): safety text, in its own project-switch part, ending well before
+    // the cut, whatever follows it.
+    const autoSave = "app.open was seen to save the open project's unsaved changes over its file without asking.";
+    const consent = "needs the operator's OK: the tool asks them, or see allowProjectSwitch.";
 
-    // In this order: what it does and the one undo step, the error-shape rule, the modal-UI warning with the
-    // auto-save hazard, the gate, then the envelope.
+    // In this order: what it does and the one undo step, the error-shape rule, the modal-UI warning, the project
+    // switch with the auto-save hazard and the operator's OK, the gate, then the envelope.
     const order = [
       "Run a raw ExtendScript (ES3) in After Effects as ONE undo step",
       "Error shape:",
       "Modal UI:",
+      "Project switch:",
       autoSave,
+      consent,
       "Refused unless the operator sets BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS",
       "Returns the envelope { ok, error?: { message, line, bodyLine }, durationMs, value, logs, logsDropped? }",
     ];
@@ -446,12 +498,14 @@ describe("ae_run_script: metadata", () => {
     const at = order.map((p) => d.indexOf(p));
     expect([...at].sort((a, b) => a - b)).toEqual(at);
     expect(d.indexOf(autoSave) + autoSave.length).toBeLessThanOrEqual(2048);
+    expect(d.indexOf(consent) + consent.length).toBeLessThanOrEqual(2048);
 
     // D15: it promises no more than is verified. The dialog scope is what suppression hid live on After Effects
     // 26.5 (probes 8 and 9), named as examples, never as every dialog.
     for (const phrase of [
       "opening, creating or closing a project, or importing an .aep", // ES-5: outside the one Ctrl-Z
-      "plain text means nothing was sent",
+      "plain text means your script was not sent",
+      "a project switch not approved", // AE-01 consent: a plain-text cause
       "a JSON envelope means the script was sent and may have partly run",
       "suppressDialogs (default true) hides After Effects' own warning dialogs, such as an export warning or the " +
         "missing-font dialog when the script opens a project.", // ES-1, widened by the live run
@@ -492,10 +546,13 @@ describe("ae_run_script: metadata", () => {
       "Verified on an export warning (from a Motion Graphics template export) and on the missing-font dialog when " +
         "the script opens a project; it is not promised for every dialog.",
       "not modal UI the script opens itself",
-      "a script that opens another project while the open one has unsaved changes gets no save prompt. After " +
-        "Effects saves the open project over its file, those changes included, then opens the other.",
+      // Scoped to app.open, the call probe 10 saw (AE-01 consent, M1).
+      "a script that opens another project with app.open while the open one has unsaved changes gets no save " +
+        "prompt. After Effects saves the open project over its file, those changes included, then opens the other.",
       "To discard the changes instead, call app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES) before opening the " +
         "other project.",
+      // Not a complete guard: the consent applies to such a script either way (M2).
+      "Either way, a script whose text names such a call needs the operator's OK first (see allowProjectSwitch).",
     ]) {
       expect(describe("suppressDialogs"), phrase).toContain(phrase);
     }
@@ -513,7 +570,32 @@ describe("ae_run_script: metadata", () => {
     expect(describe("args")).not.toContain("both ways"); // a returned number cannot keep every digit as a string
     expect(describe("undoGroupName")).toContain("Edit > Undo <name>");
     expect(describe("timeoutMs")).toContain("After Effects keeps running it, and later After Effects calls wait behind it.");
-    for (const name of ["script", "args", "undoGroupName", "suppressDialogs", "timeoutMs"]) {
+    expect(describe("timeoutMs")).toContain("durationMs in the result includes that wait."); // moved from the description
+    // AE-01 consent: the flag cannot pre-approve, every trigger is named with what was seen and what was not, and the
+    // known gaps are stated. The flag is set only after this tool's own plain-text refusal was passed on.
+    expect(describe("allowProjectSwitch")).toMatch(
+      /^Set true only after this tool refused this script in plain text, you told the operator what that refusal says, and they agreed in the chat that it may close or replace the open project; defaults to false\. /,
+    );
+    for (const phrase of [
+      "this flag does not skip the question",
+      "app.open was seen to save the open project's unsaved changes over its file without asking", // probe 10
+      "were not tried",
+      // Probe 7 saw a close only on a project saved just before: the discard is Adobe's documentation (AE-01 D15).
+      "app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES) throws them away as Adobe documents it (not verified live)",
+      "$.evalFile",
+      "with (app)",
+      "text passed in args",
+      // The scan's gaps, as a short list that says it is not complete (T2 pins each one).
+      "does not catch, among others:",
+      "(app).open",
+      ".call/.apply",
+      "a comment or escape inside the call",
+      ...["app.open", "app.openFast", "app.newProject", "app.project.close", "app.quit", "app.restart", "CloseOptions"],
+    ]) {
+      expect(describe("allowProjectSwitch"), phrase).toContain(phrase);
+    }
+    expect(describe("allowProjectSwitch")).not.toContain("was seen to throw");
+    for (const name of ["script", "args", "undoGroupName", "suppressDialogs", "timeoutMs", "allowProjectSwitch"]) {
       expect(describe(name).length, name).toBeLessThanOrEqual(2048);
     }
     await s.close();
@@ -858,12 +940,15 @@ describe("ae_run_script on ae-host (node:vm standing in for After Effects)", () 
       return {};
     };
     const s = await session(OPEN, aeRun(host));
-    expect(envOf(await s.run({ script: "app.open();\n1" }))).toMatchObject({ ok: true, value: 1 });
+    // app.open is a project switch (AE-01 consent): this client cannot be asked, so the operator's OK comes as
+    // allowProjectSwitch, and the read-only check (PROJECT_INFO) runs before each script.
+    expect(envOf(await s.run({ script: "app.open();\n1", allowProjectSwitch: true }))).toMatchObject({ ok: true, value: 1 });
     expect(ends).toEqual([[false]]);
 
-    const off = envOf(await s.run({ script: "app.open();\n1", suppressDialogs: false }));
+    const off = envOf(await s.run({ script: "app.open();\n1", suppressDialogs: false, allowProjectSwitch: true }));
     expect(off).toMatchObject({ ok: false, error: { message: "MODAL", line: 1, bodyLine: 1 } });
-    expect(s.calls[1]!.script).not.toContain("SuppressDialogs");
+    expect(s.calls.map((c) => c.script === PROJECT_INFO)).toEqual([true, false, true, false]);
+    expect(s.calls[3]!.script).not.toContain("SuppressDialogs");
     expect(ends).toHaveLength(1);
     await s.close();
   });
@@ -946,5 +1031,946 @@ describe("ae_run_script on ae-host (node:vm standing in for After Effects)", () 
     for (const n of on) expect(vm.runInContext(`typeof ${n}`, host.ctx), n).toBe("undefined");
     expect(globals()).toEqual(before);
     await s.close();
+  });
+});
+
+// ---- AE-01 consent: the operator's OK before a script closes or replaces the open project -----------------------
+
+/** Closes, then opens: the spec's fixtures (the pinned texts below are rendered from exactly these). */
+const SWITCH = "app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES);\napp.open(new File(__args.p));\n1";
+const MULTI = "var a = 1;\napp.project.close(CloseOptions.DO_NOT_SAVE_CHANGES);\napp.newProject();\napp.open(f);\napp.open(g);\napp.quit()";
+const FONTPROJ = { path: "C:\\Projects\\Client X\\fontproj.aep", numItems: 12, dirty: true };
+const UNSAVED = { path: null, numItems: 0, dirty: false };
+
+describe("ae_run_script: the project-switch scan (AE-01 consent)", () => {
+  it("T1: finds each call that closes or replaces the open project, once, with the line of its first match", () => {
+    const one = (call: string) => [{ call, line: 1 }];
+    const positive: [string, { call: string; line: number }[]][] = [
+      ...[
+        "app.open(new File(p))",
+        "app.open()",
+        "var p = app.open(f);",
+        "app . open ( f )",
+        "app\n.\nopen\n(f)",
+        "x = 1; app.open(f)",
+        "$.global.app.open(f)",
+        "if(1){app.open(f)}",
+        ";app.open(f)",
+        "// app.open(f) later", // a comment counts
+      ].map((s): [string, { call: string; line: number }[]] => [s, one("app.open")]),
+      ['"app.newProject()"', one("app.newProject")], // a string counts
+      ["app.newProject()", one("app.newProject")],
+      ["app.newProject ()", one("app.newProject")],
+      ["app.openFast(f)", one("app.openFast")],
+      // CloseOptions folds into app.project.close when that is listed.
+      ["app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES)", one("app.project.close")],
+      ["app . project . close ( 1 )", one("app.project.close")],
+      ["app.quit()", one("app.quit")],
+      ["app.restart()", one("app.restart")],
+      // The honest alias: CloseOptions is the only sign of the close.
+      ["var p = app.project; p.close(CloseOptions.SAVE_CHANGES)", one("a close that names CloseOptions")],
+      // A quoted name in brackets is not a computed name: any mix of dot and bracket access, whitespace as around a dot.
+      ["app['open'](f)", one("app.open")],
+      ['app["open"](f)', one("app.open")],
+      ["app [ 'open' ] ( f )", one("app.open")],
+      ["app\n['open']\n(f)", one("app.open")],
+      ["$.global.app['open'](f)", one("app.open")],
+      ['app["newProject"]()', one("app.newProject")],
+      ["app['openFast'](f)", one("app.openFast")],
+      ["app['quit']()", one("app.quit")],
+      ["app['restart']()", one("app.restart")],
+      ["app['project'].close(1)", one("app.project.close")],
+      ['app["project"]["close"](1)', one("app.project.close")],
+      ["app.project['close'](1)", one("app.project.close")],
+      ["app [ \"project\" ] . close ( 1 )", one("app.project.close")],
+      ["app['project']\n.close(CloseOptions.SAVE_CHANGES)", one("app.project.close")],
+      [
+        SWITCH,
+        [
+          { call: "app.project.close", line: 1 },
+          { call: "app.open", line: 2 },
+        ],
+      ],
+      [
+        MULTI,
+        [
+          { call: "app.project.close", line: 2 },
+          { call: "app.newProject", line: 3 },
+          { call: "app.open", line: 4 },
+          { call: "app.quit", line: 6 },
+        ],
+      ],
+    ];
+    for (const [script, calls] of positive) expect(projectSwitchCalls(script), JSON.stringify(script)).toEqual(calls);
+  });
+
+  it("T2: matches no other name, case or longer identifier; pins the known gaps as not caught", () => {
+    const negative = [
+      "File.close()",
+      "f.open()",
+      "myFile.close()",
+      "f.open('r'); f.close();",
+      "app.openX(f)",
+      "app.openFastX(f)",
+      "app.project.closeX(1)",
+      "app.project.closeAll()",
+      "myapp.open(f)",
+      "app2.open(f)",
+      "_app.open(f)",
+      "$app.open(f)",
+      "app.opener(f)",
+      "app.newProjects()",
+      "app.projectX.close(1)",
+      "App.open(f)",
+      "app.Open(f)",
+      "APP.NEWPROJECT()",
+      "app.project.Close(1)",
+      "closeOptions",
+      "MyCloseOptions",
+      "CloseOptionsX",
+      "app.open",
+      "app.project.file.open('r')",
+      "app.project.items.addComp('c', 1, 1, 1, 1, 1)",
+      "app.quitX()",
+      "app.restarts()",
+      "app.purge(PurgeTarget.ALL_CACHES)",
+      // Bracket access: only a whole quoted name, in matching quotes, called.
+      "app['opener'](f)",
+      "app['Open'](f)",
+      "app['open\"](f)",
+      "app['open']",
+      "app['openFastX'](f)",
+      "app['project'].closeAll()",
+      "app['projectX'].close(1)",
+      "app.project['closeX'](1)",
+      "myapp['open'](f)",
+      "_app['open'](f)",
+      "$app['open'](f)",
+    ];
+    for (const script of negative) expect(projectSwitchCalls(script), script).toEqual([]);
+    // Not caught, by design (a guard against honest mistakes, not adversaries): changing one is a deliberate decision.
+    // Keyed by each gap exactly as the regex's doc comment names it.
+    const notCaught: Record<string, string[]> = {
+      'a computed name (app["op" + "en"], app[name])': ['app["op" + "en"](f)', "app[name](f)", "app[open](f)" /* a variable, not a name */],
+      "a Unicode escape in a name, dotted or quoted": ["app.\\u006fpen(f)", "app['\\u006fpen'](f)"],
+      "an alias of app, app.open or app.project (without CloseOptions)": [
+        "var a = app; a.open(f)",
+        "var o = app.open; o(f)",
+        "var p = app.project; p.close(2)",
+      ],
+      "(app).open": ["(app).open(f)"],
+      ".call/.apply": ["app.open.call(app, f)", "app.open.apply(app, [f])"],
+      "a comment inside the call chain": ["app/**/.open(f)", "app.open/*c*/(f)", "app.open//c\n(f)"],
+      "with (app) { open(f) }": ["with (app) { open(f) }"],
+      "a menu command run by id (app.executeCommand)": ["app.executeCommand(app.findMenuCommandId('Close Project'))"],
+      // CS-7: a file, or text passed in args.
+      "code the script runs from elsewhere at run time ($.evalFile, eval of a file's text or of text passed in args)": [
+        '$.evalFile(new File("~/Scripts/openClientProject.jsx"))',
+        'var f = File("~/x.jsx"); f.open("r"); eval(f.read()); f.close()',
+        "eval(__args.code)",
+      ],
+    };
+    for (const [gap, scripts] of Object.entries(notCaught)) {
+      for (const script of scripts) expect(projectSwitchCalls(script), `${gap}: ${script}`).toEqual([]);
+    }
+    // The regex's doc comment names every gap pinned here, and pins nothing it does not name (F4/F5).
+    const source = readFileSync(new URL("../src/tools/after-effects.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+    const doc = /\/\*\*\n((?: \* [^\n]*\n)*) \*\/\nconst AE_PROJECT_SWITCH =/.exec(source)?.[1] ?? "";
+    const prose = doc
+      .split("\n")
+      .map((l) => l.replace(/^ \* /, ""))
+      .join(" ")
+      .trim();
+    const named = /Not caught, each pinned in T2: (.*)\.$/.exec(prose)?.[1]?.split("; ");
+    expect(named).toEqual(Object.keys(notCaught));
+  });
+});
+
+/** The panel: PROJECT_INFO (the read-only check) gets `state`; any other script an ok envelope. */
+const switchPanel =
+  (state: Record<string, unknown> = FONTPROJ): Evaluate =>
+  (script) =>
+    script === PROJECT_INFO ? ({ ...state, bitsPerChannel: 8, version: "26.5x89" } as JsonValue) : { ok: true, value: 1, logs: [], logsDropped: 0 };
+const FORM: ClientCapabilities["elicitation"] = { form: {} };
+const YES: Answer = () => ({ action: "accept", content: { allowProjectSwitch: true } });
+const answering =
+  (result: ElicitResult): Answer =>
+  () =>
+    result;
+/** A promise and its resolve, for a panel that answers only when the test says so. */
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve: (value: T) => void = () => {};
+  const promise = new Promise<T>((r) => (resolve = r));
+  return { promise, resolve };
+}
+/** One task later: every microtask queued so far (the SDK's cancel handling, a dispatch) has run. No timer. */
+const nextTask = () => new Promise<void>((resolve) => setImmediate(resolve));
+/** The next raw-script audit line: the handler writes exactly one, as it finishes (every path returns right after). */
+const nextAudit = (): Promise<string> =>
+  new Promise((resolve) => {
+    audit.mockImplementation((line: unknown) => {
+      if (String(line).startsWith("raw-script ")) resolve(String(line));
+    });
+  });
+/** An audit line of ae_run_script from stdio, ending with `tail`. */
+const LINE = (tail: string) => new RegExp(`^raw-script tool=ae_run_script app=after_effects sha256=[0-9a-f]{12} len=\\d+ via=stdio ${tail}$`);
+const scriptsSent = (s: { calls: Call[] }) => s.calls.map((c) => c.script);
+const messageOf = (params: ElicitRequest["params"] | undefined) => (params as { message: string }).message;
+
+// The texts, pinned whole for one representative case each (spec section 5), rendered for the fixtures above.
+const NO_DETOUR = "Do not run this script, or its project switch, through cc_eval_script or another tool.";
+const REMOTE_QUESTION_LINE = "This is a shared (remote) session: the person at After Effects is not asked; you are answering for them.";
+const REMOTE_MODEL_LINE =
+  "This is a shared (remote) session: the person you ask in the chat answers for whoever is at After Effects, who is not asked — say so when you ask.";
+/**
+ * What a close does with unsaved changes. None of it was verified live (AE-01 D15): DO_NOT_SAVE_CHANGES and SAVE_CHANGES
+ * as Adobe documents them; PROMPT_TO_SAVE_CHANGES's own save prompt possible. (Probe 7 closed with DO_NOT_SAVE_CHANGES
+ * under suppression and saw no dialog, but on a project saved just before: it shows nothing about unsaved changes.)
+ * Whatever suppressDialogs is (CS-2, H1).
+ */
+const CLOSE_CLAUSE =
+  "CloseOptions.DO_NOT_SAVE_CHANGES throws unsaved changes away and CloseOptions.SAVE_CHANGES saves them over the file (both as " +
+  "Adobe documents it; not verified live). CloseOptions.PROMPT_TO_SAVE_CHANGES may show After Effects' own save prompt, which " +
+  "blocks After Effects until someone answers it there (not verified live).";
+/** The same for a project with no file: no SAVE_CHANGES part. */
+const CLOSE_CLAUSE_NO_FILE =
+  "CloseOptions.DO_NOT_SAVE_CHANGES throws unsaved changes away (as Adobe documents it; not verified live). " +
+  "CloseOptions.PROMPT_TO_SAVE_CHANGES may show After Effects' own save prompt, which blocks After Effects until someone " +
+  "answers it there (not verified live).";
+/** SWITCH on FONTPROJ, suppressDialogs on, a local session (5.1). */
+const QUESTION_SWITCH =
+  "ae_run_script wants to run an After Effects script that closes or replaces the open project: it calls app.project.close (line 1), app.open (line 2).\n" +
+  "The open project is fontproj.aep (C:\\Projects\\Client X\\fontproj.aep), 12 items; it has unsaved changes right now.\n" +
+  "With suppressDialogs on, After Effects does not ask: in a live test, app.open saved the open project's unsaved changes over its file. " +
+  "CloseOptions.DO_NOT_SAVE_CHANGES throws unsaved changes away and CloseOptions.SAVE_CHANGES saves them over the file (both as " +
+  "Adobe documents it; not verified live). CloseOptions.PROMPT_TO_SAVE_CHANGES may show After Effects' own save prompt, which " +
+  "blocks After Effects until someone answers it there (not verified live).\n" +
+  // The read-only check was already sent: only the caller's script waits for the yes. The operator did not write the
+  // script, so the question never calls it theirs (F3/F7).
+  'The script is not sent to After Effects unless you set "Run the script" to yes and submit.';
+const SWITCH_SCHEMA = {
+  type: "object",
+  properties: {
+    allowProjectSwitch: {
+      type: "boolean",
+      title: "Run the script",
+      description: "Yes lets it close or replace the open project. No (the default) stops it: the script is not sent to After Effects.",
+      default: false,
+    },
+  },
+  required: ["allowProjectSwitch"],
+};
+/** The fallback when the client cannot ask (5.2), SWITCH on FONTPROJ, on, local. */
+const UNASKED_SWITCH =
+  "ae_run_script did not send this script: it calls app.project.close (line 1), app.open (line 2), which close or replace the open " +
+  "After Effects project, and this MCP client cannot ask the operator itself — tell the operator what follows, ask in the chat " +
+  "whether the script may do this, and call ae_run_script again with the same script and allowProjectSwitch: true only if they " +
+  "agree; to keep the open project, remove those calls instead. The open project is fontproj.aep (C:\\Projects\\Client X\\fontproj.aep), " +
+  "12 items; it has unsaved changes right now. With suppressDialogs on, After Effects does not ask: in a live test, app.open saved " +
+  "the open project's unsaved changes over its file. CloseOptions.DO_NOT_SAVE_CHANGES throws unsaved changes away and " +
+  "CloseOptions.SAVE_CHANGES saves them over the file (both as Adobe documents it; not verified live). " +
+  "CloseOptions.PROMPT_TO_SAVE_CHANGES may show After Effects' own save prompt, which blocks After Effects until someone answers it " +
+  "there (not verified live). Do not run this script, or its project switch, through cc_eval_script or another tool.";
+/** The operator said no (5.3). */
+const DECLINED =
+  "Asked whether this script may close or replace the open After Effects project, the operator declined — the script was not sent " +
+  "(only a read-only check of the open project ran). Ask the operator in the chat what they want; call ae_run_script again only if " +
+  "they ask for it (they will be asked again), or remove the calls that close or replace the project. Do not run this script, or " +
+  "its project switch, through cc_eval_script or another tool.";
+/** The operator dismissed the question, or the client could not show it (5.3, F4). */
+const DISMISSED =
+  "Asked whether this script may close or replace the open After Effects project, the operator dismissed the question without " +
+  "answering — the script was not sent (only a read-only check of the open project ran). Ask the operator in the chat what they " +
+  "want; call ae_run_script again only if they ask for it (they will be asked again), or remove the calls that close or replace the " +
+  "project. Do not run this script, or its project switch, through cc_eval_script or another tool. If no question appeared in the " +
+  "client, it cannot show one here: ask the operator to open, create or close the project in After Effects themselves.";
+/** The operator submitted without a yes: false, no content, or the field left out (5.3, F3). */
+const UNSET =
+  "Asked whether this script may close or replace the open After Effects project, the operator submitted without setting \"Run the " +
+  'script" to yes — the script was not sent (only a read-only check of the open project ran). Ask the operator in the chat what ' +
+  "they want; call ae_run_script again only if they ask for it (they will be asked again), or remove the calls that close or " +
+  "replace the project. Do not run this script, or its project switch, through cc_eval_script or another tool.";
+/** Asking failed (5.4); the reason varies. */
+const ASK_FAILED = (reason: string) =>
+  `Could not ask the operator whether this script may close or replace the open After Effects project (${reason}) — the script ` +
+  "was not sent (only a read-only check of the open project ran). Ask the operator in the chat; if they agree, call ae_run_script " +
+  "again and the question is shown again. If this client cannot show it, ask the operator to open, create or close the project " +
+  "in After Effects themselves. Do not run this script, or its project switch, through cc_eval_script or another tool.";
+/** The SDK 1.30.0 (Ajv) message for an accept whose content leaves the required field out (pinned: F3, T6b). */
+const SDK_MISSING_FIELD =
+  "MCP error -32602: Elicitation response content does not match requested schema: data must have required property 'allowProjectSwitch'";
+
+describe("ae_run_script: the operator's OK before a project switch (AE-01 consent)", () => {
+  it("T3: a script that names no switch call is never checked or asked about, flag or not", async () => {
+    const s = await session(OPEN, switchPanel(), { elicitation: FORM, answer: YES });
+    const r = await s.run({ script: "app.project.numItems", allowProjectSwitch: true });
+    expect(isError(r)).toBe(false);
+    expect(envOf(r)).toMatchObject({ ok: true, value: 1 });
+    expect(s.calls.map((c) => [c.script, c.opts])).toEqual([
+      [runRawScript("app.project.numItems", { args: "{}", undoGroupName: "Brainferno script", suppressDialogs: true }), { timeoutClass: "slow", timeoutMs: undefined }],
+    ]);
+    expect(s.asked).toEqual([]);
+    expect(auditLines()).toEqual([expect.stringMatching(LINE("outcome=run"))]);
+    await s.close();
+  });
+
+  it("T4: accept + true: reads the project (fast), asks once with the risk, then runs the script (slow)", async () => {
+    const s = await session(OPEN, switchPanel(FONTPROJ), { elicitation: FORM, answer: YES });
+    const args = { p: "C:\\Projects\\other.aep" };
+    const r = await s.run({ script: SWITCH, args });
+    expect(isError(r)).toBe(false);
+    expect(envOf(r)).toMatchObject({ ok: true, value: 1 });
+    expect(s.asked).toEqual([{ mode: "form", message: QUESTION_SWITCH, requestedSchema: SWITCH_SCHEMA }]);
+    expect(messageOf(s.asked[0])).not.toContain("shared (remote) session");
+    // The question and its field speak to the operator, who did not write the script (F3/F7).
+    expect(JSON.stringify(s.asked[0])).not.toMatch(/\byour script\b/i);
+    const literal = (aeArgsLiteral(args) as { literal: string }).literal;
+    expect(s.calls.map((c) => [c.script, c.opts])).toEqual([
+      [PROJECT_INFO, { timeoutClass: "fast" }],
+      [runRawScript(SWITCH, { args: literal, undoGroupName: "Brainferno script", suppressDialogs: true }), { timeoutClass: "slow", timeoutMs: undefined }],
+    ]);
+    // The check runs in the tool-call context too, which never holds ae_run_script's arguments.
+    expect(s.calls[0]!.ctx).toEqual({ tool: "ae_run_script", args: undefined });
+    expect(auditLines()).toEqual([expect.stringMatching(LINE("outcome=run consent=operator"))]);
+    await s.close();
+  });
+
+  /** A refusal after the question: plain text, only the check reached the panel, one refused audit line (T20). */
+  async function refusedAfterAsking(answer: Answer, text: string, consent: string) {
+    const s = await session(OPEN, switchPanel(FONTPROJ), { elicitation: FORM, answer });
+    const r = await s.run({ script: SWITCH });
+    expect(isError(r)).toBe(true);
+    expect(textOf(r)).toBe(text);
+    expect(() => JSON.parse(textOf(r))).toThrow();
+    expect(s.asked).toHaveLength(1);
+    expect(scriptsSent(s)).toEqual([PROJECT_INFO]);
+    expect(auditLines()).toEqual([expect.stringMatching(LINE(`outcome=refused consent=${consent}`))]);
+    await s.close();
+    return s;
+  }
+
+  it("T5: accept + false is a refusal: submitted without yes", async () => {
+    await refusedAfterAsking(answering({ action: "accept", content: { allowProjectSwitch: false } }), UNSET, "declined");
+  });
+
+  it("T6: accept with no content is a refusal: submitted without yes", async () => {
+    await refusedAfterAsking(answering({ action: "accept" }), UNSET, "declined");
+  });
+
+  it("T6b: accept with the field left out (the SDK rejects it) is the same refusal; the SDK's message is pinned (F3)", async () => {
+    for (const content of [{}, { other: 1 }] as Record<string, number>[]) {
+      audit.mockClear();
+      const s = await session(OPEN, switchPanel(FONTPROJ), { elicitation: FORM, answer: answering({ action: "accept", content }) });
+      const original = s.mcp.server.elicitInput.bind(s.mcp.server);
+      const rejections: string[] = [];
+      vi.spyOn(s.mcp.server, "elicitInput").mockImplementation(async (params, options) => {
+        try {
+          return await original(params, options);
+        } catch (error) {
+          rejections.push((error as Error).message);
+          throw error;
+        }
+      });
+      const r = await s.run({ script: SWITCH });
+      expect(textOf(r), JSON.stringify(content)).toBe(UNSET);
+      expect(rejections, JSON.stringify(content)).toEqual([SDK_MISSING_FIELD]);
+      expect(scriptsSent(s)).toEqual([PROJECT_INFO]);
+      expect(auditLines()).toEqual([expect.stringMatching(LINE("outcome=refused consent=declined"))]);
+      await s.close();
+    }
+  });
+
+  it("T7: decline is a refusal that says what to do next and closes the detour", async () => {
+    await refusedAfterAsking(answering({ action: "decline" }), DECLINED, "declined");
+  });
+
+  it("T8: cancel is a refusal, with the way forward when no question appeared (F4)", async () => {
+    await refusedAfterAsking(answering({ action: "cancel" }), DISMISSED, "declined");
+  });
+
+  it("T8b: a decline or a cancel is a refusal even when its content says allowProjectSwitch: true (V2)", async () => {
+    // The SDK checks content against the schema only on accept, so a client can send this; only accept + true is a yes.
+    const content = { allowProjectSwitch: true };
+    await refusedAfterAsking(answering({ action: "decline", content }), DECLINED, "declined");
+    audit.mockClear();
+    await refusedAfterAsking(answering({ action: "cancel", content }), DISMISSED, "declined");
+  });
+
+  it("T9: a client handler that throws fails closed", async () => {
+    await refusedAfterAsking(
+      () => {
+        throw new Error("dialog crashed");
+      },
+      ASK_FAILED("MCP error -32603: dialog crashed"),
+      "failed",
+    );
+  });
+
+  it("T10: a non-boolean answer fails closed with the SDK's own message, not as a decline", async () => {
+    await refusedAfterAsking(
+      answering({ action: "accept", content: { allowProjectSwitch: "true" } }),
+      ASK_FAILED("MCP error -32602: Elicitation response content does not match requested schema: data/allowProjectSwitch must be boolean"),
+      "failed",
+    );
+  });
+
+  it("T11: only a boolean true is a yes, even past the SDK's validation", async () => {
+    const s = await session(OPEN, switchPanel(FONTPROJ), { elicitation: FORM, answer: YES });
+    vi.spyOn(s.mcp.server, "elicitInput").mockResolvedValue({ action: "accept", content: { allowProjectSwitch: "yes" } });
+    const r = await s.run({ script: SWITCH });
+    expect(textOf(r)).toBe(UNSET);
+    expect(scriptsSent(s)).toEqual([PROJECT_INFO]);
+    expect(auditLines()).toEqual([expect.stringMatching(LINE("outcome=refused consent=declined"))]);
+    await s.close();
+  });
+
+  it("T12: asks on the tool call's own stream, cancelled with it, with 10 minutes to answer", async () => {
+    expect(RUN_SCRIPT_CONSENT_TIMEOUT_MS).toBe(600_000);
+    const s = await session(OPEN, switchPanel(FONTPROJ), { elicitation: FORM, answer: YES });
+    const spy = vi.spyOn(s.mcp.server, "elicitInput");
+    await s.run({ script: SWITCH });
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0]).toEqual([
+      { mode: "form", message: QUESTION_SWITCH, requestedSchema: SWITCH_SCHEMA },
+      { relatedRequestId: expect.any(Number), signal: expect.any(AbortSignal), timeout: RUN_SCRIPT_CONSENT_TIMEOUT_MS },
+    ]);
+    await s.close();
+  });
+
+  it("T13: no answer in time fails closed", async () => {
+    const s = await session(OPEN, switchPanel(FONTPROJ), { elicitation: FORM, answer: () => new Promise<ElicitResult>(() => {}) });
+    const original = s.mcp.server.elicitInput.bind(s.mcp.server);
+    vi.spyOn(s.mcp.server, "elicitInput").mockImplementation((params, options) => original(params, { ...options, timeout: 50 }));
+    const r = await s.run({ script: SWITCH });
+    expect(textOf(r)).toBe(ASK_FAILED("no answer within 10 minutes"));
+    expect(scriptsSent(s)).toEqual([PROJECT_INFO]);
+    expect(auditLines()).toEqual([expect.stringMatching(LINE("outcome=refused consent=failed"))]);
+    await s.close();
+  });
+
+  it("T14: the client cancelling the tool call during the question sends nothing and audits once", async () => {
+    // The client cancels the tool call once the question has reached it; the test then waits for the handler's one
+    // audit line. No timer decides the outcome.
+    const ac = new AbortController();
+    const s = await session(OPEN, switchPanel(FONTPROJ), {
+      elicitation: FORM,
+      answer: () => {
+        ac.abort("the operator pressed Esc");
+        return new Promise<ElicitResult>(() => {});
+      },
+    });
+    const audited = nextAudit();
+    await expect(s.run({ script: SWITCH }, { signal: ac.signal })).rejects.toThrow();
+    await audited;
+    await nextTask(); // anything the handler would still send has reached the panel
+    expect(s.asked).toHaveLength(1);
+    expect(scriptsSent(s)).toEqual([PROJECT_INFO]);
+    expect(auditLines()).toEqual([expect.stringMatching(LINE("outcome=refused consent=failed"))]);
+    await s.close();
+  });
+
+  it("T14b: the client cancelling during the read-only check sends nothing, flag or question (F2)", async () => {
+    for (const opts of [{}, { elicitation: FORM, answer: YES }] as SessionOptions[]) {
+      audit.mockClear();
+      // The panel holds the check's answer until the cancellation has reached the server; no timer decides the order.
+      const reached = deferred<void>();
+      const held = deferred<JsonValue>();
+      const panel: Evaluate = (script) => {
+        if (script !== PROJECT_INFO) return { ok: true, value: 1, logs: [], logsDropped: 0 };
+        reached.resolve();
+        return held.promise;
+      };
+      const s = await session(OPEN, panel, opts);
+      const audited = nextAudit();
+      const ac = new AbortController();
+      const call = s.run({ script: SWITCH, allowProjectSwitch: true }, { signal: ac.signal });
+      await reached.promise; // the read-only check is at the panel
+      ac.abort("the operator pressed Esc");
+      await expect(call).rejects.toThrow();
+      await s.cancelled; // the server has the client's notifications/cancelled...
+      await nextTask(); // ...and has aborted the tool call's signal
+      held.resolve({ ...FONTPROJ, bitsPerChannel: 8, version: "26.5x89" }); // only now does the check answer
+      await audited;
+      await nextTask(); // anything the handler would still send has reached the panel
+      expect(scriptsSent(s), JSON.stringify(opts)).toEqual([PROJECT_INFO]);
+      expect(s.asked).toEqual([]);
+      expect(auditLines(), JSON.stringify(opts)).toEqual([expect.stringMatching(LINE("outcome=refused consent=failed"))]);
+      await s.close();
+    }
+  });
+
+  it("T15: a client that cannot ask gets the plain-text refusal naming the risk, and is never asked", async () => {
+    const s = await session(OPEN, switchPanel(FONTPROJ));
+    const spy = vi.spyOn(s.mcp.server, "elicitInput");
+    const r = await s.run({ script: SWITCH });
+    expect(isError(r)).toBe(true);
+    expect(textOf(r)).toBe(UNASKED_SWITCH);
+    expect(textOf(r)).not.toContain("shared (remote) session");
+    expect(spy).not.toHaveBeenCalled();
+    expect(scriptsSent(s)).toEqual([PROJECT_INFO]);
+    expect(auditLines()).toEqual([expect.stringMatching(LINE("outcome=refused consent=needed"))]);
+    await s.close();
+  });
+
+  it("T16: a client that cannot ask, with allowProjectSwitch: true, runs the script", async () => {
+    const s = await session(OPEN, switchPanel(FONTPROJ));
+    const spy = vi.spyOn(s.mcp.server, "elicitInput");
+    const r = await s.run({ script: SWITCH, allowProjectSwitch: true });
+    expect(isError(r)).toBe(false);
+    expect(envOf(r)).toMatchObject({ ok: true, value: 1 });
+    expect(spy).not.toHaveBeenCalled();
+    expect(s.calls.map((c) => [c.script === PROJECT_INFO, c.opts?.timeoutClass])).toEqual([
+      [true, "fast"],
+      [false, "slow"],
+    ]);
+    expect(auditLines()).toEqual([expect.stringMatching(LINE("outcome=run consent=flag"))]);
+    await s.close();
+  });
+
+  it("T17: a client that can ask is always asked: allowProjectSwitch does not skip the question", async () => {
+    const declined = await session(OPEN, switchPanel(FONTPROJ), { elicitation: FORM, answer: answering({ action: "decline" }) });
+    const r = await declined.run({ script: SWITCH, allowProjectSwitch: true });
+    expect(declined.asked).toHaveLength(1);
+    expect(textOf(r)).toBe(DECLINED);
+    expect(scriptsSent(declined)).toEqual([PROJECT_INFO]);
+    expect(auditLines()).toEqual([expect.stringMatching(LINE("outcome=refused consent=declined"))]);
+    await declined.close();
+
+    audit.mockClear();
+    const approved = await session(OPEN, switchPanel(FONTPROJ), { elicitation: FORM, answer: YES });
+    expect(isError(await approved.run({ script: SWITCH, allowProjectSwitch: true }))).toBe(false);
+    expect(approved.asked).toHaveLength(1);
+    expect(auditLines()).toEqual([expect.stringMatching(LINE("outcome=run consent=operator"))]);
+    await approved.close();
+  });
+
+  it("T18: only form elicitation counts as able to ask; a bare elicitation: {} does", async () => {
+    const urlOnly = await session(OPEN, switchPanel(FONTPROJ), { elicitation: { url: {} }, answer: YES });
+    expect(textOf(await urlOnly.run({ script: SWITCH }))).toBe(UNASKED_SWITCH);
+    expect(urlOnly.asked).toEqual([]);
+    expect(isError(await urlOnly.run({ script: SWITCH, allowProjectSwitch: true }))).toBe(false);
+    expect(urlOnly.asked).toEqual([]);
+    expect(auditLines()).toEqual([
+      expect.stringMatching(LINE("outcome=refused consent=needed")),
+      expect.stringMatching(LINE("outcome=run consent=flag")),
+    ]);
+    await urlOnly.close();
+
+    audit.mockClear();
+    const bare = await session(OPEN, switchPanel(FONTPROJ), { elicitation: {}, answer: YES });
+    expect(isError(await bare.run({ script: SWITCH }))).toBe(false);
+    expect(bare.asked).toHaveLength(1);
+    expect(auditLines()).toEqual([expect.stringMatching(LINE("outcome=run consent=operator"))]);
+    await bare.close();
+  });
+
+  it("T19: the read-only check (PROJECT_INFO) only reads: no set, define, delete or call, no mutation, no undo group", () => {
+    const host = aeHost();
+    host.app.version = "26.5";
+    const seen: string[] = [];
+    const record = (target: object, path: string): object =>
+      new Proxy(target, {
+        get(t, k, r) {
+          const v: unknown = Reflect.get(t, k, r);
+          seen.push(`get ${path}.${String(k)}`);
+          if (k === "project" && v !== null && typeof v === "object") return record(v, `${path}.project`);
+          if (typeof v !== "function") return v;
+          return new Proxy(v, {
+            apply(f, _self, a) {
+              seen.push(`call ${path}.${String(k)}`);
+              return Reflect.apply(f, t, a);
+            },
+          });
+        },
+        set(t, k, v, r) {
+          seen.push(`SET ${path}.${String(k)}`);
+          return Reflect.set(t, k, v, r);
+        },
+        defineProperty(t, k, d) {
+          seen.push(`DEFINE ${path}.${String(k)}`);
+          return Reflect.defineProperty(t, k, d);
+        },
+        deleteProperty(t, k) {
+          seen.push(`DELETE ${path}.${String(k)}`);
+          return Reflect.deleteProperty(t, k);
+        },
+      });
+    (host.ctx as Record<string, unknown>)["app"] = record(host.app as object, "app");
+    expect(host.eval(PROJECT_INFO)).toEqual({ ok: true, value: { path: null, numItems: 1, bitsPerChannel: null, dirty: false, version: "26.5" } });
+    expect(seen).toEqual([
+      "get app.project",
+      "get app.project.file",
+      "get app.project.numItems",
+      "get app.project.bitsPerChannel",
+      "get app.project.dirty",
+      "get app.version",
+    ]);
+    expect(host.mutations).toEqual([]);
+    expect(host.undo).toEqual({ begin: 0, end: 0 });
+  });
+
+  it("T19b: projectState takes only PROJECT_INFO's shape; a partial or mistyped answer is null (V5)", () => {
+    const answer = { path: "C:\\p.aep", numItems: 3, bitsPerChannel: 8, dirty: false, version: "26.5x89" };
+    expect(projectState(answer)).toEqual({ path: "C:\\p.aep", numItems: 3, dirty: false });
+    expect(projectState({ ...answer, path: null, dirty: true })).toEqual({ path: null, numItems: 3, dirty: true });
+    const { dirty: _dirty, ...noDirty } = answer;
+    const { numItems: _numItems, ...noItems } = answer;
+    const { path: _path, ...noPath } = answer;
+    const bad: unknown[] = [
+      noDirty,
+      noItems,
+      noPath,
+      { ...answer, dirty: "true" },
+      { ...answer, dirty: 1 },
+      { ...answer, dirty: null },
+      { ...answer, numItems: "3" },
+      { ...answer, path: 3 },
+      { ...answer, path: undefined },
+      [answer],
+      [],
+      null,
+      undefined,
+      "C:\\p.aep",
+      3,
+    ];
+    for (const raw of bad) expect(projectState(raw), JSON.stringify(raw) ?? String(raw)).toBeNull();
+  });
+
+  it("T21: a failed read-only check refuses before asking; not connected is the usual plain text", async () => {
+    const failing =
+      (error: unknown): Evaluate =>
+      () => {
+        throw error;
+      };
+    const cases: [Evaluate, string | RegExp][] = [
+      [failing(new AppNotConnectedError("after_effects", "Open the panel.")), /^No running host connected for "after_effects"\. Open the panel\.$/],
+      [
+        failing(new EvalTimeoutError("after_effects", 10_000)),
+        "Could not read the open After Effects project before asking about this script, which closes or replaces it (After Effects " +
+          "did not answer within 10000 ms) — the script was not sent. Wait until After Effects responds (an earlier script may still " +
+          "be running: a timeout stops the wait, not the script), then retry.",
+      ],
+      [
+        failing(new AppDisconnectedError("after_effects", "socket closed")),
+        "Could not read the open After Effects project before asking about this script, which closes or replaces it (the panel " +
+          "disconnected) — the script was not sent. Reconnect the brainferno-mcp-bridge panel in After Effects (cc_connected_apps " +
+          "shows when it is back), then retry.",
+      ],
+      [
+        failing(new ScriptError("after_effects", "EvalScript error.", 3, { code: "HOST_ERROR" })),
+        "Could not read the open After Effects project before asking about this script, which closes or replaces it (After Effects " +
+          "answered: EvalScript error.) — the script was not sent. Retry; if it keeps failing, close and reopen the " +
+          "brainferno-mcp-bridge panel in After Effects.",
+      ],
+      [
+        () => null,
+        "Could not read the open After Effects project before asking about this script, which closes or replaces it (After Effects " +
+          "answered: an unexpected answer) — the script was not sent. Retry; if it keeps failing, close and reopen the " +
+          "brainferno-mcp-bridge panel in After Effects.",
+      ],
+    ];
+    for (const [evaluate, text] of cases) {
+      audit.mockClear();
+      const s = await session(OPEN, evaluate, { elicitation: FORM, answer: YES });
+      const r = await s.run({ script: SWITCH });
+      expect(isError(r)).toBe(true);
+      if (typeof text === "string") expect(textOf(r)).toBe(text);
+      else expect(textOf(r)).toMatch(text);
+      expect(() => JSON.parse(textOf(r))).toThrow();
+      expect(s.asked).toEqual([]);
+      expect(scriptsSent(s)).toEqual([PROJECT_INFO]);
+      expect(auditLines()).toEqual([expect.stringMatching(LINE("outcome=refused"))]);
+      await s.close();
+    }
+  });
+
+  it("T21b: host and client text in a refusal is redacted, then put on one line, then capped (echo rule)", async () => {
+    // The server's own secret, a Bearer credential and an Illustrator key, as a host or a client could echo them, with a
+    // line break and a bidi override between them: the refusal shows them redacted, on one line, without the override.
+    const KEY = "configured-secret-value";
+    const RLO = String.fromCharCode(0x202e);
+    const leak = `${KEY}\nBearer abcdefghijklmnop0123456789 ${RLO}ilst_abcdefghijklmnop0123`;
+    const shown = "[redacted] Bearer [redacted] [redacted]";
+    /** The secret starts at code point 290 of the text shown, inside the 300 kept: redacted whole, never cut first. */
+    const late = (head: string) => `${head}${"p".repeat(290 - head.length)}${KEY} tail`;
+    const lateShown = (head: string) => `${head}${"p".repeat(290 - head.length)}[redacted]${String.fromCharCode(0x2026)}(+5 chars)`;
+    const CHECK_HEAD = "EvalScript error: ";
+    const ASK_HEAD = "MCP error -32603: dialog crashed: ";
+    setRedactionSecrets([KEY]);
+    try {
+      // The read-only check failed with the secrets in the host's message.
+      const checkText = async (message: string) => {
+        const failing: Evaluate = () => {
+          throw new ScriptError("after_effects", message, 3, { code: "HOST_ERROR" });
+        };
+        const check = await session(OPEN, failing, { elicitation: FORM, answer: YES });
+        const text = textOf(await check.run({ script: SWITCH }));
+        await check.close();
+        return text;
+      };
+      const checked = await checkText(`${CHECK_HEAD}${leak}`);
+      expect(checked).toBe(
+        "Could not read the open After Effects project before asking about this script, which closes or replaces it (After Effects " +
+          `answered: ${CHECK_HEAD}${shown}) — the script was not sent. Retry; if it keeps failing, close and reopen the ` +
+          "brainferno-mcp-bridge panel in After Effects.",
+      );
+      expect(checked).not.toContain("\n");
+      expect(checked).not.toContain(RLO);
+      const checkedLate = await checkText(late(CHECK_HEAD));
+      expect(checkedLate).toContain(`(After Effects answered: ${lateShown(CHECK_HEAD)}) — the script was not sent.`);
+      expect(checkedLate).not.toContain(KEY.slice(0, 8));
+
+      // Asking failed with the secrets in the client's error.
+      const askText = async (message: string) => {
+        const ask = await session(OPEN, switchPanel(FONTPROJ), {
+          elicitation: FORM,
+          answer: () => {
+            throw new Error(message);
+          },
+        });
+        const text = textOf(await ask.run({ script: SWITCH }));
+        await ask.close();
+        return text;
+      };
+      const asked = await askText(`dialog crashed: ${leak}`);
+      expect(asked).toBe(ASK_FAILED(`${ASK_HEAD}${shown}`));
+      expect(asked).not.toContain("\n");
+      expect(asked).not.toContain(RLO);
+      const askedLate = await askText(late(ASK_HEAD).slice("MCP error -32603: ".length));
+      expect(askedLate).toBe(ASK_FAILED(lateShown(ASK_HEAD)));
+      expect(askedLate).not.toContain(KEY.slice(0, 8));
+    } finally {
+      setRedactionSecrets([]);
+    }
+  });
+
+  it("T22: the gate, the args and a managed call are refused first: nothing checked, nothing asked", async () => {
+    const closed = await session(CLOSED, switchPanel(), { elicitation: FORM, answer: YES });
+    expect(textOf(await closed.run({ script: SWITCH }))).toBe(rawScriptsDisabledMessage("after_effects", []));
+    expect(closed.calls).toEqual([]);
+    expect(closed.asked).toEqual([]);
+    await closed.close();
+
+    const s = await session(OPEN, switchPanel(), { elicitation: FORM, answer: YES });
+    const badArgs = await s.run({ script: SWITCH, args: { a: Infinity } });
+    expect(textOf(badArgs)).toBe((aeArgsLiteral({ a: Infinity }) as { refusal: string }).refusal);
+    const managed = await s.run({ script: "app.endUndoGroup(); app.open(f)" });
+    expect(textOf(managed)).toBe(RUN_SCRIPT_MANAGED_REFUSAL);
+    expect(s.calls).toEqual([]);
+    expect(s.asked).toEqual([]);
+    expect(auditLines()).toEqual([expect.stringMatching(REFUSED_LINE), expect.stringMatching(REFUSED_LINE), expect.stringMatching(REFUSED_LINE)]);
+    await s.close();
+  });
+
+  it("T23: a remote session asks its own client and says who is answering; the gate still applies", async () => {
+    const REMOTE = { ...OPEN, remote: true, allowRemoteRawScripts: true };
+    const s = await session(REMOTE, switchPanel(FONTPROJ), { sessionId: "0badc0de-1234", elicitation: FORM, answer: YES });
+    const r = await s.run({ script: SWITCH });
+    expect(isError(r)).toBe(false);
+    const lines = messageOf(s.asked[0]).split("\n");
+    expect(lines).toHaveLength(5);
+    expect(lines[3]).toBe(REMOTE_QUESTION_LINE);
+    expect(lines.slice(0, 3).concat(lines[4]!).join("\n")).toBe(QUESTION_SWITCH);
+    expect(auditLines()).toEqual([expect.stringMatching(/^raw-script tool=ae_run_script app=after_effects sha256=[0-9a-f]{12} len=\d+ via=http:0badc0de outcome=run consent=operator$/)]);
+    await s.close();
+
+    const unasked = await session(REMOTE, switchPanel(FONTPROJ), { sessionId: "0badc0de-1234" });
+    expect(textOf(await unasked.run({ script: SWITCH }))).toBe(`${UNASKED_SWITCH} ${REMOTE_MODEL_LINE}`);
+    await unasked.close();
+
+    const refused = await session({ ...REMOTE, allowRemoteRawScripts: false }, switchPanel(FONTPROJ), { sessionId: "0badc0de-1234", elicitation: FORM, answer: YES });
+    expect(textOf(await refused.run({ script: SWITCH }))).toBe(REMOTE_RAW_SCRIPTS_REFUSED_MESSAGE);
+    expect(refused.calls).toEqual([]);
+    expect(refused.asked).toEqual([]);
+    await refused.close();
+  });
+
+  it("T24: over real Streamable HTTP, the question reaches the remote client and the call runs", async () => {
+    const TOKEN = "test-token-0123456789abcdef";
+    const sent: string[] = [];
+    const panel = switchPanel(FONTPROJ);
+    const bridge: AppBridge = {
+      appId: "after_effects",
+      isConnected: () => true,
+      execute: async () => null,
+      close: async () => {},
+      evaluate: async (script) => {
+        sent.push(script);
+        return panel(script);
+      },
+    };
+    const running = await startHttpServer(
+      () => {
+        const mcp = new McpServer({ name: "ae01", version: "0" });
+        registerAfterEffectsTools(mcp, bridge, { rawScriptApps: ["after_effects"], remote: true, allowRemoteRawScripts: true });
+        return mcp;
+      },
+      { host: "127.0.0.1", port: 0, token: TOKEN },
+    );
+    try {
+      const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${running.port}${running.path}`), {
+        requestInit: { headers: { authorization: `Bearer ${TOKEN}` } },
+      });
+      const client = new Client({ name: "remote", version: "0" }, { capabilities: { elicitation: { form: {} } } });
+      const asked: string[] = [];
+      client.setRequestHandler(ElicitRequestSchema, async (req) => {
+        asked.push(messageOf(req.params));
+        return { action: "accept", content: { allowProjectSwitch: true } };
+      });
+      await client.connect(transport);
+      const r = await client.callTool({ name: "ae_run_script", arguments: { script: SWITCH } });
+      expect(isError(r)).toBe(false);
+      expect(envOf(r)).toMatchObject({ ok: true, value: 1 });
+      expect(asked).toHaveLength(1);
+      expect(asked[0]).toContain(`\n${REMOTE_QUESTION_LINE}\n`);
+      expect(sent.map((x) => x === PROJECT_INFO)).toEqual([true, false]);
+      expect(auditLines()).toEqual([expect.stringMatching(/ via=http:[0-9a-f]{8} outcome=run consent=operator$/)]);
+      await client.close();
+    } finally {
+      await running.close();
+    }
+  });
+
+  /** The question asked for `script` with the panel reporting `state` (the operator declines). */
+  async function questionFor(script: string, state: Record<string, unknown>, extra: Record<string, unknown> = {}): Promise<string> {
+    const s = await session(OPEN, switchPanel(state), { elicitation: FORM, answer: answering({ action: "decline" }) });
+    expect(isError(await s.run({ script, ...extra }))).toBe(true);
+    await s.close();
+    return messageOf(s.asked[0]);
+  }
+
+  it("T25: the question states as seen live only what probe 10 saw (app.open), scoped to the calls and the project", async () => {
+    // (a) app.open on a never-saved project, suppression on: pinned whole. Probe 10's project had a file, so neither what
+    // happens nor whether After Effects asks is known here (F2).
+    expect(await questionFor("app.open(new File(__args.p))", UNSAVED)).toBe(
+      "ae_run_script wants to run an After Effects script that closes or replaces the open project: it calls app.open (line 1).\n" +
+        "The open project has never been saved (no file), 0 items; it has no unsaved changes right now, but the script can make some before it switches.\n" +
+        "With suppressDialogs on, this project has no file: what happens to its unsaved changes, and whether After Effects asks, is not verified (they may be lost).\n" +
+        'The script is not sent to After Effects unless you set "Run the script" to yes and submit.',
+    );
+    // (b) suppression off: the save prompt is expected, not verified; the close clause holds either way (CS-2, H1).
+    expect((await questionFor(SWITCH, FONTPROJ, { suppressDialogs: false })).split("\n")[2]).toBe(
+      "With suppressDialogs off, After Effects is expected to show its own save prompt first when there are unsaved changes (not " +
+        "verified live): After Effects stays blocked until someone answers it there, and the call times out meanwhile. " +
+        CLOSE_CLAUSE,
+    );
+    // (c) a call not tried live is never stated as seen (CS-4, M1).
+    const fresh = (await questionFor("app.newProject()", { ...FONTPROJ, dirty: false })).split("\n");
+    expect(fresh[1]).toBe(
+      "The open project is fontproj.aep (C:\\Projects\\Client X\\fontproj.aep), 12 items; it has no unsaved changes right now, but the script can make some before it switches.",
+    );
+    expect(fresh[2]).toBe(
+      "With suppressDialogs on, for app.newProject, what happens to unsaved changes, and whether After Effects asks, is not verified " +
+        "(they may be saved over the file or lost).",
+    );
+    expect(fresh[2]).not.toContain("saved the open project's unsaved changes");
+    // (d) several calls: seen and untried apart (only app.open "without asking"), the close clause, and quit.
+    const multi = (await questionFor(MULTI, FONTPROJ)).split("\n");
+    expect(multi[0]).toBe(
+      "ae_run_script wants to run an After Effects script that closes or replaces the open project: it calls app.project.close (line 2), app.newProject (line 3), app.open (line 4), app.quit (line 6).",
+    );
+    expect(multi[2]).toBe(
+      "With suppressDialogs on: in a live test, app.open saved the open project's unsaved changes over its file without asking; " +
+        "for app.newProject and app.quit, what happens to unsaved changes, and whether After Effects asks, is not verified (they may " +
+        `be saved over the file or lost). ${CLOSE_CLAUSE} app.quit also closes After Effects itself.`,
+    );
+    // (e) a close alone, suppression off: only the close clause. No switching call, so no "expected" save prompt first;
+    // but PROMPT_TO_SAVE_CHANGES may show one, which a close-only script can name too (AE-01 D15).
+    const closeOnly = (await questionFor("app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES)", FONTPROJ, { suppressDialogs: false })).split("\n");
+    expect(closeOnly[2]).toBe(CLOSE_CLAUSE);
+    expect(closeOnly[2]).toContain("CloseOptions.PROMPT_TO_SAVE_CHANGES may show After Effects' own save prompt");
+    expect(closeOnly.join("\n")).not.toContain("is expected to show its own save prompt first");
+    // Nothing un-probed is stated as fact or as seen (AE-01 D15): no close was tried live over unsaved changes (probe 7
+    // closed a project saved just before), so the clause is Adobe's documentation, and promises no "no prompt" either way.
+    for (const claim of ["live test", "seen", "threw", "without a prompt", "whether suppressDialogs is on or off"]) {
+      expect(closeOnly.join("\n"), claim).not.toContain(claim);
+    }
+    // (h) a close on a never-saved project: no SAVE_CHANGES part (there is no file to save over).
+    const noFile = (await questionFor(SWITCH, UNSAVED)).split("\n");
+    expect(noFile[2]).toBe(
+      "With suppressDialogs on, this project has no file: what happens to its unsaved changes, and whether After Effects asks, is " +
+        `not verified (they may be lost). ${CLOSE_CLAUSE_NO_FILE}`,
+    );
+    // (f) host text cannot break the dialog: no line break, no bidi override, and a cap.
+    const RLO = String.fromCharCode(0x202e);
+    const evil = { path: `C:\\Projects\\evil\nname${RLO}${"x".repeat(400)}.aep`, numItems: 1, dirty: true };
+    const shown = await questionFor("app.open(f)", evil);
+    expect(shown.split("\n")).toHaveLength(4);
+    expect(shown).not.toContain(RLO);
+    expect(shown).toContain(`${String.fromCharCode(0x2026)}(+`);
+    // (g) the alias of app.project, caught by CloseOptions.
+    const alias = (await questionFor("var p = app.project;\np.close(CloseOptions.SAVE_CHANGES)", FONTPROJ)).split("\n");
+    expect(alias[0]).toMatch(/it calls a close that names CloseOptions \(line 2\)\.$/);
+    expect(alias[2]).toBe(CLOSE_CLAUSE);
+  });
+
+  it("T25i: a macOS path shows its file name, in the question and in the fallback (V4)", async () => {
+    const MAC = { path: "/Users/x/Projects/a.aep", numItems: 3, dirty: true };
+    const state = "The open project is a.aep (/Users/x/Projects/a.aep), 3 items; it has unsaved changes right now.";
+    expect((await questionFor("app.open(f)", MAC)).split("\n")[1]).toBe(state);
+    const unasked = await session(OPEN, switchPanel(MAC));
+    expect(textOf(await unasked.run({ script: "app.open(f)" }))).toContain(`; to keep the open project, remove those calls instead. ${state} `);
+    await unasked.close();
+  });
+
+  it("T25j: \"does not ask\" only where probe 10 saw it: every switching call app.open, a project with a file, suppression on (F2)", () => {
+    // Every non-empty set of triggers (a close alone, through app.project or the CloseOptions alias, switches nothing),
+    // on a saved and a never-saved project, with suppression on and off; the question and the fallback alike.
+    const triggers = [
+      "app.open(f)",
+      "app.openFast(f)",
+      "app.newProject()",
+      "app.quit()",
+      "app.restart()",
+      "app.project.close(1)",
+      "var p = app.project; p.close(CloseOptions.SAVE_CHANGES)",
+    ];
+    let checked = 0;
+    let probe10 = 0;
+    for (let mask = 1; mask < 1 << triggers.length; mask++) {
+      const script = triggers.filter((_, i) => mask & (1 << i)).join("\n");
+      const calls = projectSwitchCalls(script);
+      const switching = calls.map((c) => c.call).filter((n) => n !== "app.project.close" && n !== "a close that names CloseOptions");
+      for (const state of [FONTPROJ, UNSAVED]) {
+        const file = state.path !== null;
+        for (const suppress of [true, false]) {
+          const doesNotAsk = suppress && file && switching.length > 0 && switching.every((n) => n === "app.open");
+          const seenLive = suppress && file && switching.includes("app.open");
+          const askUnverified = suppress && switching.length > 0 && (!file || switching.some((n) => n !== "app.open"));
+          for (const text of [switchQuestion(calls, state, suppress, false), switchUnasked(calls, state, suppress, false)]) {
+            const where = `${JSON.stringify(script)} ${file ? "saved" : "never saved"} suppress=${suppress}`;
+            expect(text.includes("does not ask"), where).toBe(doesNotAsk);
+            // Only probe 10 is stated as seen, once, and never for a close.
+            expect(text.split("in a live test, app.open saved").length - 1, where).toBe(seenLive ? 1 : 0);
+            expect(text.split(/live test|seen/).length - 1, where).toBe(seenLive ? 1 : 0);
+            expect(text.includes("without asking"), where).toBe(seenLive && !doesNotAsk);
+            expect(text.includes("whether After Effects asks, is not verified"), where).toBe(askUnverified);
+            checked++;
+            if (doesNotAsk) probe10++;
+          }
+        }
+      }
+    }
+    expect(checked).toBe(127 * 2 * 2 * 2);
+    // app.open alone or with closes: 1 + 3 sets (app.project.close, the alias, both), saved, suppression on, two texts.
+    expect(probe10).toBe(4 * 2);
+  });
+
+  it("T28: every refusal after the trigger matched closes the detour; cc_eval_script's own refusal is the pointer (CS-1)", () => {
+    const calls = projectSwitchCalls(SWITCH);
+    const tail = (text: string, n: number) => text.slice(-n);
+    // The builders themselves, not the pinned copies: each ends with the no-detour sentence...
+    for (const text of [switchDeclined("decline"), switchDeclined("unset"), switchAskFailed("x"), switchUnasked(calls, FONTPROJ, true, false)]) {
+      expect(tail(text, NO_DETOUR.length + 1), text).toBe(` ${NO_DETOUR}`);
+    }
+    // ...or carries it before one last sentence: the cancel text's way forward (F4) and the remote line (C14).
+    expect(switchDeclined("cancel")).toContain(`. ${NO_DETOUR} If no question appeared in the client, it cannot show one here:`);
+    const remote = switchUnasked(calls, FONTPROJ, true, true);
+    expect(tail(remote, NO_DETOUR.length + REMOTE_MODEL_LINE.length + 2)).toBe(` ${NO_DETOUR} ${REMOTE_MODEL_LINE}`);
+    // cc_eval_script's refusal is the one consent path's pointer itself: it sends the script to ae_run_script, so it
+    // carries no no-detour sentence (spec 4.1, 5.7).
+    const cc = evalSwitchRefusal(calls);
+    expect(cc).toContain(" — run it with ae_run_script, which asks the operator first and sends it only if they agree.");
+    expect(cc).not.toContain(NO_DETOUR);
   });
 });

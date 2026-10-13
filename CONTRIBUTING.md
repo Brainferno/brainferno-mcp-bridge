@@ -141,10 +141,13 @@ them; it re-implements none of them.
   numbering cannot be calibrated. `durationMs` is the server round trip. `envelopeResult`
   returns an `ok` envelope as a normal JSON result and any other as `isError` with the
   envelope as its text.
-- **Error-shape rule.** `isError` with **plain text** = nothing was dispatched (raw scripts
-  disabled, app not enabled, app not connected, args or script refused (`ae_run_script`)).
-  `isError` with a **JSON envelope** = the script or batch was dispatched and may have partly
-  run. After dispatch, map `ScriptError`, `EvalTimeoutError`, `AppDisconnectedError` and the
+- **Error-shape rule.** `isError` with **plain text** = the caller's script or batch was not
+  dispatched (raw scripts disabled, app not enabled, app not connected, args or script refused —
+  including an After Effects script that closes or replaces the open project sent to
+  `cc_eval_script` — or, for `ae_run_script`, no OK from the operator for such a script, or its
+  read-only project check failed; only that check, never the caller's script, may have reached
+  the app). `isError` with a **JSON envelope** = the script or batch was dispatched and may have
+  partly run. After dispatch, map `ScriptError`, `EvalTimeoutError`, `AppDisconnectedError` and the
   os-script lane's `RunnerExitedError` (an `AppNotConnectedError` marked `dispatched`: the
   runner failed after the script may have reached Illustrator) through `dispatchedFailure`;
   rethrow a plain `AppNotConnectedError` (not dispatched) so `guard()` returns plain text.
@@ -157,7 +160,11 @@ them; it re-implements none of them.
   scripts are not allowed.
 - **Audit every call.** Exactly one `auditRawCall` per call, run or refused. It writes
   through `log.audit`, which no log level silences, and records a hash and the length of the
-  payload — never the payload itself. A payload that is the JSON of structured input (such
+  payload — never the payload itself. `ae_run_script` adds `consent=` (last on the line) when a
+  call reached the operator's OK, that is, the project-switch scan matched and the read-only
+  project check succeeded (a failed check, or After Effects not connected, is audited without
+  it): `operator` (approved in the client), `flag` (`allowProjectSwitch`, the client cannot
+  ask), `declined`, `failed` or `needed`. A payload that is the JSON of structured input (such
   as `ae_run_script`'s `{ script, args }`) is built with `auditJson(value, fallback)`, which
   always returns a string and never throws: a bare `JSON.stringify` overflows the stack on
   V8 before 13.8 (Node 24 and older) for input nested a few thousand levels deep, which zod
@@ -166,6 +173,20 @@ them; it re-implements none of them.
   unaudited. Pass the fallback already serialized, built from data that cannot fail. Build
   the payload before the gate check, since a refusal is audited too. (`ps_batch_play` still
   uses a bare `JSON.stringify`; moving it is an X-01 follow-up.)
+- **Asking the operator.** A raw tool that needs the operator's OK (today `ae_run_script`,
+  before a script that closes or replaces the open project) asks through MCP elicitation, form
+  mode, only when the session's client advertises it (`getClientCapabilities()?.elicitation?.form`),
+  and never in the app. Without it, the tool refuses in plain text and honours an explicit flag
+  the model may set only after it passed that refusal on and the operator agreed in the chat;
+  with it, the flag never skips the question. Every way of not getting a yes (decline, cancel, a
+  false or missing field, an error, a timeout) is plain text with nothing of the caller's
+  dispatched; a call the client cancels gets no result at all, and nothing of the caller's is
+  dispatched either. A read-only check that feeds the question runs before it. There is one
+  consent path per hazard: another raw tool that could run the same script refuses it and
+  points to the tool that asks (`cc_eval_script` for After Effects). In a shared (remote)
+  session the question goes to that session's client, whose user answers for the person at the
+  app; the texts say so. A client that advertises form elicitation but hands the form to its
+  own model (auto-fill) lets the model answer, and the server cannot tell.
 - **ExtendScript enters only through `rawScriptWrapper`.** The caller's script becomes a
   pure-ASCII string literal (built on `jsStringLiteral`) that the ES3 wrapper runs with a
   direct `eval` inside its own inner function; the wrapper collects `__log` output and refuses

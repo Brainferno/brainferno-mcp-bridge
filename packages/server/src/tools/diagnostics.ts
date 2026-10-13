@@ -7,6 +7,7 @@ import type { AppBridge } from "../bridge/types.js";
 import type { RawScriptApp } from "../config.js";
 import { MAX_EXPLICIT_TIMEOUT_MS, NO_RESULT_MESSAGE } from "../drivers/osscript.js";
 import { SERVER_VERSION } from "../version.js";
+import { evalSwitchRefusal, projectSwitchCalls } from "./after-effects.js";
 import {
   ILLUSTRATOR_RAW_NO_RESULT_MESSAGE,
   auditRawCall,
@@ -188,8 +189,8 @@ export function registerDiagnosticTools(
         "raw-script path.\n" +
         "The completion value of the script's last statement is returned (a top-level `return` is a SyntaxError — " +
         "wrap such code in an IIFE). Call __log(msg) to collect up to 200 lines / 20000 characters (logsDropped " +
-        "counts the rest). The result must be plain data — strings, numbers, booleans, null, arrays and plain " +
-        "objects; a host object (a layer, a comp, a Date) is refused with its path, so copy the fields you need. " +
+        "counts the rest). The result must be plain data; a host object (a layer, a comp, a Date) is refused with " +
+        "its path, so copy the fields you need. " +
         "Variables and functions the script declares stay local to the call; assigning to an undeclared name " +
         "creates a global that persists in the host.\n" +
         "Returns the envelope { ok, error?: { message, line, bodyLine }, durationMs, value, logs, logsDropped? }. " +
@@ -199,10 +200,11 @@ export function registerDiagnosticTools(
         "durationMs is the server round trip, including any wait behind other calls to the same app (and, for " +
         "Illustrator, starting the OS script runner — which launches Illustrator if it is closed).\n" +
         "Error shape: an error with plain text means nothing was dispatched (raw scripts disabled, app not enabled, " +
-        "app not connected); an error whose text is a JSON envelope means the script was sent and may have partly run.\n" +
+        "app not connected, or an After Effects script that closes or replaces the open project, which only " +
+        "ae_run_script runs); an error whose text is a JSON envelope means the script was sent and may have partly run.\n" +
         "Refused unless the operator sets BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS (1, or a comma list of app ids) in the MCP " +
         "server env; remote (shared HTTP) sessions are also refused unless BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS=1. " +
-        "cc_get_capabilities shows the gate. Every call, run or refused, writes an audit line to the server log.",
+        "cc_get_capabilities shows the gate. Every call, run or refused, writes an audit line.",
       inputSchema: {
         appId: z.enum(RAW_SCRIPT_APP_IDS).describe("Which ExtendScript host to run the script in."),
         script: z
@@ -231,6 +233,14 @@ export function registerDiagnosticTools(
         // Refused before any bridge is touched: nothing is dispatched, so plain text.
         auditRawCall({ tool: "cc_eval_script", app: appId, payload: script, outcome: "refused", via });
         return errorResult(gate.reason);
+      }
+      // AE-01: an After Effects script that closes or replaces the open project goes through ae_run_script, which asks
+      // the operator first — one consent path. Whenever this gate is open for After Effects, ae_run_script is listed and
+      // its gate is open too (same config, After Effects enabled). Nothing is dispatched: plain text.
+      const switches = appId === "after_effects" ? projectSwitchCalls(script) : [];
+      if (switches.length > 0) {
+        auditRawCall({ tool: "cc_eval_script", app: appId, payload: script, outcome: "refused", via });
+        return errorResult(evalSwitchRefusal(switches));
       }
       auditRawCall({ tool: "cc_eval_script", app: appId, payload: script, outcome: "run", via });
       const osScript = APPS[appId].lane === "os-script";

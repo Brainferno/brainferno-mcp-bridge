@@ -82,17 +82,33 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
     when the script opened a project, and each blocked without it; the texts name those and
     promise no more. Found, and now in the model-facing texts: with suppression on, opening another
     project saves the open one's unsaved changes over its file without asking (close it with
-    `CloseOptions.DO_NOT_SAVE_CHANGES` first to discard them; that probe's call timed out behind
-    an open dialog, so its outcome was read from the files afterwards); After Effects reads a
-    number below about 2.2e-308 as 0 and returns numbers with 15 significant digits. Also found:
-    a script cannot read the Undo label (`app.findMenuCommandId` returns 0 for it). Details:
-    `docs/spikes/06-aftereffects-tools-live.md`.
+    `CloseOptions.DO_NOT_SAVE_CHANGES` first to discard them, as Adobe documents it; that probe's
+    call timed out behind an open dialog, so its outcome was read from the files afterwards); After
+    Effects reads a number below about 2.2e-308 as 0 and returns numbers with 15 significant
+    digits. Also found: a script cannot read the Undo label (`app.findMenuCommandId` returns 0 for
+    it). Details: `docs/spikes/06-aftereffects-tools-live.md`.
+  - **Project-switch OK (unit-tested; live check pending).** A script that closes or replaces
+    the open project is not sent until the operator agrees: `projectSwitchCalls` (the trigger),
+    `PROJECT_INFO` as the read-only check, `askProjectSwitch` (MCP elicitation when the client
+    advertises form mode; otherwise a plain-text refusal and `allowProjectSwitch`).
+    `cc_eval_script` refuses such an After Effects script. The audit line carries `consent=`.
+    Live check: `docs/spikes/06-aftereffects-tools-live.md`, AE-01 consent.
   - **Still unit-tested only:** the end-call notes — a second `endUndoGroup` does not fail, and
     ExtendScript has no getter literals to make the wrapper throw (R10); the refused audit line
     with the gate off (the refusal text was seen live); `Window.alert` and global code that calls
-    `alert`, not probed live by design.
-  - **Not tested at all:** opening another project over a never-saved one under suppression (not
-    tried live; ae-host has no save prompt to model).
+    `alert`, not probed live by design; and the server side of the project-switch OK (the scan,
+    the question and its answers against an in-memory client, the plain-text fallback and
+    `allowProjectSwitch`, the 10-minute timeout, the cancel text for a client that cannot show
+    the question, the remote line).
+  - **Not tested at all** (live check pending where the spike 06 AE-01 consent checklist has a
+    step): opening another project over a never-saved one under suppression (not tried live;
+    ae-host has no save prompt to model); Claude Code's elicitation dialog (how it shows the
+    question, what it sends back, and whether a host that cannot show it answers cancel);
+    `close(DO_NOT_SAVE_CHANGES)` over unsaved changes with suppression on (the live project switch
+    closed a project saved just before); what `app.newProject`, `app.openFast`, `app.quit`,
+    `app.restart` and `close(PROMPT_TO_SAVE_CHANGES)` do with unsaved changes under suppression,
+    what `close(SAVE_CHANGES)` does, and `close(DO_NOT_SAVE_CHANGES)` and `app.open` with
+    suppression off; and whether `app.open` can be wrapped at run time.
 - **macOS run on 2026-08-28** (macOS 26, Adobe 2026 apps, Node 26): panels, Illustrator via
   osascript, previews, ffmpeg all fine as written. Two real bugs fixed — the aerender path
   (`Folder.appPackage` is the `.app` itself on macOS) and Media Encoder (nested console bundle,

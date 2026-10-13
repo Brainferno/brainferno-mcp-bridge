@@ -6,15 +6,32 @@ import { join, posix, win32 } from "node:path";
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import {
+  ErrorCode,
+  McpError,
+  type ElicitRequestFormParams,
+  type ElicitResult,
+  type ServerNotification,
+  type ServerRequest,
+} from "@modelcontextprotocol/sdk/types.js";
 
 import { jsStringLiteral } from "../bridge/script-escape.js";
-import { EvalTimeoutError, ScriptError, type AppBridge, type EvalOptions, type JsonValue } from "../bridge/types.js";
+import {
+  AppDisconnectedError,
+  AppNotConnectedError,
+  EvalTimeoutError,
+  ScriptError,
+  type AppBridge,
+  type EvalOptions,
+  type JsonValue,
+} from "../bridge/types.js";
 import type { RawScriptApp } from "../config.js";
 import { MAX_EXPLICIT_TIMEOUT_MS } from "../drivers/osscript.js";
 import type { JobRegistry } from "../jobs.js";
 import { log } from "../logging.js";
 import { currentToolCall, withToolContext } from "./call-context.js";
-import { MESSAGE_LIMIT, QUOTED_SPAN, echoArgs, excerptLine, messageText } from "./echo.js";
+import { MESSAGE_LIMIT, QUOTED_SPAN, capCodePoints, echoArgs, excerptLine, messageText, oneLine } from "./echo.js";
 import { runOrQueue, waitParam, type ProgressExtra } from "./jobs.js";
 import {
   asciiLiteral,
@@ -2037,35 +2054,357 @@ export const RUN_SCRIPT_MANAGED_REFUSAL =
  */
 const AE_MANAGED_CALL = /\b(?:begin|end)(?:UndoGroup|SuppressDialogs)\b/;
 
+// ---- project switch: the trigger, the read-only check, the operator's OK (AE-01 consent) -------------------
+
+/**
+ * The calls that close or replace the open project: app.open, app.openFast, app.newProject, app.project.close,
+ * app.quit, app.restart (Adobe's scripting guide; openFast is undocumented there but listed), plus CloseOptions,
+ * which only Project.close takes, so `var p = app.project; p.close(CloseOptions.X)` is caught too. Case-sensitive, as
+ * After Effects' names are. Each name may be reached with a dot or as a whole quoted name in brackets, in any mix
+ * (app['open'], app["project"].close, app["project"]["close"]); whitespace is allowed around the dots and brackets
+ * and before "("; a comment or string that names one counts. Used by ae_run_script (which asks the operator) and by
+ * cc_eval_script (which refuses such an After Effects script and points to ae_run_script). A guard against honest
+ * mistakes, not adversaries. Not caught, each pinned in T2: a computed name (app["op" + "en"], app[name]); a Unicode
+ * escape in a name, dotted or quoted; an alias of app, app.open or app.project (without CloseOptions); (app).open;
+ * .call/.apply; a comment inside the call chain; with (app) { open(f) }; a menu command run by id
+ * (app.executeCommand); code the script runs from elsewhere at run time ($.evalFile, eval of a file's text or of text
+ * passed in args).
+ */
+const AE_PROJECT_SWITCH = (() => {
+  /** One member access: `.name` or `['name']` / `["name"]`, whitespace allowed around it. Linear: no nested runs. */
+  const member = (names: string): string => String.raw`(?:\s*\.\s*(?:${names})|\s*\[\s*(?:'(?:${names})'|"(?:${names})")\s*\])`;
+  // Group 1: the member chain after `app` (its last name is the call); group 2: CloseOptions.
+  return new RegExp(
+    String.raw`(?<![\w$])(?:app(${member("openFast|open|newProject|quit|restart")}|${member("project")}${member("close")})\s*\(|(CloseOptions)(?![\w$]))`,
+    "g",
+  );
+})();
+
+const SWITCH_CALL_NAMES: Readonly<Record<string, string>> = {
+  openFast: "app.openFast",
+  open: "app.open",
+  newProject: "app.newProject",
+  quit: "app.quit",
+  restart: "app.restart",
+  close: "app.project.close",
+  CloseOptions: "a close that names CloseOptions",
+};
+
+export interface ProjectSwitchCall {
+  /** The call as the operator reads it, e.g. "app.open". */
+  readonly call: string;
+  /** The script line of its first match (1-based, counted as lineCount counts). */
+  readonly line: number;
+}
+
+/** Each distinct call in `script` that closes or replaces the open project, in order of first appearance. */
+export function projectSwitchCalls(script: string): ProjectSwitchCall[] {
+  const out: ProjectSwitchCall[] = [];
+  for (const m of script.matchAll(AE_PROJECT_SWITCH)) {
+    // The chain's last name: "open" in `.open` or `['open']`, "close" in `.project.close` or `["project"]["close"]`.
+    const names = (m[1] ?? "").match(/[A-Za-z]+/g) ?? [];
+    const key = m[2] ?? names[names.length - 1] ?? "";
+    const call = SWITCH_CALL_NAMES[key];
+    if (call === undefined || out.some((c) => c.call === call)) continue;
+    out.push({ call, line: lineCount(script.slice(0, m.index)) });
+  }
+  // CloseOptions only adds something when it is the sole sign of a close (an alias of app.project).
+  return out.some((c) => c.call === "app.project.close") ? out.filter((c) => c.call !== SWITCH_CALL_NAMES["CloseOptions"]) : out;
+}
+
+/** What PROJECT_INFO (the read-only check) reports that the question needs. */
+export interface ProjectState {
+  /** The project file's full path, or null for a project that was never saved. */
+  readonly path: string | null;
+  readonly dirty: boolean;
+  readonly numItems: number;
+}
+
+/** PROJECT_INFO's answer as a ProjectState, or null when it is not one. */
+export function projectState(raw: unknown): ProjectState | null {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  const path = r["path"];
+  const dirty = r["dirty"];
+  const numItems = r["numItems"];
+  if (!(path === null || typeof path === "string") || typeof dirty !== "boolean" || typeof numItems !== "number") return null;
+  return { path, dirty, numItems };
+}
+
+/** How long the operator has to answer the question (the SDK's own default is 60 s). */
+export const RUN_SCRIPT_CONSENT_TIMEOUT_MS = 10 * 60_000;
+const CONSENT_FIELD = "allowProjectSwitch";
+
+/** The question's one field: a boolean, default false, required. */
+export const RUN_SCRIPT_SWITCH_SCHEMA: ElicitRequestFormParams["requestedSchema"] = {
+  type: "object",
+  properties: {
+    [CONSENT_FIELD]: {
+      type: "boolean",
+      title: "Run the script",
+      description: "Yes lets it close or replace the open project. No (the default) stops it: the script is not sent to After Effects.",
+      default: false,
+    },
+  },
+  required: [CONSENT_FIELD],
+};
+
+/** Host text shown to the operator or the model: one line, no control or bidi characters, capped. */
+const shownText = (s: string, max = 260): string => capCodePoints(oneLine(s), max);
+/**
+ * An error message from After Effects or the MCP client, as a refusal shows it: the server's keys and tokens
+ * redacted on the full text (echo.ts messageText: redactKnown, then oneLine), then capped at 300 code points.
+ */
+const hostText = (s: string, max = 300): string => capCodePoints(messageText(s), max);
+const fileNameOf = (path: string): string => path.split(/[\\/]/).pop() || path;
+const callList = (calls: readonly ProjectSwitchCall[]): string => calls.map((c) => `${c.call} (line ${c.line})`).join(", ");
+/** The verb after a call list: one call closes or replaces, several close or replace. */
+const closeVerb = (calls: readonly ProjectSwitchCall[]): string => (calls.length === 1 ? "closes or replaces" : "close or replace");
+/** "a", "a and b", "a, b and c". */
+const andList = (names: readonly string[]): string =>
+  names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+
+/** The calls that close the project (the CloseOptions alias included); every other trigger opens, creates or quits. */
+const CLOSE_CALLS: ReadonlySet<string> = new Set(["app.project.close", "a close that names CloseOptions"]);
+const QUIT_CALLS: ReadonlySet<string> = new Set(["app.quit", "app.restart"]);
+/** The one trigger seen live over a dirty, saved project with suppression on (AE-01 probe 10): it saved over the file. */
+const SEEN_SAVING_OVER = "app.open";
+/**
+ * What a close does with unsaved changes. None of it was verified live, so the texts say so (AE-01 D15):
+ * DO_NOT_SAVE_CHANGES and SAVE_CHANGES as Adobe documents them; PROMPT_TO_SAVE_CHANGES's own save prompt as possible.
+ * (AE-01 probe 7 closed with DO_NOT_SAVE_CHANGES under suppression and saw no dialog, but on a project saved just
+ * before: it shows nothing about unsaved changes.)
+ */
+const CLOSE_DOCUMENTED =
+  "CloseOptions.DO_NOT_SAVE_CHANGES throws unsaved changes away and CloseOptions.SAVE_CHANGES saves them over the file " +
+  "(both as Adobe documents it; not verified live).";
+/** The same for a project with no file: there is nothing for SAVE_CHANGES to save over. */
+const CLOSE_DOCUMENTED_NO_FILE = "CloseOptions.DO_NOT_SAVE_CHANGES throws unsaved changes away (as Adobe documents it; not verified live).";
+const CLOSE_PROMPT_POSSIBLE =
+  "CloseOptions.PROMPT_TO_SAVE_CHANGES may show After Effects' own save prompt, which blocks After Effects until someone answers it " +
+  "there (not verified live).";
+
+function stateSentence(s: ProjectState): string {
+  const which = s.path === null ? "has never been saved (no file)" : `is ${shownText(fileNameOf(s.path))} (${shownText(s.path)})`;
+  const items = `${s.numItems} item${s.numItems === 1 ? "" : "s"}`;
+  const dirty = s.dirty ? "it has unsaved changes right now" : "it has no unsaved changes right now, but the script can make some before it switches";
+  return `The open project ${which}, ${items}; ${dirty}.`;
+}
+
+/**
+ * What After Effects does with unsaved changes, for these calls, scoped to the evidence (AE-01 D15). One case was seen
+ * live: app.open over a dirty, saved project with suppression on saved it over its file without asking (probe 10). So
+ * "After Effects does not ask" is said only when every switching call is app.open and the project has a file; for any
+ * other switching call under suppression, and for any on a never-saved project, both what happens and whether After
+ * Effects asks are "not verified"; the save prompt with suppression off is "expected". The close clause is independent
+ * of `suppress` (a close's CloseOptions decide) and is Adobe's documentation, not verified live (CLOSE_DOCUMENTED).
+ */
+function riskSentence(s: ProjectState, suppress: boolean, calls: readonly ProjectSwitchCall[]): string {
+  const names = calls.map((c) => c.call);
+  const switching = names.filter((n) => !CLOSE_CALLS.has(n));
+  const parts: string[] = [];
+  if (switching.length > 0) {
+    if (!suppress) {
+      parts.push(
+        "With suppressDialogs off, After Effects is expected to show its own save prompt first when there are unsaved " +
+          "changes (not verified live): After Effects stays blocked until someone answers it there, and the call times out meanwhile.",
+      );
+    } else if (s.path === null) {
+      parts.push(
+        "With suppressDialogs on, this project has no file: what happens to its unsaved changes, and whether After Effects " +
+          "asks, is not verified (they may be lost).",
+      );
+    } else {
+      const seen = `in a live test, ${SEEN_SAVING_OVER} saved the open project's unsaved changes over its file`;
+      const untried = switching.filter((n) => n !== SEEN_SAVING_OVER);
+      const rest =
+        `for ${andList(untried)}, what happens to unsaved changes, and whether After Effects asks, is not verified ` +
+        "(they may be saved over the file or lost)";
+      // Probe 10's case, and only it, says After Effects does not ask.
+      if (untried.length === 0) parts.push(`With suppressDialogs on, After Effects does not ask: ${seen}.`);
+      else if (untried.length < switching.length) parts.push(`With suppressDialogs on: ${seen} without asking; ${rest}.`);
+      else parts.push(`With suppressDialogs on, ${rest}.`);
+    }
+  }
+  if (names.some((n) => CLOSE_CALLS.has(n))) parts.push(s.path === null ? CLOSE_DOCUMENTED_NO_FILE : CLOSE_DOCUMENTED, CLOSE_PROMPT_POSSIBLE);
+  const quits = names.filter((n) => QUIT_CALLS.has(n));
+  if (quits.length > 0) parts.push(`${andList(quits)} also close${quits.length === 1 ? "s" : ""} After Effects itself.`);
+  return parts.join(" ");
+}
+
+/** In a shared (remote) session the question goes to that client's user, not to the person at After Effects (C14). */
+const REMOTE_QUESTION_LINE = "This is a shared (remote) session: the person at After Effects is not asked; you are answering for them.";
+const REMOTE_MODEL_LINE =
+  "This is a shared (remote) session: the person you ask in the chat answers for whoever is at After Effects, who is not asked — say so when you ask.";
+/** Every refusal after the trigger matched: the one consent path is ae_run_script's own (CS-1). */
+const NO_DETOUR = "Do not run this script, or its project switch, through cc_eval_script or another tool.";
+
+/** The elicitation message. */
+export function switchQuestion(calls: readonly ProjectSwitchCall[], s: ProjectState, suppress: boolean, remote: boolean): string {
+  return (
+    `ae_run_script wants to run an After Effects script that closes or replaces the open project: it calls ${callList(calls)}.\n` +
+    `${stateSentence(s)}\n` +
+    `${riskSentence(s, suppress, calls)}\n` +
+    (remote ? `${REMOTE_QUESTION_LINE}\n` : "") +
+    // The read-only check has already run: only the caller's script waits for the yes. The operator reads this, and
+    // did not write the script: "the script", never "your script".
+    'The script is not sent to After Effects unless you set "Run the script" to yes and submit.'
+  );
+}
+
+/** The refusal when the client cannot ask and allowProjectSwitch is not true. */
+export function switchUnasked(calls: readonly ProjectSwitchCall[], s: ProjectState, suppress: boolean, remote: boolean): string {
+  return (
+    `ae_run_script did not send this script: it calls ${callList(calls)}, which ${closeVerb(calls)} the open After Effects ` +
+    "project, and this MCP client cannot ask the operator itself — tell the operator what follows, ask in the chat whether " +
+    "the script may do this, and call ae_run_script again with the same script and allowProjectSwitch: true only if they " +
+    `agree; to keep the open project, remove those calls instead. ${stateSentence(s)} ${riskSentence(s, suppress, calls)} ` +
+    NO_DETOUR +
+    (remote ? ` ${REMOTE_MODEL_LINE}` : "")
+  );
+}
+
+const DECLINED_HOW = {
+  decline: "declined",
+  cancel: "dismissed the question without answering",
+  unset: 'submitted without setting "Run the script" to yes',
+} as const;
+
+/** The refusal after the operator said no (decline), dismissed the question (cancel), or submitted without yes. */
+export function switchDeclined(how: keyof typeof DECLINED_HOW): string {
+  return (
+    `Asked whether this script may close or replace the open After Effects project, the operator ${DECLINED_HOW[how]} — the ` +
+    "script was not sent (only a read-only check of the open project ran). Ask the operator in the chat what they want; call " +
+    "ae_run_script again only if they ask for it (they will be asked again), or remove the calls that close or replace the " +
+    `project. ${NO_DETOUR}` +
+    // A client that advertises elicitation but cannot show it (Claude Code without an interactive host) answers cancel (F4).
+    (how === "cancel"
+      ? " If no question appeared in the client, it cannot show one here: ask the operator to open, create or close the project in After Effects themselves."
+      : "")
+  );
+}
+
+/** The refusal when asking failed: the client errored, the answer did not fit the schema, no answer in time, the call was cancelled. */
+export function switchAskFailed(reason: string): string {
+  return (
+    `Could not ask the operator whether this script may close or replace the open After Effects project (${reason}) — the ` +
+    "script was not sent (only a read-only check of the open project ran). Ask the operator in the chat; if they agree, call " +
+    "ae_run_script again and the question is shown again. If this client cannot show it, ask the operator to open, create or " +
+    `close the project in After Effects themselves. ${NO_DETOUR}`
+  );
+}
+
+/** The refusal when the read-only check failed (After Effects not connected is the usual plain text, not this). */
+export function switchCheckFailed(error: unknown): string {
+  const head = (reason: string) =>
+    `Could not read the open After Effects project before asking about this script, which closes or replaces it (${reason}) — the script was not sent.`;
+  if (error instanceof EvalTimeoutError) {
+    return `${head(`After Effects did not answer within ${error.timeoutMs} ms`)} Wait until After Effects responds (an earlier script may still be running: a timeout stops the wait, not the script), then retry.`;
+  }
+  if (error instanceof AppDisconnectedError) {
+    return `${head("the panel disconnected")} Reconnect the brainferno-mcp-bridge panel in After Effects (cc_connected_apps shows when it is back), then retry.`;
+  }
+  const what = error === null ? "an unexpected answer" : hostText(error instanceof Error ? error.message : String(error));
+  return `${head(`After Effects answered: ${what}`)} Retry; if it keeps failing, close and reopen the brainferno-mcp-bridge panel in After Effects.`;
+}
+
+/** cc_eval_script's refusal for an After Effects script that closes or replaces the open project (CS-1). */
+export function evalSwitchRefusal(calls: readonly ProjectSwitchCall[]): string {
+  return (
+    `cc_eval_script did not send this script: it calls ${callList(calls)}, which ${closeVerb(calls)} the open After Effects ` +
+    "project (a comment or string that names one counts) — run it with ae_run_script, which asks the operator first and " +
+    "sends it only if they agree."
+  );
+}
+
+export type SwitchConsent =
+  | { readonly ok: true; readonly consent: "operator" | "flag" }
+  | { readonly ok: false; readonly text: string; readonly consent: "declined" | "failed" | "needed" };
+
+type Operator = McpServer["server"];
+type Extra = RequestHandlerExtra<ServerRequest, ServerNotification>;
+
+/** The SDK 1.30.0 (Ajv) message for an accept whose content lacks the field: the operator submitted without a yes (F3). */
+const MISSING_FIELD = `must have required property '${CONSENT_FIELD}'`;
+
+/**
+ * The operator's OK for a script that closes or replaces the open project. A client that advertises form
+ * elicitation is always asked (allowProjectSwitch never skips it); one that does not gets the plain-text refusal,
+ * unless the caller passed allowProjectSwitch: true after passing that refusal on and the operator agreed in the chat.
+ * Every way of not getting a yes — decline, cancel, a false or missing field, an error, a timeout, the call
+ * cancelled — is a refusal.
+ */
+export async function askProjectSwitch(
+  operator: Operator,
+  extra: Extra,
+  o: { calls: readonly ProjectSwitchCall[]; state: ProjectState; suppressDialogs: boolean; allowProjectSwitch: boolean; remote: boolean },
+): Promise<SwitchConsent> {
+  // The client cancelled the tool call while the read-only check ran (F2). The flag path has no await between here and
+  // the dispatch, so this is the last point that can stop it; elicitInput's own abort check covers the asking path.
+  if (extra.signal.aborted) return { ok: false, text: switchAskFailed("the tool call was cancelled"), consent: "failed" };
+  // The SDK's own pre-check in elicitInput, mirrored: form mode must be advertised ({} is normalized to { form: {} }).
+  if (!operator.getClientCapabilities()?.elicitation?.form) {
+    return o.allowProjectSwitch
+      ? { ok: true, consent: "flag" }
+      : { ok: false, text: switchUnasked(o.calls, o.state, o.suppressDialogs, o.remote), consent: "needed" };
+  }
+  let answer: ElicitResult;
+  try {
+    answer = await operator.elicitInput(
+      { mode: "form", message: switchQuestion(o.calls, o.state, o.suppressDialogs, o.remote), requestedSchema: RUN_SCRIPT_SWITCH_SCHEMA },
+      // On the tool call's own stream (Streamable HTTP), cancelled with it, and given time to read.
+      { relatedRequestId: extra.requestId, signal: extra.signal, timeout: RUN_SCRIPT_CONSENT_TIMEOUT_MS },
+    );
+  } catch (error) {
+    // This abort check only picks the text: the SDK delivers no result for a cancelled request, and the audit is
+    // consent=failed either way.
+    if (extra.signal.aborted) return { ok: false, text: switchAskFailed("the tool call was cancelled"), consent: "failed" };
+    // accept with the field left out: the same operator act as accept with no content (F3).
+    if (error instanceof McpError && error.code === ErrorCode.InvalidParams && error.message.includes(MISSING_FIELD)) {
+      return { ok: false, text: switchDeclined("unset"), consent: "declined" };
+    }
+    const reason =
+      error instanceof McpError && error.code === ErrorCode.RequestTimeout
+        ? `no answer within ${RUN_SCRIPT_CONSENT_TIMEOUT_MS / 60_000} minutes`
+        : hostText(error instanceof Error ? error.message : String(error));
+    return { ok: false, text: switchAskFailed(reason), consent: "failed" };
+  }
+  if (answer.action === "accept" && answer.content?.[CONSENT_FIELD] === true) return { ok: true, consent: "operator" };
+  return { ok: false, text: switchDeclined(answer.action === "accept" ? "unset" : answer.action), consent: "declined" };
+}
+
 /**
  * ae_run_script's model-facing description. Claude Code shows a tool description only up to 2,048 characters, so
  * it holds the safety text, in this order: what the tool does and the one undo step, the error-shape rule, the
- * modal-UI warning (with the auto-save hazard), the gate, the envelope. The detail lives in the parameters' texts
- * (RUN_SCRIPT_SCRIPT_TEXT, RUN_SCRIPT_SUPPRESS_TEXT). It promises only what is verified (AE-01 D15): the dialogs
- * named are the ones suppression hid in the live run on After Effects 26.5 (spike 06), never every dialog.
+ * modal-UI warning, the project switch (the auto-save hazard, scoped to app.open as AE-01 live probe 10 saw it, and
+ * the operator's OK the tool now asks for), the gate, the envelope. The detail lives in the parameters' texts
+ * (RUN_SCRIPT_SCRIPT_TEXT, RUN_SCRIPT_SUPPRESS_TEXT, RUN_SCRIPT_ALLOW_SWITCH_TEXT). It promises only what is
+ * verified (AE-01 D15): the dialogs named are the ones suppression hid in the live run on After Effects 26.5
+ * (spike 06), never every dialog.
  */
 export const RUN_SCRIPT_DESCRIPTION =
   "Run a raw ExtendScript (ES3) in After Effects as ONE undo step, on the open project: one Ctrl-Z undoes " +
   "everything the call changed, even when the script failed part-way. Not covered: opening, creating or closing a " +
   "project, or importing an .aep; these break After Effects' undo history. Prefer a typed ae_* tool where one " +
   "exists.\n" +
-  "Error shape: an error in plain text means nothing was sent (raw scripts off for this session, args or script " +
-  "refused, After Effects not connected). An error whose text is a JSON envelope means the script was sent and " +
-  "may have partly run: check After Effects before re-running.\n" +
+  "Error shape: an error in plain text means your script was not sent (raw scripts off for this session, args or " +
+  "script refused, a project switch not approved, After Effects not connected). An error whose text is a JSON " +
+  "envelope means the script was sent and may have partly run: check After Effects before re-running.\n" +
   "Modal UI: a dialog blocks After Effects and every later call until someone dismisses it. suppressDialogs " +
   "(default true) hides After Effects' own warning dialogs, such as an export warning or the missing-font dialog " +
-  "when the script opens a project. With it on, opening another project saves the open one's unsaved changes over " +
-  "its file without asking (see suppressDialogs). A bare alert, confirm or prompt in your script's own text fails " +
-  "the call instead. Anything else modal still opens and blocks: see the script parameter. A timeout stops the " +
-  "wait, not the script.\n" +
+  "when the script opens a project. A bare alert, confirm or prompt in your script's own text fails the call " +
+  "instead. Anything else modal still opens and blocks: see the script parameter. A timeout stops the wait, not " +
+  "the script.\n" +
+  "Project switch: with suppressDialogs on, app.open was seen to save the open project's unsaved changes over its " +
+  "file without asking. A script that closes or replaces the open project needs the operator's OK: the tool asks " +
+  "them, or see allowProjectSwitch.\n" +
   "Refused unless the operator sets BRAINFERNO_MCP_ALLOW_RAW_SCRIPTS (1, or a comma list including after_effects) in " +
   "the server env. Remote (shared HTTP) sessions also need BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS=1. " +
-  "cc_get_capabilities shows the gate. Every call, run or refused, writes an audit line to the server log.\n" +
+  "cc_get_capabilities shows the gate. Every call, run or refused, writes an audit line.\n" +
   "Returns the envelope { ok, error?: { message, line, bodyLine }, durationMs, value, logs, logsDropped? }. value is " +
-  "the last statement's value and must be plain data (strings, numbers, booleans, null, arrays, plain objects): " +
-  "copy the fields you need from a host object such as a layer, which is refused. logs holds __log(msg) lines, up " +
-  "to 200 lines / 20000 characters; logsDropped counts the rest. bodyLine is the failing line in your script, or " +
-  "null (see script). durationMs is the server round trip, including any wait behind other After Effects calls.";
+  "the last statement's value as plain data: copy the fields you need from a host object such as a layer, which is " +
+  "refused. logs holds __log(msg) lines, up to 200 lines / 20000 characters; logsDropped counts the rest. bodyLine " +
+  "is the failing line in your script, or null (see script).";
 
 /**
  * ae_run_script's `script` parameter text: how to write the script, the undo carve-out (and that what reaches the
@@ -2095,8 +2434,9 @@ const RUN_SCRIPT_SCRIPT_TEXT =
 
 /**
  * ae_run_script's `suppressDialogs` parameter text: the dialogs suppression was seen to hide on After Effects 26.5
- * (AE-01 live probes 8 and 9; never a promise for every dialog), and the auto-save hazard of probe 10 with the way
- * to discard instead. The description carries the short form of both.
+ * (AE-01 live probes 8 and 9; never a promise for every dialog), and the auto-save hazard of probe 10 (app.open, the
+ * call it was seen with) with the way to discard instead, and that such a script needs the operator's OK either way
+ * (AE-01 consent). The description carries the short form of both.
  */
 const RUN_SCRIPT_SUPPRESS_TEXT =
   "Suppress After Effects' own warning dialogs while the script runs; they are discarded, not shown afterwards. " +
@@ -2104,10 +2444,11 @@ const RUN_SCRIPT_SUPPRESS_TEXT =
   "script opens a project; it is not promised for every dialog. Defaults to true. This covers only After Effects' " +
   "own dialogs, not modal UI the script opens itself (see script). With false, a dialog waits for a human and the " +
   "call times out.\n" +
-  "Unsaved changes: with suppression on, a script that opens another project while the open one has unsaved " +
-  "changes gets no save prompt. After Effects saves the open project over its file, those changes included, then " +
-  "opens the other. To discard the changes instead, call app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES) " +
-  "before opening the other project.";
+  "Unsaved changes: with suppression on, a script that opens another project with app.open while the open one has " +
+  "unsaved changes gets no save prompt. After Effects saves the open project over its file, those changes included, " +
+  "then opens the other. To discard the changes instead, call app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES) " +
+  "before opening the other project. Either way, a script whose text names such a call needs the operator's OK " +
+  "first (see allowProjectSwitch).";
 
 /**
  * ae_run_script's `args` parameter text, with the number limits After Effects showed live (AE-01 probe 11): the
@@ -2123,6 +2464,30 @@ const RUN_SCRIPT_ARGS_TEXT =
   "returned value keep 15 significant digits (0.1 + 0.2 arrives exact but comes back as 0.3). Pass a value as a " +
   "string when every digit matters: strings round-trip exactly. A number the script returns, even via String(n), " +
   "keeps 15 significant digits.";
+
+/**
+ * ae_run_script's `allowProjectSwitch` parameter text (AE-01 consent): that it is set only after the tool's own
+ * plain-text refusal was passed on to the operator and they agreed, which calls count, what was seen live (probe 10:
+ * app.open) and what was not (the other calls; a close, as Adobe documents it), that the flag never skips the question
+ * when the client can ask, and a short list of what the text-only scan does not catch, which says it is not complete
+ * (the full list is AE_PROJECT_SWITCH's comment, pinned by T2).
+ */
+const RUN_SCRIPT_ALLOW_SWITCH_TEXT =
+  "Set true only after this tool refused this script in plain text, you told the operator what that refusal says, and " +
+  "they agreed in the chat that it may close or replace the open project; defaults to false. The tool treats a script " +
+  "as closing or replacing the open project when its text calls app.open, app.openFast, app.newProject, " +
+  "app.project.close, app.quit or app.restart, or names CloseOptions (comments and strings count). With " +
+  "suppressDialogs on, app.open was seen to save the open project's unsaved changes over its file without asking; " +
+  "app.openFast, app.newProject, app.quit and app.restart were not tried over unsaved changes and may save or " +
+  "discard them; app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES) throws them away as Adobe documents it (not " +
+  "verified live). So before such a script is sent, the tool reads the open project (a read-only check) and asks the " +
+  "operator in this client. When the client can ask, it always asks, and this flag does not skip the question: you " +
+  "cannot approve for the operator. Only when the client cannot ask does the tool refuse in plain text, naming the " +
+  "risk; then ask the operator in the chat and call again with allowProjectSwitch: true only if they agreed. Ignored " +
+  "for a script that names none of these. The check reads the text only and does not catch, among others: a call " +
+  "through an alias, a computed name, with (app), (app).open, .call/.apply, a comment or escape inside the call, a " +
+  "menu command, or code run from elsewhere at run time ($.evalFile, or eval of a file's text or of text passed in " +
+  "args).";
 
 // ---- registration --------------------------------------------------------------
 
@@ -2159,6 +2524,8 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
   // Every callback runs inside a tool-call context (tool name + validated arguments) that an
   // error raised deep inside a bridge call can name. The registerTool calls below are unchanged.
   const server = withToolContext(mcp, { noArgs: AE_NO_ARG_ECHO });
+  // The session's low-level Server: what its client advertised, and elicitation (ae_run_script's project-switch OK).
+  const operator = mcp.server;
   // One per MCP session; refreshed when the panel reconnects. Read only on an effect miss.
   const effects = new EffectCatalog(bridge);
   const run = (script: string, opts?: EvalOptions) => guard(async () => jsonResult(await evaluateAe(bridge, script, opts)));
@@ -2809,41 +3176,82 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
           .describe(
             "Override the result timeout for this call, in ms (default: the server's slow timeout, " +
               "BRAINFERNO_MCP_EVAL_TIMEOUT_MS; max 30 minutes). A timeout stops the wait, not the script: After " +
-              "Effects keeps running it, and later After Effects calls wait behind it.",
+              "Effects keeps running it, and later After Effects calls wait behind it. durationMs in the result " +
+              "includes that wait.",
           ),
+        allowProjectSwitch: z.boolean().optional().describe(RUN_SCRIPT_ALLOW_SWITCH_TEXT),
       },
       annotations: { destructiveHint: true, openWorldHint: true },
     },
-    async ({ script, args, undoGroupName, suppressDialogs, timeoutMs }, extra) => {
+    async ({ script, args, undoGroupName, suppressDialogs, timeoutMs, allowProjectSwitch }, extra) => {
       const via = viaOf(extra);
-      // Never throws (F1), and every call is audited: on V8 before 13.8 (Node 24 and older) JSON.stringify overflows
-      // its stack on args nested a few thousand levels deep, and a cycle or a throwing toJSON fails on every engine.
-      // The fallback, built from the script (a string) alone, cannot fail.
+      // 1. The audit payload. Never throws (F1), and every call is audited: on V8 before 13.8 (Node 24 and older)
+      // JSON.stringify overflows its stack on args nested a few thousand levels deep, and a cycle or a throwing toJSON
+      // fails on every engine. The fallback, built from the script (a string) alone, cannot fail.
       const payload = auditJson({ script, args }, JSON.stringify({ script, args: "[args could not be serialized: nested too deeply]" }));
-      const audit = (outcome: "run" | "refused") => auditRawCall({ tool: "ae_run_script", app: "after_effects", payload, outcome, via });
+      const audit = (outcome: "run" | "refused", consent?: SwitchConsent["consent"]) =>
+        auditRawCall({ tool: "ae_run_script", app: "after_effects", payload, outcome, via, consent });
+      // 2. The gate.
       const gate = rawGateState("after_effects", options.rawScriptApps, AE_ONLY, {
         remote: options.remote,
         allowRemote: options.allowRemoteRawScripts,
       });
-      // Every refusal below is nothing dispatched: plain text, one refused audit, no bridge call.
+      // Every refusal below: plain text, one refused audit, the caller's script never sent (only the read-only check
+      // of step 6 may have reached After Effects).
       if (!gate.open) {
         audit("refused");
         return errorResult(gate.reason);
       }
+      // 3. The args.
       const encoded = aeArgsLiteral(args ?? {});
       if ("refusal" in encoded) {
         audit("refused");
         return errorResult(encoded.refusal);
       }
+      // 4. The managed-call refusal.
       if (AE_MANAGED_CALL.test(script)) {
         audit("refused");
         return errorResult(RUN_SCRIPT_MANAGED_REFUSAL);
       }
-      audit("run");
+      const suppress = suppressDialogs ?? true;
+      // 5. The trigger scan: a script that closes or replaces the open project needs the operator's OK (AE-01 consent).
+      const switches = projectSwitchCalls(script);
+      let consent: "operator" | "flag" | undefined;
+      if (switches.length > 0) {
+        // 6. The read-only check (PROJECT_INFO): what the operator is asked about. Before the question, so a closed
+        // After Effects is reported without asking anyone.
+        let state: ProjectState | null;
+        try {
+          state = projectState(await evaluateAe(bridge, PROJECT_INFO, { timeoutClass: "fast" }));
+        } catch (error) {
+          audit("refused");
+          return errorResult(error instanceof AppNotConnectedError ? error.message : switchCheckFailed(error));
+        }
+        if (state === null) {
+          audit("refused");
+          return errorResult(switchCheckFailed(null));
+        }
+        // 7. The consent (it refuses a call the client cancelled during step 6). No await from here to the dispatch.
+        const asked = await askProjectSwitch(operator, extra, {
+          calls: switches,
+          state,
+          suppressDialogs: suppress,
+          allowProjectSwitch: allowProjectSwitch === true,
+          remote: options.remote,
+        });
+        if (!asked.ok) {
+          audit("refused", asked.consent);
+          return errorResult(asked.text);
+        }
+        consent = asked.consent;
+      }
+      // 8. Audit run.
+      audit("run", consent);
+      // 9. Dispatch.
       const source = runRawScript(script, {
         args: encoded.literal,
         undoGroupName: undoGroupName ?? AE_RUN_SCRIPT_UNDO,
-        suppressDialogs: suppressDialogs ?? true,
+        suppressDialogs: suppress,
       });
       return guard(async () => {
         const t0 = Date.now();

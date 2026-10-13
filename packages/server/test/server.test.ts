@@ -630,6 +630,97 @@ describe("cc_eval_script with the gate open for After Effects", () => {
     expect(rawAuditLines(audit).at(-1)).toMatch(/app=illustrator .* outcome=refused$/);
     await t.close();
   });
+
+  // AE-01 consent (CS-1): one consent path. An After Effects script that closes or replaces the open project goes
+  // through ae_run_script, which asks the operator; cc_eval_script refuses it, sending nothing.
+  const SWITCH = "app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES);\napp.open(new File(__args.p));\n1";
+  const REFUSED_CC = /^raw-script tool=cc_eval_script app=after_effects sha256=[0-9a-f]{12} len=\d+ via=stdio outcome=refused$/;
+
+  it("T29: refuses an After Effects script that closes or replaces the open project, and points to ae_run_script", async () => {
+    const s = await startSession(AE_ONLY);
+    const panel = await connectPanel(s.bridge.port(), "after_effects");
+    const cmds = recordCmds(panel, (f) => reply(panel, f.id, { ok: true, value: 1, logs: [], logsDropped: 0 }));
+    const cases: [string, string][] = [
+      [
+        SWITCH,
+        "cc_eval_script did not send this script: it calls app.project.close (line 1), app.open (line 2), which close or " +
+          "replace the open After Effects project (a comment or string that names one counts) — run it with ae_run_script, " +
+          "which asks the operator first and sends it only if they agree.",
+      ],
+      // A script that suppresses dialogs itself would get probe 10's silent save-over here.
+      [
+        "app.beginSuppressDialogs();\napp.open(new File(p));\n1",
+        "cc_eval_script did not send this script: it calls app.open (line 2), which closes or replaces the open After " +
+          "Effects project (a comment or string that names one counts) — run it with ae_run_script, which asks the " +
+          "operator first and sends it only if they agree.",
+      ],
+    ];
+    for (const [script, text] of cases) {
+      audit.mockClear();
+      const r = await s.c.callTool({ name: "cc_eval_script", arguments: { appId: "after_effects", script } });
+      expect(r.isError).toBe(true);
+      expect(textOf(r)).toBe(text);
+      expect(() => JSON.parse(textOf(r))).toThrow();
+      expect(rawAuditLines(audit)).toEqual([expect.stringMatching(REFUSED_CC)]);
+    }
+    await settle();
+    expect(cmds).toEqual([]);
+    panel.close();
+    await s.close();
+  });
+
+  it("T30: the project-switch refusal is After Effects only: Audition's app.open is sent as before", async () => {
+    const s = await startSession({ allowRawScripts: true, rawScriptApps: ["audition"] });
+    const au = await connectPanel(s.bridge.port(), "audition");
+    const cmds = recordCmds(au, (f) => reply(au, f.id, { ok: true, value: 1, logs: [], logsDropped: 0 }));
+    const r = await s.c.callTool({ name: "cc_eval_script", arguments: { appId: "audition", script: "app.open(f)" } });
+    expect(r.isError).toBeFalsy();
+    expect(cmds).toHaveLength(1);
+    expect(cmds[0]!.params.script).toBe(rawScriptWrapper("app.open(f)"));
+    expect(rawAuditLines(audit)).toEqual([expect.stringMatching(/^raw-script tool=cc_eval_script app=audition .* outcome=run$/)]);
+    au.close();
+    await s.close();
+  });
+
+  it("T30b: Illustrator's app.open is not refused either: the script reaches the os-script lane (V3)", async () => {
+    // In Illustrator app.open opens a document, not an After Effects project. The runner takes the .jsx and runs it in
+    // node:vm, where `app` does not exist, so the script returns 1 without calling it.
+    const jsx: string[] = [];
+    const lane = illustratorLane(async (jsxPath) => {
+      jsx.push(readFileSync(jsxPath, "utf8"));
+      runJsxFile(jsxPath);
+    });
+    const s = await startSession({ allowRawScripts: true, rawScriptApps: ["illustrator"] }, { illustratorBridge: lane });
+    const script = 'typeof app === "undefined" ? 1 : app.open(new File("~/a.ai"))';
+    const r = await s.c.callTool({ name: "cc_eval_script", arguments: { appId: "illustrator", script } });
+    expect(r.isError).toBeFalsy();
+    expect(JSON.parse(textOf(r))).toMatchObject({ ok: true, value: 1 });
+    expect(jsx).toHaveLength(1);
+    expect(jsx[0]).toContain(rawScriptWrapper(script));
+    expect(rawAuditLines(audit)).toEqual([expect.stringMatching(/^raw-script tool=cc_eval_script app=illustrator .* outcome=run$/)]);
+    await s.close();
+  });
+
+  it("T31: with the gate closed, a project switch gets the gate text: the gate is checked first", async () => {
+    const s = await startSession({});
+    const r = await s.c.callTool({ name: "cc_eval_script", arguments: { appId: "after_effects", script: SWITCH } });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toContain(RAW_SCRIPTS_DISABLED_MESSAGE);
+    expect(textOf(r)).not.toContain("cc_eval_script did not send this script");
+    expect(rawAuditLines(audit)).toEqual([expect.stringMatching(REFUSED_CC)]);
+    await s.close();
+  });
+
+  it("T32: the description names the project-switch refusal as a plain-text cause and keeps the ae_run_script pointer", async () => {
+    const s = await startSession(AE_ONLY);
+    const d = (await s.c.listTools()).tools.find((t) => t.name === "cc_eval_script")!.description!;
+    expect(d).toContain(
+      "(raw scripts disabled, app not enabled, app not connected, or an After Effects script that closes or replaces the " +
+        "open project, which only ae_run_script runs);",
+    );
+    expect(d).toContain("For After Effects (when its tools are enabled), ae_run_script runs a script as one undo step.");
+    await s.close();
+  });
 });
 
 describe("ae_run_script with the gate open for After Effects (AE-01)", () => {

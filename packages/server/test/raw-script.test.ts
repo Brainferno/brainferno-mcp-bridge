@@ -572,6 +572,24 @@ describe("audit", () => {
     expect(debug).toHaveBeenCalledTimes(1); // no excerpt for a refusal
   });
 
+  it("writes consent= last, only when given; a line without it is unchanged byte for byte (AE-01 consent, T26)", () => {
+    const audit = vi.spyOn(log, "audit").mockImplementation(() => {});
+    vi.spyOn(log, "debug").mockImplementation(() => {});
+    const payload = '{"script":"app.open(f)"}';
+    const hash = createHash("sha256").update(payload).digest("hex").slice(0, 12);
+    const head = `raw-script tool=ae_run_script app=after_effects sha256=${hash} len=${payload.length} via=stdio`;
+    auditRawCall({ tool: "ae_run_script", app: "after_effects", payload, outcome: "run", via: "stdio", consent: "flag" });
+    auditRawCall({ tool: "ae_run_script", app: "after_effects", payload, outcome: "refused", via: "stdio", consent: "declined" });
+    auditRawCall({ tool: "ae_run_script", app: "after_effects", payload, outcome: "run", via: "stdio" });
+    auditRawCall({ tool: "ae_run_script", app: "after_effects", payload, outcome: "run", via: "stdio", consent: undefined });
+    expect(audit.mock.calls.map((c) => c[0])).toEqual([
+      `${head} outcome=run consent=flag`,
+      `${head} outcome=refused consent=declined`,
+      `${head} outcome=run`,
+      `${head} outcome=run`,
+    ]);
+  });
+
   it("auditJson never throws: a value JSON.stringify throws on gives the fallback (AE-01)", () => {
     // A cycle and a toJSON that throws make JSON.stringify throw on every engine (a BigInt too: see the next test).
     const cycle: Record<string, unknown> = {};
