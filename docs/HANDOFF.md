@@ -16,7 +16,7 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
 - Everything is verified live on **Windows 11** with the Adobe 2026 apps: Photoshop 21
   (+ `ps_batch_play`, unit-tested only since X-01 — see the next bullet),
   After Effects 34 (+ `ae_run_script`, live on After Effects 26.5 since AE-01 — see the AE-01
-  bullet; + `ae_find_layers`, `ae_batch`, `ae_undo` and `ae_redo`, unit-tested only — see the
+  bullet; + `ae_find_layers`, `ae_batch`, `ae_undo` and `ae_redo`, live since AE-03 — see the
   AE-03 bullet), Premiere Pro 29, Illustrator 7 (+ Adobe's 46 via `ai_beta_call`),
   Audition 12, Media Encoder 6, audio/ffmpeg 9, pipelines 4, jobs 4. (`tool-counts.test.ts`
   checks the "Expect N tools" line below and the README's per-app headers; it does not check
@@ -169,9 +169,21 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
     no-op, and that a render-queue add and an Essential Graphics add are undone by one Undo. The
     operator saw no dialog. Details: `docs/spikes/06-aftereffects-tools-live.md`, "AE-03 probes",
     and `docs/quirks/ae-undo-redo.md`.
-  - **Unit-tested only (live run pending):** the four tools and the name addressing themselves, in
-    the node:vm stand-in (`test/ae-host.ts`, which now models the undo history as the probes saw
-    it). Not tried live: a 200-operation batch's duration, a non-English After Effects.
+  - **Verified live on After Effects 26.5x89 (Windows 11, 2026-10-13)** with the gate off, through
+    the new tools on the scratch project: a five-operation batch (create a comp, three layers by
+    `compName`, one edit by `layerName`) as one undo step, no `__acm_batch` folder left, and
+    `nameToIndex` right; one `ae_undo` removed it all and `ae_redo` brought it back; an atomic
+    batch failing in operation 3 (and in operation 1) undid itself and kept the operator's earlier
+    edit as the newest undo step; a non-atomic batch failing in operation 1 changed nothing and
+    said not to press Ctrl-Z; the repeated-layer and repeated-composition messages, `parentName`,
+    the self-parent refusal, `ae_add_marker` by `layerName`; `ae_find_layers` for precomp,
+    adjustment, shape, text, null and solid layers and its text and name filters; a 200-operation
+    batch (under 73 s of wall clock, including the model's own time), shown in the Edit menu as
+    "Undo L8 200 markers". Details: spike 06, "AE-03 live run".
+  - **Unit-tested only:** `ae_find_layers` for footage, camera and light layers (no typed tool adds
+    a camera or a light); a batch rollback that fails (`rolledBack: false`); `ae_render_comp`'s
+    repeated-name check. Not tried: a non-English After Effects (the fixed ids are expected not to
+    depend on the UI language).
 - **macOS run on 2026-08-28** (macOS 26, Adobe 2026 apps, Node 26): panels, Illustrator via
   osascript, previews, ffmpeg all fine as written. Two real bugs fixed — the aerender path
   (`Folder.appPackage` is the `.app` itself on macOS) and Media Encoder (nested console bundle,

@@ -189,8 +189,9 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   command ids (16 and 2035). The label lookup the feature request suggested is not used:
   `findMenuCommandId("Undo")` returns Edit > Purge > Undo, which clears the history
   (`docs/quirks/ae-undo-redo.md`).
-- AE-03's four tools and the name addressing are unit-tested; their live run is pending. The
-  host facts they rely on were probed live on After Effects 26.5 (spike 06).
+- AE-03's four tools and the name addressing are verified live on After Effects 26.5 (Windows
+  11): one undo step per batch, the atomic rollback, ae_undo / ae_redo, the name messages and a
+  200-operation batch. The host facts they rely on were probed first (spike 06).
 - `cc_get_capabilities` (read-only, contacts no app): server and protocol versions, whether the
   session is local or remote, the raw-script gate, one row per gated tool (enabled, how to
   enable it, app connected, panel supports the command), and each panel's version and host
