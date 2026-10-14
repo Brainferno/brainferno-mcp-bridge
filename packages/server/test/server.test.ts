@@ -36,6 +36,8 @@ import { ScriptError } from "../src/bridge/types.js";
 import { setRedactionSecrets } from "../src/tools/echo.js";
 import { scriptErrorText } from "../src/tools/result.js";
 import {
+  AE_BATCH_EXCLUDED,
+  AE_BATCH_TOOLS,
   AE_PRELUDE_LINES,
   LIST_INSTALLED_EFFECTS,
   PROJECT_INFO,
@@ -435,12 +437,24 @@ describe("tool descriptions a client shows whole (AE-01 R1, R11)", () => {
     expect(names).toContain("ai_beta_call");
     const over = tools.filter((t) => (t.description ?? "").length > DESCRIPTION_CUT).map((t) => `${t.name}: ${t.description!.length}`);
     expect(over).toEqual([]);
-    const overParams = tools.flatMap((t) =>
-      Object.entries((t.inputSchema["properties"] ?? {}) as Record<string, { description?: string }>)
-        .filter(([, p]) => (p.description ?? "").length > DESCRIPTION_CUT)
-        .map(([k, p]) => `${t.name}.${k}: ${p.description!.length}`),
-    );
+    // AE-03: every parameter, nested ones included (an object's properties, an array's items), as tools/list delivers it.
+    const nested = (schema: unknown, path: string): { path: string; description?: string }[] => {
+      if (schema === null || typeof schema !== "object") return [];
+      const s = schema as { description?: string; properties?: Record<string, unknown>; items?: unknown };
+      const out: { path: string; description?: string }[] = path === "" ? [] : [{ path, description: s.description }];
+      for (const [k, p] of Object.entries(s.properties ?? {})) out.push(...nested(p, path === "" ? k : `${path}.${k}`));
+      if (s.items !== null && typeof s.items === "object" && !Array.isArray(s.items)) {
+        for (const [k, p] of Object.entries((s.items as { properties?: Record<string, unknown> }).properties ?? {})) out.push(...nested(p, `${path}[].${k}`));
+      }
+      return out;
+    };
+    const params = tools.flatMap((t) => nested(t.inputSchema, "").map((p) => ({ ...p, path: `${t.name}.${p.path}` })));
+    const overParams = params.filter((p) => (p.description ?? "").length > DESCRIPTION_CUT).map((p) => `${p.path}: ${p.description!.length}`);
     expect(overParams).toEqual([]);
+    // The walk reaches nested parameters: ae_batch's operations[].tool and operations[].args each carry a describe.
+    const batchNested = params.filter((p) => p.path.startsWith("ae_batch.operations[]."));
+    expect(batchNested.map((p) => p.path).sort()).toEqual(["ae_batch.operations[].args", "ae_batch.operations[].tool"]);
+    for (const p of batchNested) expect(p.description, p.path).toMatch(/\S/);
     // Clients prefix each tool with the registered server name (Claude Code: mcp__<server>__<tool>)
     // and allow 64 characters in all.
     const tooLong = names.map((n) => `mcp__${MCP_SERVER_NAME}__${n}`).filter((n) => n.length > 64);
@@ -1558,5 +1572,382 @@ describe("buildRuntime registers the server's own secrets for redaction (R15)", 
     } finally {
       await rt.bridge.close();
     }
+  });
+});
+
+describe("AE-03: name addressing, ae_find_layers, ae_batch, ae_undo / ae_redo through the server", () => {
+  const BOTH_COMP = "Pass compId or compName, not both — compId picks the composition by id, compName by its exact name; drop one.";
+  const NO_COMP = "Pass compId or compName — ae_list_compositions lists both.";
+  const BOTH_LAYER = "Pass layerIndex or layerName, not both — layerIndex picks the layer by position, layerName by its exact name; drop one.";
+  const NO_LAYER = "Pass layerIndex or layerName — ae_find_layers or ae_get_comp lists both.";
+  const BOTH_PARENT = "Pass parentIndex or parentName, not both — drop one (parentIndex null unparents).";
+
+  /** A session with a vm-backed After Effects panel on `host`. */
+  async function aeSession(host: AeHost = aeHost()) {
+    const s = await startSession({});
+    const panel = await connectPanel(s.bridge.port(), "after_effects");
+    const cmds = vmPanel(panel, host);
+    return {
+      host,
+      cmds,
+      call: (name: string, args: Record<string, unknown>) => s.c.callTool({ name, arguments: args }),
+      close: async () => {
+        panel.close();
+        await s.close();
+      },
+    };
+  }
+  const opacityOf = (host: AeHost, comp: number, i: number) => host.comp(comp).layer(i).property("ADBE Transform Group").property("ADBE Opacity").value;
+
+  it("changes only the layer named B, whatever order the layers were added in (AT1)", async () => {
+    for (const order of [["A", "B", "C"], ["C", "A", "B"]]) {
+      const host = aeHost({ comps: [{ id: 12, name: "Main", layers: order.map((name) => ({ kind: "solid" as const, name })) }] });
+      const s = await aeSession(host);
+      const r = await s.call("ae_set_layer_props", { compId: 12, layerName: "B", opacity: 50 });
+      expect(r.isError).toBeFalsy();
+      expect(JSON.parse(textOf(r))).toMatchObject({ name: "B", index: order.indexOf("B") + 1 });
+      expect(host.changes).toEqual(["B: Opacity.setValue"]);
+      expect(host.layers(12).map((l) => [l.name, l.opacity])).toEqual(order.map((n) => [n, n === "B" ? 50 : 100]));
+      // A comp by name too.
+      expect((await s.call("ae_get_layer", { compName: "Main", layerName: "B" })).isError).toBeFalsy();
+      await s.close();
+    }
+  });
+
+  it("refuses both or neither of a pair in plain text and sends nothing (the five texts, one tool each)", async () => {
+    const s = await aeSession();
+    const cases: [string, Record<string, unknown>, string][] = [
+      ["ae_get_comp", { compId: 12, compName: "Main" }, BOTH_COMP],
+      ["ae_get_comp", {}, NO_COMP],
+      ["ae_get_layer", { compId: 12, layerIndex: 1, layerName: "Title" }, BOTH_LAYER],
+      ["ae_get_layer", { compId: 12 }, NO_LAYER],
+      ["ae_set_layer_props", { compId: 12, layerIndex: 1, parentIndex: 2, parentName: "Logo" }, BOTH_PARENT],
+      ["ae_add_marker", { compId: 12, time: 1, comment: "m", layerIndex: 1, layerName: "Title" }, BOTH_LAYER],
+      ["ae_find_layers", { compId: 12, compName: "Main" }, BOTH_COMP],
+      ["ae_render_frame", {}, NO_COMP],
+    ];
+    for (const [tool, args, text] of cases) {
+      const r = await s.call(tool, args);
+      expect(r.isError, tool).toBe(true);
+      expect(textOf(r), tool).toBe(text);
+    }
+    // A numeric self-parent is refused before dispatch too (spec 11.2); a name pair is checked by the host.
+    const self = await s.call("ae_set_layer_props", { compId: 12, layerIndex: 2, parentIndex: 2 });
+    expect(textOf(self)).toBe("Layer 2 cannot be its own parent — pass a different parentIndex or parentName, or parentIndex null to unparent.");
+    await settle();
+    expect(s.cmds).toEqual([]);
+    // ae_add_marker takes at most one layer ref: none is a comp marker.
+    const comp = await s.call("ae_add_marker", { compName: "Main", time: 2, comment: "c" });
+    expect(JSON.parse(textOf(comp))).toEqual({ time: 2, comment: "c", on: "comp" });
+    expect(s.cmds).toHaveLength(1);
+    await s.close();
+  });
+
+  it("ae_find_layers returns only the text layers for kind text (AT3), read-only and fast", async () => {
+    const s = await aeSession();
+    const r = await s.call("ae_find_layers", { compId: 12, kind: "text" });
+    expect(JSON.parse(textOf(r))).toEqual([{ index: 1, name: "Title", kind: "text", enabled: true }]);
+    expect(s.cmds[0]!.timeoutClass).toBe("fast");
+    const none = await s.call("ae_find_layers", { compName: "Main", nameContains: "zzz" });
+    expect(JSON.parse(textOf(none))).toEqual([]);
+    expect(s.host.undo.begin).toBe(0);
+    await s.close();
+  });
+
+  it("ae_undo reverses the last tool call and ae_redo restores it (AT6)", async () => {
+    const s = await aeSession();
+    await s.call("ae_set_layer_props", { compId: 12, layerName: "Logo", opacity: 40 });
+    expect(opacityOf(s.host, 12, 2)).toBe(40);
+    const u = await s.call("ae_undo", {});
+    expect(JSON.parse(textOf(u))).toEqual({ command: "Undo", menuId: 16 });
+    expect(opacityOf(s.host, 12, 2)).toBe(100);
+    const r = await s.call("ae_redo", {});
+    expect(JSON.parse(textOf(r))).toEqual({ command: "Redo", menuId: 2035 });
+    expect(opacityOf(s.host, 12, 2)).toBe(40);
+    expect(s.cmds.map((c) => c.timeoutClass)).toEqual(["slow", "fast", "fast"]);
+    await s.close();
+  });
+
+  const SHOT = [
+    { tool: "ae_create_comp", args: { name: "Shot", width: 1920, height: 1080 } },
+    { tool: "ae_add_layer", args: { compName: "Shot", kind: "solid", name: "A" } },
+    { tool: "ae_add_layer", args: { compName: "Shot", kind: "solid", name: "B" } },
+    { tool: "ae_add_layer", args: { compName: "Shot", kind: "solid", name: "C" } },
+    { tool: "ae_set_layer_props", args: { compName: "Shot", layerName: "B", opacity: 50 } },
+  ];
+
+  it("runs 5 operations as one eval and one undo group, with nameToIndex keyed by comp id (AT4)", async () => {
+    const s = await aeSession();
+    const r = await s.call("ae_batch", { operations: SHOT });
+    expect(r.isError).toBeFalsy();
+    const v = JSON.parse(textOf(r)) as { results: unknown[]; nameToIndex: Record<string, Record<string, number>> };
+    expect(v.results).toHaveLength(5);
+    const shot = s.host.itemsNamed("Shot")[0];
+    expect(v.nameToIndex).toEqual({ [String(shot.id)]: { C: 1, B: 2, A: 3 } });
+    expect(s.cmds).toHaveLength(1);
+    expect(s.cmds[0]!.timeoutClass).toBe("slow");
+    expect(s.cmds[0]!.params.script).toContain('app.beginUndoGroup("Batch");');
+    expect(s.host.undo).toEqual({ begin: 1, end: 1 });
+    expect(s.host.itemsNamed("__acm_batch")).toEqual([]);
+    // One Undo removes all five.
+    await s.call("ae_undo", {});
+    expect(s.host.itemsNamed("Shot")).toEqual([]);
+    await s.close();
+  });
+
+  it("a bad 3rd operation with atomic true leaves the comp unchanged and names only that operation (AT5)", async () => {
+    const s = await aeSession();
+    const before = s.host.layers(12);
+    const ops = [
+      { tool: "ae_add_layer", args: { compId: 12, kind: "solid", name: "X" } },
+      { tool: "ae_set_layer_props", args: { compId: 12, layerName: "X", opacity: 20 } },
+      { tool: "ae_set_layer_props", args: { compId: 12, layerName: "nope", opacity: 50 } },
+      { tool: "ae_delete_layer", args: { compId: 12, layerIndex: 1 } },
+      { tool: "ae_delete_layer", args: { compId: 12, layerIndex: 1 } },
+    ];
+    const r = await s.call("ae_batch", { operations: ops, undoGroupName: "Five" });
+    expect(r.isError).toBe(true);
+    const text = textOf(r);
+    expect(text).toMatch(/^ae_batch stopped at operation 3 of 5 \(ae_set_layer_props\)\. Script failed in After Effects \(ae_set_layer_props, args \{compId: 12, layerName: "nope", opacity: 50\}\) in helper __layerNamed /);
+    expect(text).toContain('No layer named "nope" in "Main" (id 12)');
+    expect(text).toContain("The batch was undone: After Effects is as it was before the batch.");
+    expect(text).toContain("Ctrl+Shift+Z or ae_redo would re-apply it");
+    expect(text).not.toContain('name: "X"');
+    expect(s.host.layers(12)).toEqual(before);
+    expect(s.host.itemsNamed("__acm_batch")).toEqual([]);
+    await s.close();
+  });
+
+  it("with atomic false, the operations before the failure stay and their results are listed", async () => {
+    const s = await aeSession();
+    const ops = [SHOT[0]!, SHOT[1]!, { tool: "ae_set_layer_props", args: { compName: "Shot", layerName: "nope", opacity: 50 } }];
+    const r = await s.call("ae_batch", { operations: ops, atomic: false });
+    expect(r.isError).toBe(true);
+    const text = textOf(r);
+    expect(text).toMatch(/^ae_batch stopped at operation 3 of 3 \(ae_set_layer_props\)\. /);
+    expect(text).toContain("Operations 1–2 ran and stay, with any part of operation 3, as one undo step (one Ctrl-Z undoes them all).");
+    expect(text).toContain('Their results: 1: {"id":');
+    expect(text).toContain('"name":"Shot"');
+    expect(text).toContain('nameToIndex now: {"');
+    expect(s.host.itemsNamed("Shot")).toHaveLength(1);
+    await s.close();
+  });
+
+  it("with atomic false, a lookup failing in operation 1 says nothing changed and warns off an undo (no entry was made)", async () => {
+    const s = await aeSession();
+    // The operator's own earlier step: an undo after the failed batch would revert it.
+    await s.call("ae_set_layer_props", { compId: 12, layerIndex: 1, opacity: 10 });
+    const depth = s.host.history();
+    const r = await s.call("ae_batch", { operations: [{ tool: "ae_set_layer_props", args: { compId: 12, layerName: "nope", opacity: 50 } }], atomic: false });
+    expect(r.isError).toBe(true);
+    const text = textOf(r);
+    expect(text).toMatch(/^ae_batch stopped at operation 1 of 1 \(ae_set_layer_props\)\. /);
+    expect(text).toContain(
+      "No operation ran before it, and operation 1 failed before changing anything: the batch changed nothing and left no undo entry — " +
+        "do not press Ctrl-Z or call ae_undo for it (that would revert the step before the batch); fix the operation and resend the batch.",
+    );
+    expect(text).not.toContain("one Ctrl-Z undoes");
+    expect(s.host.history()).toEqual(depth);
+    expect(opacityOf(s.host, 12, 1)).toBe(10);
+    await s.close();
+  });
+
+  it("with atomic false, operation 1 failing inside its change step says to check before any undo", async () => {
+    const host = aeHost();
+    host.app.project.items.addComp = () => {
+      throw new host.VmError("After Effects error: out of memory");
+    };
+    const s = await aeSession(host);
+    const r = await s.call("ae_batch", { operations: [SHOT[0]], atomic: false });
+    expect(r.isError).toBe(true);
+    const text = textOf(r);
+    expect(text).toContain("out of memory");
+    expect(text).toContain(
+      "No operation ran before it. If operation 1 changed anything before it failed, that stays as one undo step; a failed lookup " +
+        "changes nothing and leaves no undo entry, so check with ae_get_comp or ae_find_layers before you press Ctrl-Z or call ae_undo",
+    );
+    await s.close();
+  });
+
+  it("an atomic batch that Edit > Undo could not remove says so, with the sentinel folder, in the text the model passes on (spec 11.2)", async () => {
+    const host = aeHost();
+    host.app.executeCommand = () => undefined;
+    const s = await aeSession(host);
+    const r = await s.call("ae_batch", { operations: [SHOT[0], { tool: "ae_delete_layer", args: { compName: "Shot", layerName: "nope" } }] });
+    expect(r.isError).toBe(true);
+    const text = textOf(r);
+    expect(text).toMatch(/^ae_batch stopped at operation 2 of 2 \(ae_delete_layer\)\. /);
+    expect(text).toMatch(
+      /The batch could not be undone \(Edit > Undo did not remove it\): the changes of operation 1, any part of operation 2 and an empty folder named "__acm_batch" stay as one undo step — press Ctrl-Z once in After Effects, or call ae_undo, to remove them\.$/,
+    );
+    expect(host.itemsNamed("__acm_batch")).toHaveLength(1);
+    await s.close();
+  });
+
+  it("an atomic batch that failed before its first operation says it changed nothing and runs no Undo", async () => {
+    const host = aeHost();
+    host.app.project.items.addFolder = () => {
+      throw new host.VmError("After Effects error: cannot add a folder");
+    };
+    let undos = 0;
+    const exec = host.app.executeCommand.bind(host.app);
+    host.app.executeCommand = (id: number) => {
+      undos++;
+      exec(id);
+    };
+    const s = await aeSession(host);
+    const r = await s.call("ae_batch", { operations: [SHOT[0]] });
+    expect(r.isError).toBe(true);
+    const text = textOf(r);
+    expect(text).toMatch(/^ae_batch failed outside its operations, after 0 of 1 ran\. /);
+    expect(text).toMatch(/The batch changed nothing: it failed before its first operation ran — nothing to undo; retry the batch\.$/);
+    expect(undos).toBe(0);
+    expect(host.itemsNamed("Shot")).toEqual([]);
+    expect(host.history()).toEqual({ undo: 0, redo: 0 });
+    await s.close();
+  });
+
+  it("with atomic false, the listed results are capped (each cut at 1000 characters, about 8000 in all)", async () => {
+    const s = await aeSession();
+    const ops = Array.from({ length: 12 }, (_, i) => ({ tool: "ae_add_layer", args: { compId: 12, kind: "solid", name: `${i}`.padEnd(1500, "n") } }));
+    ops.push({ tool: "ae_delete_layer", args: { compId: 12, layerName: "nope" } } as never);
+    const r = await s.call("ae_batch", { operations: ops, atomic: false });
+    expect(r.isError).toBe(true);
+    const text = textOf(r);
+    expect(text).toContain("Operations 1–12 ran and stay, with any part of operation 13, as one undo step");
+    const shown = text.slice(text.indexOf("Their results: "), text.indexOf(". nameToIndex now: "));
+    expect(shown).toMatch(/; \.\.\. \d+ more not shown$/);
+    expect(shown).not.toContain("n".repeat(1001));
+    expect(shown.length).toBeLessThan(9000);
+    await s.close();
+  });
+
+  it("refuses an excluded tool, an unknown tool, an unknown key, a no-op, a bad ref or an oversize batch before sending anything", async () => {
+    const s = await aeSession();
+    const refusal = async (operations: unknown[]) => {
+      const r = await s.call("ae_batch", { operations });
+      expect(r.isError).toBe(true);
+      return textOf(r);
+    };
+    expect(await refusal([SHOT[0], { tool: "ae_add_layer_style", args: {} }])).toMatch(
+      /^ae_batch sent nothing: operation 2 of 2: ae_add_layer_style cannot run inside ae_batch \(.+\) — call it on its own, before or after the batch\.$/,
+    );
+    expect(await refusal([{ tool: "ae_undo", args: {} }])).toMatch(/^ae_batch sent nothing: operation 1 of 1: ae_undo cannot run inside ae_batch \(/);
+    expect(await refusal([{ tool: "ae_get_comp", args: { compId: 12 } }])).toMatch(/^ae_batch sent nothing: operation 1 of 1: ae_get_comp cannot run inside ae_batch \(/);
+    expect(await refusal([{ tool: "ps_fill", args: {} }])).toMatch(/^ae_batch sent nothing: operation 1 of 1: ps_fill is not a tool ae_batch can run — it runs: ae_create_comp, /);
+    expect(await refusal([{ tool: "ae_set_layer_props", args: { compId: 12, layerIndex: 1, opacty: 5 } }])).toMatch(
+      /^ae_batch sent nothing: operation 1 of 1 \(ae_set_layer_props\): .*opacty/,
+    );
+    expect(await refusal([{ tool: "ae_set_layer_props", args: { compId: 12, layerIndex: 1 } }])).toBe(
+      "ae_batch sent nothing: operation 1 of 1 (ae_set_layer_props): it sets nothing — give at least one field to change.",
+    );
+    expect(await refusal([SHOT[0], { tool: "ae_delete_layer", args: { compId: 12, compName: "Main", layerIndex: 1 } }])).toBe(
+      `ae_batch sent nothing: operation 2 of 2 (ae_delete_layer): ${BOTH_COMP}`,
+    );
+    expect(await refusal([{ tool: "ae_delete_layer", args: { compId: 12 } }])).toBe(`ae_batch sent nothing: operation 1 of 1 (ae_delete_layer): ${NO_LAYER}`);
+    expect(await refusal([{ tool: "ae_delete_layer", args: { layerIndex: 1 } }])).toBe(`ae_batch sent nothing: operation 1 of 1 (ae_delete_layer): ${NO_COMP}`);
+    expect(await refusal([{ tool: "ae_delete_layer", args: { compId: 12, layerIndex: 1, layerName: "Title" } }])).toBe(
+      `ae_batch sent nothing: operation 1 of 1 (ae_delete_layer): ${BOTH_LAYER}`,
+    );
+    expect(await refusal([{ tool: "ae_set_layer_props", args: { compId: 12, layerIndex: 1, parentIndex: 2, parentName: "Logo" } }])).toBe(
+      `ae_batch sent nothing: operation 1 of 1 (ae_set_layer_props): ${BOTH_PARENT}`,
+    );
+    expect(await refusal([{ tool: "ae_set_layer_props", args: { compId: 12, layerIndex: 2, parentIndex: 2 } }])).toBe(
+      "ae_batch sent nothing: operation 1 of 1 (ae_set_layer_props): Layer 2 cannot be its own parent — pass a different parentIndex or parentName, or parentIndex null to unparent.",
+    );
+    expect(await refusal([{ tool: "ae_set_layer_props", args: { compId: 12, layerIndex: 1, opacity: "x" } }])).toMatch(
+      / — fix that operation's args \(they are that tool's own, checked strictly\) and resend the batch\.$/,
+    );
+    expect(await refusal([{ tool: "ae_set_text", args: { compId: 12, layerIndex: 1, text: "x".repeat(2_000_001) } }])).toMatch(
+      /^ae_batch sent nothing: the batch script is \d+ characters, over 2000000 — split it into smaller batches\.$/,
+    );
+    await settle();
+    expect(s.cmds).toEqual([]);
+    await s.close();
+  });
+
+  it("refuses 201 operations through the schema, sending nothing", async () => {
+    const s = await startSession({});
+    const panel = await connectPanel(s.bridge.port(), "after_effects");
+    const cmds = recordCmds(panel);
+    // Whether the SDK answers isError or throws, the text must be the 200 cap's.
+    const refused = await s.c.callTool({ name: "ae_batch", arguments: { operations: Array.from({ length: 201 }, () => SHOT[0]) } }).then(
+      (r) => (r.isError === true ? textOf(r) : "not refused"),
+      (e: unknown) => String(e instanceof Error ? e.message : e),
+    );
+    expect(refused).toMatch(/operations/);
+    expect(refused).toMatch(/\b200\b/);
+    await settle();
+    expect(cmds).toEqual([]);
+    panel.close();
+    await s.close();
+  });
+
+  it("accepts exactly 200 operations as one eval", async () => {
+    const s = await aeSession();
+    const r = await s.call("ae_batch", { operations: Array.from({ length: 200 }, () => ({ tool: "ae_add_marker", args: { compId: 12, time: 1, comment: "m" } })) });
+    expect(r.isError).toBeFalsy();
+    expect((JSON.parse(textOf(r)) as { results: unknown[] }).results).toHaveLength(200);
+    expect(s.cmds).toHaveLength(1);
+    await s.close();
+  });
+
+  it("gives layers named __proto__ and toString ordinary keys in nameToIndex", async () => {
+    const s = await aeSession();
+    const r = await s.call("ae_batch", {
+      operations: [
+        { tool: "ae_add_layer", args: { compId: 12, kind: "null", name: "__proto__" } },
+        { tool: "ae_add_layer", args: { compId: 12, kind: "null", name: "toString" } },
+      ],
+    });
+    const v = JSON.parse(textOf(r)) as { nameToIndex: Record<string, Record<string, unknown>> };
+    expect(Object.keys(v.nameToIndex["12"]!)).toEqual(["toString", "__proto__", "Title", "Logo", "BG"]);
+    expect(v.nameToIndex["12"]!["toString"]).toBe(1);
+    await s.close();
+  });
+
+  it("a failing ae_apply_effect operation still gets 'did you mean'", async () => {
+    const s = await aeSession();
+    const r = await s.call("ae_batch", { operations: [{ tool: "ae_apply_effect", args: { compId: 12, layerName: "BG", matchName: "ADBE Gausian Blur 2" } }] });
+    expect(textOf(r)).toMatch(/^ae_batch stopped at operation 1 of 1 \(ae_apply_effect\)\. Script failed in After Effects \(ae_apply_effect, args /);
+    expect(textOf(r)).toContain('Did you mean "ADBE Gaussian Blur 2" (Gaussian Blur)');
+    await s.close();
+  });
+
+  it("classifies every After Effects tool as batchable or excluded", async () => {
+    const s = await startSession({});
+    const names = (await s.c.listTools()).tools.map((t) => t.name).filter((n) => n.startsWith("ae_"));
+    for (const n of names) expect(AE_BATCH_TOOLS.includes(n as never) !== (AE_BATCH_EXCLUDED[n] !== undefined), n).toBe(true);
+    for (const t of [...AE_BATCH_TOOLS, ...Object.keys(AE_BATCH_EXCLUDED)]) expect(names, t).toContain(t);
+    await s.close();
+  });
+
+  it("the four new tools say 'not connected' in plain text when no panel is there", async () => {
+    const s = await startSession({});
+    for (const [name, args] of [
+      ["ae_find_layers", { compId: 12 }],
+      ["ae_batch", { operations: [SHOT[0]] }],
+      ["ae_undo", {}],
+      ["ae_redo", {}],
+    ] as const) {
+      const r = await s.c.callTool({ name, arguments: args });
+      expect(r.isError, name).toBe(true);
+      expect(textOf(r), name).toMatch(/^No running host connected/);
+    }
+    await s.close();
+  });
+
+  it("annotates the new tools honestly", async () => {
+    const s = await startSession({});
+    const tools = (await s.c.listTools()).tools;
+    const ann = (n: string) => tools.find((t) => t.name === n)!.annotations ?? {};
+    expect(ann("ae_find_layers")).toMatchObject({ readOnlyHint: true });
+    expect(ann("ae_batch")).toMatchObject({ destructiveHint: true });
+    for (const n of ["ae_undo", "ae_redo"]) {
+      expect(ann(n)).toMatchObject({ destructiveHint: true });
+      expect(ann(n).readOnlyHint ?? false).toBe(false);
+      expect(ann(n).idempotentHint ?? false).toBe(false);
+    }
+    await s.close();
   });
 });

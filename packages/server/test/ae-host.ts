@@ -13,6 +13,17 @@
  * undo-group counting; and a `mutations` log every setter and `setValue` / `addProperty` /
  * `layers.add*` appends to. File, Folder, import and render-queue objects are not modelled: a
  * test that needs one puts a stub on `ctx` or `app`.
+ *
+ * AE-03 adds: `items.addComp`, `items.addFolder` and `FolderItem.remove`; layer markers and the
+ * comp's `markerProperty` (`setValueAtTime`, `MarkerValue`); a `changes` log whose entries name the
+ * layer (`B: Opacity.setValue`); and a group-snapshot undo stack as After Effects showed it live
+ * (2026-10-13, spike 06): the outermost undo group snapshots the project when it opens and pushes
+ * one entry when it closes, unless nothing changed inside it (an empty group pushes nothing; "changed" is
+ * read from the project's state, not only the `mutations` log, since comp fields and plain layer fields
+ * have no logging setter);
+ * `app.executeCommand(16)` (Edit > Undo) restores the newest entry's snapshot, `2035` (Edit > Redo)
+ * re-applies it, and with nothing to undo or redo each is a silent no-op. `2371` is Edit > Purge >
+ * Undo, which `findMenuCommandId("Undo")` returns: it clears the history.
  * Errors the stubs throw are built with the vm realm's Error, as a host's would be.
  *
  * Not a test file (no `.test.ts`), so vitest does not collect it on its own.
@@ -186,10 +197,24 @@ export interface AeHost {
   readonly VmError: ErrorConstructor;
   readonly app: any;
   readonly mutations: string[];
+  /** AE-03: what changed, naming the layer: "B: Opacity.setValue", "B: name=X", "items.addFolder __acm_batch". */
+  readonly changes: string[];
   readonly undo: { begin: number; end: number };
+  /** AE-03: the undo history's depth: entries Edit > Undo can reach, and entries Edit > Redo can. */
+  history(): { undo: number; redo: number };
   comp(id: number): any;
+  /** AE-03: the project's items by name (comps, footage, folders). */
+  itemsNamed(name: string): any[];
+  /** AE-03: a comp's layer names, top first, and each layer's opacity. */
+  layers(id: number): { name: string; opacity: unknown }[];
   eval(script: string): EvalReply;
 }
+
+/** Edit > Undo and Edit > Redo as app.executeCommand ids (After Effects 26.5x89, live 2026-10-13). */
+export const HOST_UNDO = 16;
+export const HOST_REDO = 2035;
+/** Edit > Purge > Undo: what findMenuCommandId("Undo") returns. It clears the history. */
+export const HOST_PURGE_UNDO = 2371;
 
 /** A fake After Effects with the panel's evaluator loaded. */
 export function aeHost(spec: ProjectSpec = { comps: [MAIN] }, options: HostOptions = {}): AeHost {
@@ -200,7 +225,10 @@ export function aeHost(spec: ProjectSpec = { comps: [MAIN] }, options: HostOptio
   const VmArray = vm.runInContext("Array", ctx) as ArrayConstructor;
   const arr = (...xs: unknown[]): unknown[] => VmArray.of(...xs);
   const mutations: string[] = [];
+  const changes: string[] = [];
   const undo = { begin: 0, end: 0 };
+  /** The layer a property belongs to (set when the layer is built), for the `changes` log. */
+  const ownerName = (node: any): string => (node.owner ? node.owner.name : "?");
   const installed = spec.effects ?? AE_EFFECTS;
   const displayOf = (mn: string): string => installed.find(([m]) => m === mn)?.[1] ?? mn;
 
@@ -234,6 +262,7 @@ export function aeHost(spec: ProjectSpec = { comps: [MAIN] }, options: HostOptio
       value,
       setValue(v: unknown) {
         mutations.push(`${name}.setValue`);
+        changes.push(`${ownerName(p)}: ${name}.setValue`);
         p.value = v;
       },
     };
@@ -312,8 +341,19 @@ export function aeHost(spec: ProjectSpec = { comps: [MAIN] }, options: HostOptio
     precomp: "ADBE AV Layer",
   };
 
+  /** A marker property: setValueAtTime adds a marker (its kids, so the undo snapshot covers it). */
+  const markers = (owner: () => string): any =>
+    group("ADBE Marker", "Marker", [], PropertyType.NAMED_GROUP, {
+      setValueAtTime(this: any, t: number, m: unknown) {
+        mutations.push("marker.setValueAtTime");
+        changes.push(`${owner()}: marker at ${t}`);
+        this.kids.push({ time: t, value: m });
+      },
+    });
+
   const makeLayer = (comp: any, s: LayerSpec, source?: unknown): any => {
-    const tops: any[] = [group("ADBE Marker", "Marker", [])];
+    let layerRef: any = null;
+    const tops: any[] = [markers(() => (layerRef ? layerRef.name : "?"))];
     if (s.kind === "text") {
       const td = new TextDocument();
       td.text = s.text ?? "";
@@ -343,8 +383,8 @@ export function aeHost(spec: ProjectSpec = { comps: [MAIN] }, options: HostOptio
       tops.push(group("ADBE Layer Styles", "Layer Styles", slots));
     }
     const root = group(MATCH[s.kind], s.name, tops);
-    let name = s.name;
-    let parent: any = null;
+    // Name and parent live in one state object the undo snapshot restores without a setter.
+    const st: { name: string; parent: any } = { name: s.name, parent: null };
     const solid = Object.assign(new FootageItem(), { id: 900 + comp.id, mainSource: new SolidSource() });
     const layer: any = Object.assign(root, {
       matchName: MATCH[s.kind],
@@ -360,26 +400,38 @@ export function aeHost(spec: ProjectSpec = { comps: [MAIN] }, options: HostOptio
     // Accessors via defineProperty: Object.assign would copy a getter's value once.
     Object.defineProperty(layer, "index", { get: () => comp.layerList.indexOf(layer) + 1, enumerable: true });
     Object.defineProperty(layer, "name", {
-      get: () => name,
+      get: () => st.name,
       set: (v: string) => {
         mutations.push(`layer.name=${v}`);
-        name = v;
+        changes.push(`${st.name}: name=${v}`);
+        st.name = v;
       },
       enumerable: true,
     });
     Object.defineProperty(layer, "parent", {
-      get: () => parent,
-      set: (v: unknown) => {
+      get: () => st.parent,
+      set: (v: any) => {
         mutations.push("layer.parent");
-        parent = v;
+        changes.push(`${st.name}: parent=${v === null ? "null" : v.name}`);
+        st.parent = v;
       },
       enumerable: true,
     });
+    Object.defineProperty(layer, "_st", { value: st, enumerable: false });
+    layerRef = layer;
+    // Every property under the layer knows it, for the `changes` log.
+    const own = (node: any): void => {
+      Object.defineProperty(node, "owner", { value: layer, enumerable: false, configurable: true });
+      for (const k of node.kids ?? []) if (k && typeof k === "object" && "matchName" in k) own(k);
+    };
+    for (const t of tops) own(t);
     return layer;
   };
 
   // ---- project --------------------------------------------------------------------
   const items: any[] = [];
+  /** Ids for items a script adds (comps, folders): above every id a spec uses. */
+  let nextId = 5000;
   const makeComp = (c: CompSpec): any => {
     const comp: any = Object.assign(new CompItem(), {
       id: c.id,
@@ -397,8 +449,10 @@ export function aeHost(spec: ProjectSpec = { comps: [MAIN] }, options: HostOptio
       },
     });
     Object.defineProperty(comp, "numLayers", { get: () => comp.layerList.length, enumerable: true });
+    comp.markerProperty = markers(() => `comp ${comp.name}`);
     const add = (l: any) => {
       comp.layerList.unshift(l);
+      changes.push(`${comp.name}: added ${l.name}`);
       return l;
     };
     comp.layers = {
@@ -422,9 +476,108 @@ export function aeHost(spec: ProjectSpec = { comps: [MAIN] }, options: HostOptio
     comp.layerList = (c.layers ?? []).map((l) => makeLayer(comp, l));
     return comp;
   };
+  const makeFolder = (id: number, name: string): any => {
+    const folder: any = Object.assign(new FolderItem(), {
+      id,
+      name,
+      remove() {
+        const at = items.indexOf(folder);
+        if (at < 0) throw new VmError("After Effects error: Object is invalid");
+        mutations.push("folder.remove");
+        changes.push(`items.remove ${name}`);
+        items.splice(at, 1);
+      },
+    });
+    return folder;
+  };
   for (const c of spec.comps ?? []) items.push(makeComp(c));
   for (const f of spec.footage ?? []) items.push(Object.assign(new FootageItem(), { id: f.id, name: f.name, mainSource: new FileSource() }));
-  for (const f of spec.folders ?? []) items.push(Object.assign(new FolderItem(), { id: f.id, name: f.name }));
+  for (const f of spec.folders ?? []) items.push(makeFolder(f.id, f.name));
+
+  // ---- undo history (AE-03) ---------------------------------------------------------
+  // A snapshot holds the project's item list and, for every comp, its fields, its layer list, its
+  // markers, and every layer's state: name, parent, plain fields, each property group's children and
+  // each leaf's value.
+  type Snapshot = { items: any[]; restore: (() => void)[] };
+  const LAYER_FIELDS = ["enabled", "inPoint", "outPoint", "startTime", "adjustmentLayer"] as const;
+  const COMP_FIELDS = ["name", "width", "height", "duration", "frameRate", "pixelAspect"] as const;
+  const capture = (): Snapshot => {
+    const restore: (() => void)[] = [];
+    const tree = (node: any): void => {
+      if (Array.isArray(node.kids)) {
+        const kids = node.kids.slice();
+        restore.push(() => node.kids.splice(0, node.kids.length, ...kids));
+        for (const k of kids) if (k && typeof k === "object" && "matchName" in k) tree(k);
+      } else if ("value" in node) {
+        const v = node.value;
+        restore.push(() => (node.value = v));
+      }
+    };
+    for (const it of items) {
+      if (!(it instanceof CompItem)) continue;
+      const comp: any = it;
+      const fields = COMP_FIELDS.map((f) => comp[f]);
+      const list = comp.layerList.slice();
+      restore.push(() => {
+        COMP_FIELDS.forEach((f, i) => (comp[f] = fields[i]));
+        comp.layerList = list.slice();
+      });
+      tree(comp.markerProperty);
+      for (const l of list) {
+        const st = { ...l._st };
+        const plain = LAYER_FIELDS.map((f) => l[f]);
+        restore.push(() => {
+          Object.assign(l._st, st);
+          LAYER_FIELDS.forEach((f, i) => (l[f] = plain[i]));
+        });
+        tree(l);
+      }
+    }
+    return { items: items.slice(), restore };
+  };
+  /**
+   * What a snapshot covers, as a string: primitives by value, objects by identity. Whether a group changed anything is
+   * read from this, not from the `mutations` log alone: comp fields (ae_set_comp_props) and the plain layer fields
+   * (enabled, inPoint, …) are set without a logging setter.
+   */
+  const ids = new WeakMap<object, number>();
+  let nextObj = 0;
+  const idOf = (o: unknown): string => {
+    if (o === null || (typeof o !== "object" && typeof o !== "function")) return JSON.stringify(o) ?? String(o);
+    let n = ids.get(o as object);
+    if (n === undefined) ids.set(o as object, (n = ++nextObj));
+    return `#${n}`;
+  };
+  const fingerprint = (): string => {
+    const out: string[] = [items.map(idOf).join(",")];
+    const tree = (node: any): void => {
+      if (Array.isArray(node.kids)) {
+        out.push(node.kids.map(idOf).join(","));
+        for (const k of node.kids) if (k && typeof k === "object" && "matchName" in k) tree(k);
+      } else if ("value" in node) {
+        out.push(idOf(node.value));
+      }
+    };
+    for (const it of items) {
+      if (!(it instanceof CompItem)) continue;
+      const comp: any = it;
+      out.push(COMP_FIELDS.map((f) => idOf(comp[f])).join(","), comp.layerList.map(idOf).join(","));
+      tree(comp.markerProperty);
+      for (const l of comp.layerList) {
+        out.push([idOf(l._st.name), idOf(l._st.parent), ...LAYER_FIELDS.map((f) => idOf(l[f]))].join(","));
+        tree(l);
+      }
+    }
+    return out.join("|");
+  };
+  const apply = (s: Snapshot): void => {
+    items.splice(0, items.length, ...s.items);
+    for (const r of s.restore) r();
+  };
+  const undoStack: { before: Snapshot; after: Snapshot }[] = [];
+  const redoStack: { before: Snapshot; after: Snapshot }[] = [];
+  let depth = 0;
+  let open: { before: Snapshot; mark: number; print: string } | null = null;
 
   const app: any = {
     project: {
@@ -436,21 +589,74 @@ export function aeHost(spec: ProjectSpec = { comps: [MAIN] }, options: HostOptio
       },
       itemByID(id: number) {
         const it = items.find((x) => x.id === id);
-        // Verified live on 26.3: an id no item has throws instead of returning null.
+        // Verified live on 26.3 and 26.5: an id no item has throws instead of returning null.
         if (it === undefined) throw new VmError("internal verification failure, sorry! {Item Not Found}");
         return it;
+      },
+      items: {
+        addComp(name: string) {
+          mutations.push("items.addComp");
+          changes.push(`items.addComp ${name}`);
+          const c = makeComp({ id: nextId++, name, layers: [] });
+          items.push(c);
+          return c;
+        },
+        addFolder(name: string) {
+          mutations.push("items.addFolder");
+          changes.push(`items.addFolder ${name}`);
+          const f = makeFolder(nextId++, name);
+          items.push(f);
+          return f;
+        },
       },
     },
     effects: installed.map(([matchName, displayName]) => ({ matchName, displayName })),
     beginUndoGroup() {
       undo.begin++;
+      if (depth++ === 0) open = { before: capture(), mark: mutations.length, print: fingerprint() };
     },
     endUndoGroup() {
       undo.end++;
+      if (depth === 0) return;
+      if (--depth === 0 && open !== null) {
+        // An empty group (nothing changed inside it) makes no undo entry (live, 2026-10-13). "Changed" is read from the
+        // state as well as the log, since some setters do not log.
+        if (mutations.length > open.mark || fingerprint() !== open.print) {
+          undoStack.push({ before: open.before, after: capture() });
+          redoStack.length = 0;
+        }
+        open = null;
+      }
+    },
+    findMenuCommandId(label: string) {
+      // Live, 2026-10-13: "Undo" (and "&Undo") is Edit > Purge > Undo; "Redo" finds nothing.
+      return label === "Undo" || label === "&Undo" ? HOST_PURGE_UNDO : 0;
+    },
+    executeCommand(id: number) {
+      if (id === HOST_UNDO) {
+        // With nothing to undo: a silent no-op (live L3).
+        const e = undoStack.pop();
+        if (e === undefined) return;
+        apply(e.before);
+        redoStack.push(e);
+      } else if (id === HOST_REDO) {
+        const e = redoStack.pop();
+        if (e === undefined) return;
+        apply(e.after);
+        undoStack.push(e);
+      } else if (id === HOST_PURGE_UNDO) {
+        undoStack.length = 0;
+        redoStack.length = 0;
+      }
     },
   };
 
-  Object.assign(ctx, { app, CompItem, FolderItem, FootageItem, SolidSource, TextDocument });
+  class MarkerValue {
+    duration = 0;
+    constructor(public comment: string) {}
+  }
+
+  Object.assign(ctx, { app, CompItem, FolderItem, FootageItem, SolidSource, TextDocument, MarkerValue });
   if (!options.noPropertyType) Object.assign(ctx, { PropertyType });
 
   return {
@@ -458,8 +664,15 @@ export function aeHost(spec: ProjectSpec = { comps: [MAIN] }, options: HostOptio
     VmError,
     app,
     mutations,
+    changes,
     undo,
+    history: () => ({ undo: undoStack.length, redo: redoStack.length }),
     comp: (id: number) => items.find((x: { id: number }) => x instanceof CompItem && x.id === id),
+    itemsNamed: (name: string) => items.filter((x: { name: string }) => x.name === name),
+    layers: (id: number) => {
+      const c = items.find((x: { id: number }) => x instanceof CompItem && x.id === id);
+      return c.layerList.map((l: any) => ({ name: l.name, opacity: l.property("ADBE Transform Group").property("ADBE Opacity").value }));
+    },
     eval(script: string): EvalReply {
       ctx["__aeSrc"] = script;
       return JSON.parse(vm.runInContext("__acmEval(__aeSrc)", ctx) as string) as EvalReply;

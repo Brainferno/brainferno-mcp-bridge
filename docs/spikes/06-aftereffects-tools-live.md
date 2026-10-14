@@ -252,6 +252,45 @@ Driven entirely from Claude Code through the hub and the Brainferno MCP Bridge C
 - aerender reads the project **from disk**: `ae_render_comp` saves first, and needs a project
   that has been saved once (`ae_save_project` with a path).
 
+## AE-03 probes (2026-10-13, After Effects 26.5x89, Windows 11, English UI)
+
+Run before AE-03 was built, through `cc_eval_script` with the gate set to `after_effects`, on a
+scratch project. They settled how `ae_undo` / `ae_redo` and `ae_batch`'s rollback work. The
+operator saw no dialog, popup or block in After Effects, which was running in the background.
+The probes cover the host facts only; the AE-03 tools themselves are unit-tested, and their live
+run is pending. Index-based scripts are byte-identical to b2f9060 (AT7) with two named
+exceptions: `ae_add_marker` (its layer lookup moved before the group) and `ae_queue_render` (its
+repeated-name check).
+
+- **Menu ids (L1).** `app.findMenuCommandId("Undo")` and `("&Undo")` return 2371; `"Purge"`
+  returns 2370 and `"All Memory"` 2373, so **2371 is Edit > Purge > Undo**, which clears the undo
+  history. Never use the label lookup for Undo. `findMenuCommandId("Redo")` returns 0. For
+  reference: Cut 18, Copy 19, Paste 20, Clear 21, Select All 23, Save 5, Revert 7, Close Project
+  3154, History 2995.
+- **Undo and Redo by id (L2).** `app.executeCommand(16)` is Edit > Undo, `app.executeCommand(2035)`
+  is Edit > Redo (it restored a removed folder). An Undo takes effect synchronously inside the same
+  eval, run right after `app.endUndoGroup()`: the same script reads the undone state.
+- **History.** Two groups, then two Undos, removed them one at a time; Redo restored the last.
+- **Nothing to undo (L3).** Edit > Undo with nothing to undo is a silent no-op (no dialog, 235 ms).
+- **A partial group.** Two adds, then a caught throw, then `endUndoGroup()`: one Undo removed both adds.
+- **An empty group** (`beginUndoGroup` / `endUndoGroup` with no change) makes **no** undo entry: a
+  following Undo removed the previous group instead. So an atomic `ae_batch` makes a change first
+  inside its group (an empty folder, `__acm_batch`); otherwise a rollback after a first-operation
+  failure would undo the operator's previous step.
+- **itemByID of a removed item throws** ("internal verification failure ... {Item Not Found}"), as
+  it does for an id that never existed: it never returns null. `ae_batch` reads a throw for its
+  folder as "rolled back".
+- **Render queue and Essential Graphics (L6b).** `renderQueue.items.add` and
+  `Property.addToMotionGraphicsTemplate` inside a group are both reversed by one Undo, so
+  `ae_queue_render` and `ae_add_to_essential_graphics` stay batchable.
+- **Decision (D1).** `ae_batch` rolls back in one eval: `endUndoGroup()`, then
+  `executeCommand(16)`, then the folder check. After a rollback the failed batch is on the Redo
+  stack (Ctrl+Shift+Z or `ae_redo` would re-apply it); the tool's result says so.
+- **Not tried:** a 200-operation batch's duration and script size (L8), a non-English After
+  Effects (L12; the fixed ids are expected not to depend on the UI language, not verified), and the
+  AE-03 tools end to end (L4–L7, L10, L11). For L7 with `atomic: false`, a lookup that fails in
+  operation 1 changes nothing, so expect **no** new undo entry (an empty group), not one.
+
 ## Tool inventory (24)
 project_info · list_compositions · list_footage · get_comp · get_layer · open_project ·
 save_project · import_footage · create_comp · add_layer · set_layer_props · duplicate_layer ·

@@ -55,7 +55,11 @@ export function registerPipelineTools(server: McpServer, deps: PipelineDeps): vo
         format: z.enum(["png", "jpg"]).optional().describe("Defaults to png."),
         outputPath: z.string().min(1).optional().describe("Where to write the export. Defaults to the job's work folder."),
         compId: z.number().int().optional().describe("Comp id from ae_list_compositions to add the footage to as a layer."),
-        layerName: z.string().min(1).optional(),
+        layerName: z
+          .string()
+          .min(1)
+          .optional()
+          .describe("Name for the new layer (not a lookup of an existing one; used only with compId). Default: After Effects names it after the footage."),
         wait,
       },
     },
@@ -289,7 +293,7 @@ export function registerPipelineTools(server: McpServer, deps: PipelineDeps): vo
       inputSchema: {
         scalePercent: z.number().positive().max(1000).optional().describe("Export scale, 100 = artboard size at 72 ppi. Defaults to 200 for a crisp placement."),
         outputPath: z.string().min(1).optional().describe("Where to write the PNG. Defaults to the job's work folder."),
-        layerName: z.string().min(1).optional(),
+        layerName: z.string().min(1).optional().describe("Name for the new Photoshop layer. Default: the name Photoshop gives a placed file."),
         wait,
       },
     },
