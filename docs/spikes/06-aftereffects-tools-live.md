@@ -257,8 +257,7 @@ Driven entirely from Claude Code through the hub and the Brainferno MCP Bridge C
 Run before AE-03 was built, through `cc_eval_script` with the gate set to `after_effects`, on a
 scratch project. They settled how `ae_undo` / `ae_redo` and `ae_batch`'s rollback work. The
 operator saw no dialog, popup or block in After Effects, which was running in the background.
-The probes cover the host facts only; the AE-03 tools themselves are unit-tested, and their live
-run is pending. Index-based scripts are byte-identical to b2f9060 (AT7) with two named
+The probes cover the host facts only; the AE-03 tools were run live afterwards (next section). Index-based scripts are byte-identical to b2f9060 (AT7) with two named
 exceptions: `ae_add_marker` (its layer lookup moved before the group) and `ae_queue_render` (its
 repeated-name check).
 
@@ -286,10 +285,45 @@ repeated-name check).
 - **Decision (D1).** `ae_batch` rolls back in one eval: `endUndoGroup()`, then
   `executeCommand(16)`, then the folder check. After a rollback the failed batch is on the Redo
   stack (Ctrl+Shift+Z or `ae_redo` would re-apply it); the tool's result says so.
-- **Not tried:** a 200-operation batch's duration and script size (L8), a non-English After
-  Effects (L12; the fixed ids are expected not to depend on the UI language, not verified), and the
-  AE-03 tools end to end (L4–L7, L10, L11). For L7 with `atomic: false`, a lookup that fails in
-  operation 1 changes nothing, so expect **no** new undo entry (an empty group), not one.
+- **Not tried:** a non-English After Effects (L12; the fixed ids are expected not to depend on the
+  UI language, not verified). The AE-03 tools end to end: see the next section.
+
+## AE-03 live run (2026-10-13, After Effects 26.5x89, Windows 11, build a5782e9)
+
+The new tools, from Claude Code, with the raw-script gate off, on the same scratch project
+(empty at the start). The operator watched After Effects and reported the Edit menu.
+
+- **L5, one batch as one undo step.** `ae_create_comp` "Shot", three `ae_add_layer` (A, B by
+  `compName`, then text C), `ae_set_layer_props` B by `layerName` (opacity 50): every result
+  returned, `nameToIndex` `{ "22": { C: 1, B: 2, A: 3 } }`, four project items (comp, Solids
+  folder, two solids): no `__acm_batch` folder left.
+- **L4, ae_undo / ae_redo.** One `ae_undo` (`menuId` 16) removed the whole batch (0 items);
+  `ae_redo` (`menuId` 2035) brought it back with the same layers.
+- **L6, atomic failure.** First an ordinary edit (A disabled). Then a batch: add null N1, C opacity
+  20, `layerName` "nope", two more. The error named operation 3 of 5 with only its args, the
+  layer list, and "The batch was undone … newest Redo entry". Afterwards: no N1, C at 100%, A still
+  disabled, four items.
+- **L7.** The same miss as operation 1, atomic: undone, A still disabled. Then `atomic: false`:
+  "the batch changed nothing and left no undo entry — do not press Ctrl-Z", with the current
+  `nameToIndex`. Then one `ae_undo` re-enabled A, and `ae_redo` disabled it again: the
+  operator's edit was still the newest undo step after all three failed batches.
+- **L10, names.** Two layers named "dup" (null and text): `layerName` "dup" failed with
+  `1 "dup" (text), 2 "dup" (null) — pass layerIndex to pick one`, before anything changed.
+  `parentName` "C" for B worked; C as its own parent was refused before the group. A second comp
+  named "Shot": `compName` "Shot" failed with `22 "Shot", 48 "Shot" — pass compId`, and one
+  `ae_undo` removed that comp. `compId` and `compName` together: the plain-text refusal.
+  `ae_add_marker` by `layerName` returned `on: "layer 5"` and `layerName: "A"`.
+- **L11, ae_find_layers.** On a comp with precomp, adjustment, shape, text (2), null and solid (2)
+  layers: every kind right (the adjustment layer as `adjustment`, not `solid`); `kind: solid`,
+  `textContains: "HEL"` and `kind: text` + `nameContains: "DU"` (case-insensitive) each
+  returned exactly the expected layers; `kind: camera` returned `[]`.
+- **L8, 200 operations.** 200 `ae_add_marker` by `compName` and `layerName` (the operations
+  were 19,051 characters of JSON): all 200 results, under 73 s of wall clock from before the model
+  wrote the call to after it read the result, so the eval itself took less. The Edit menu read
+  "Undo L8 200 markers".
+- **Not tried live:** footage, camera and light layers in `ae_find_layers` (no typed tool adds a
+  camera or a light; covered in the unit tests); a rollback that fails (`rolledBack: false`);
+  `ae_render_comp` with a repeated name; a timed-out batch.
 
 ## Tool inventory (24)
 project_info · list_compositions · list_footage · get_comp · get_layer · open_project ·

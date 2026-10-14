@@ -100,8 +100,8 @@ Every `ae_*` tool that takes a composition or a layer takes it by id or index, o
 names do not, and a name more than one layer or composition has fails with the matches.
 `ae_find_layers` finds layers by name, kind, text and enabled state. `ae_batch` runs up to 200
 edits as one eval and one undo step, and by default undoes the whole batch when one of them
-fails; `ae_undo` and `ae_redo` run After Effects' own Edit > Undo and Redo. These four are
-unit-tested; their live run is pending.
+fails; `ae_undo` and `ae_redo` run After Effects' own Edit > Undo and Redo. These four and
+the name addressing are verified live on After Effects 26.5.
 Plus a raw ExtendScript tool (`ae_run_script`) that runs a whole script as one undo step and is
 always listed but refuses until you enable raw scripts for After Effects — see
 [Raw scripts](#raw-scripts-opt-in). It is verified live on Windows (After Effects 26.5).
