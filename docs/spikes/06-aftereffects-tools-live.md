@@ -288,7 +288,7 @@ repeated-name check).
 - **Not tried:** a non-English After Effects (L12; the fixed ids are expected not to depend on the
   UI language, not verified). The AE-03 tools end to end: see the next section.
 
-## AE-03 live run (2026-10-13, After Effects 26.5x89, Windows 11, build a5782e9)
+## AE-03 live run (2026-10-13, After Effects 26.5x89, Windows 11, build 6745141)
 
 The new tools, from Claude Code, with the raw-script gate off, on the same scratch project
 (empty at the start). The operator watched After Effects and reported the Edit menu.
