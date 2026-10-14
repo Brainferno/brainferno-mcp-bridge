@@ -43,8 +43,39 @@ import {
   runRawScript,
   aeArgsLiteral,
   RUN_SCRIPT_MANAGED_REFUSAL,
+  // AE-03
+  AE_BATCH_EXCLUDED,
+  AE_BATCH_OPS,
+  AE_BATCH_TOOLS,
+  AE_REDO_COMMAND,
+  AE_UNDO_COMMAND,
+  addLayerBody,
+  addMarkerBody,
+  addMaskBody,
+  addShapeBody,
+  addToEssentialGraphicsBody,
+  aeBatchScript,
+  applyEffectBody,
+  buildAeBatch,
+  compByNameScript,
+  createCompBody,
+  deleteLayerBody,
+  duplicateLayerBody,
+  findLayersScript,
+  queueRenderBody,
+  removeKeyframesBody,
+  removeLayerStyleBody,
+  setCompPropsBody,
+  setEffectParamBody,
+  setExpressionBody,
+  setKeyframesBody,
+  setLayerPropsBody,
+  setLayerStyleParamBody,
+  setTextBody,
+  undoRedoScript,
 } from "../src/tools/after-effects.js";
-import { asciiLiteral, rawScriptWrapper } from "../src/tools/raw-script.js";
+import { readFileSync } from "node:fs";
+import { asciiLiteral, lineCount, rawScriptWrapper } from "../src/tools/raw-script.js";
 import { es3Violations, es5Calls } from "./es3.js";
 
 /** aeArgsLiteral's literal, or a thrown error naming its refusal. */
@@ -127,6 +158,27 @@ const SAMPLES: Record<string, string> = {
     undoGroupName: `Schritt "${U_UML}"`,
     suppressDialogs: true,
   }),
+  // AE-03: name addressing (a name with quotes, so escaping is exercised), the new builders.
+  propsByName: setLayerPropsScript('Say "hi"', 'Say "hi"', { opacity: 50, parentIndex: "Parent" }),
+  propsNamedParentOnly: setLayerPropsScript(12, 2, { parentIndex: "Ctrl" }),
+  getCompByName: getCompScript("Main"),
+  getLayerByName: getLayerScript("Main", "Title"),
+  markerByName: addMarkerScript("Main", 1, "beat", "Title", undefined),
+  findLayers: findLayersScript(12, {}),
+  findLayersFiltered: findLayersScript('Say "hi"', { nameContains: 'a"b', kind: "text", textContains: "Hello", enabled: true }),
+  compByName: compByNameScript('Say "hi"'),
+  undo: undoRedoScript("undo"),
+  redo: undoRedoScript("redo"),
+  batchAtomic: aeBatchScript(
+    [
+      { tool: "ae_create_comp", body: createCompBody({ name: "Shot", width: 1920, height: 1080, frameRate: 30, duration: 10, pixelAspect: 1 }) },
+      { tool: "ae_add_layer", body: addLayerBody({ compId: "Shot", kind: "solid", name: "A" }) },
+      { tool: "ae_set_layer_props", body: setLayerPropsBody("Shot", "A", { opacity: 50 }) },
+    ],
+    true,
+    'Batch "x"',
+  ),
+  batchLoose: aeBatchScript([{ tool: "ae_delete_layer", body: deleteLayerBody(12, 1) }], false, "Batch"),
 };
 
 // Exported builders whose script only reads the project. The "classifies every
@@ -144,6 +196,8 @@ const READ_ONLY_BUILDERS = new Set([
   "getLayerStylesScript",
   "filteredEffectsScript", // AE-16: the effect catalog's filtered read
   "aerenderExecutable", // pure path helper, not a script
+  "findLayersScript", // AE-03: ae_find_layers
+  "compByNameScript", // AE-03: ae_render_comp's check that its composition name is unique
 ]);
 const READ_ONLY_CONSTS = new Set(["LIST_COMPOSITIONS", "LIST_FOOTAGE", "PROJECT_INFO", "AERENDER_INFO", "LIST_INSTALLED_EFFECTS"]);
 
@@ -160,7 +214,9 @@ const MUST_UNDO = new Set([
 // Builders that change state but legitimately do not use __undo: app-level ops
 // (open/save), a self-cleaning preview render, and the Essential Graphics export
 // (it saves the project and suppresses dialogs). Each is here on purpose.
-const NO_UNDO_OK = new Set(["openProjectScript", "saveProjectScript", "renderFrameScript", "exportMogrtScript"]);
+// AE-03: undoRedoScript runs Edit > Undo/Redo, and an undo group around it is undefined; aeBatchScript
+// opens its own app.beginUndoGroup (its operations' __undo is shimmed to run inside that one group).
+const NO_UNDO_OK = new Set(["openProjectScript", "saveProjectScript", "renderFrameScript", "exportMogrtScript", "undoRedoScript", "aeBatchScript"]);
 
 describe("After Effects tool scripts", () => {
   it("are all ES3-clean", () => {
@@ -510,6 +566,178 @@ describe("ae_run_script's builder and args encoder (AE-01)", () => {
     const deep = JSON.parse(`{"a":${"[".repeat(10_000)}${"]".repeat(10_000)}}`) as Record<string, unknown>;
     expect(() => aeArgsLiteral(deep)).not.toThrow();
     expect(refusalOf(deep)).toBe(`args.a${"[0]".repeat(31)} is nested more than 32 levels deep — flatten args.`);
+  });
+});
+
+describe("AE-03: name addressing, ae_find_layers, ae_batch, ae_undo / ae_redo (builders)", () => {
+  const SUFFIX = "\n})()";
+  const PRELUDE = wrapAe("").slice(0, -SUFFIX.length);
+  const bodyOf = (src: string): string => (src.startsWith(PRELUDE) && src.endsWith(SUFFIX) ? src.slice(PRELUDE.length, -SUFFIX.length) : src);
+  /** What follows the prelude: the prelude itself defines __undo with app.beginUndoGroup inside it. */
+  const afterPrelude = (src: string): string => src.slice(PRELUDE.length);
+  const count = (s: string, needle: string): number => s.split(needle).length - 1;
+
+  it("keeps every numeric-ref sample body byte-identical to b2f9060 (AT7)", () => {
+    // Captured from b2f9060 before any AE-03 change: each SAMPLES script minus the prelude and suffix.
+    const fixture = JSON.parse(readFileSync(new URL("./ae-sample-bodies.b2f9060.json", import.meta.url), "utf8")) as Record<string, string>;
+    // The named exceptions: ae_add_marker resolves its layer before the undo group and adds layerName
+    // (spec 11.5); ae_queue_render's lookup by name refuses a repeated name (11.4; a name ref, not numeric).
+    const changed = new Set(["marker", "layerMarker", "queueRender"]);
+    expect(Object.keys(fixture).length).toBeGreaterThan(55);
+    for (const [name, body] of Object.entries(fixture)) {
+      expect(SAMPLES[name], `${name} is still sampled`).toBeDefined();
+      if (changed.has(name)) expect(bodyOf(SAMPLES[name]!), name).not.toBe(body);
+      else expect(bodyOf(SAMPLES[name]!), name).toBe(body);
+    }
+  });
+
+  it("builds every batchable tool's script as wrap(body), each body starting with a newline", () => {
+    const pairs: [string, string, string][] = [
+      ["createComp", createCompScript({ name: "C", width: 10, height: 10, frameRate: 30, duration: 10, pixelAspect: 1 }), createCompBody({ name: "C", width: 10, height: 10, frameRate: 30, duration: 10, pixelAspect: 1 })],
+      ["setCompProps", setCompPropsScript("Main", { duration: 5 }), setCompPropsBody("Main", { duration: 5 })],
+      ["addLayer", addLayerScript({ compId: "Main", kind: "footage", itemId: 7 }), addLayerBody({ compId: "Main", kind: "footage", itemId: 7 })],
+      ["addShape", addShapeScript({ compId: 12, kind: "ellipse" }), addShapeBody({ compId: 12, kind: "ellipse" })],
+      ["addMask", addMaskScript({ compId: 12, layerIndex: "BG", kind: "rectangle" }), addMaskBody({ compId: 12, layerIndex: "BG", kind: "rectangle" })],
+      ["setLayerProps", setLayerPropsScript(12, "B", { opacity: 50, parentIndex: "A" }), setLayerPropsBody(12, "B", { opacity: 50, parentIndex: "A" })],
+      ["duplicateLayer", duplicateLayerScript(12, "B", "c"), duplicateLayerBody(12, "B", "c")],
+      ["deleteLayer", deleteLayerScript(12, 2), deleteLayerBody(12, 2)],
+      ["setKeyframes", setKeyframesScript({ compId: 12, layerIndex: "B", property: "opacity", keys: [{ time: 0, value: 0 }] }), setKeyframesBody({ compId: 12, layerIndex: "B", property: "opacity", keys: [{ time: 0, value: 0 }] })],
+      ["removeKeyframes", removeKeyframesScript(12, "B", "opacity", undefined), removeKeyframesBody(12, "B", "opacity", undefined)],
+      ["setExpression", setExpressionScript(12, "B", "opacity", undefined, "50"), setExpressionBody(12, "B", "opacity", undefined, "50")],
+      ["applyEffect", applyEffectScript(12, "B", "ADBE Tint"), applyEffectBody(12, "B", "ADBE Tint")],
+      ["setEffectParam", setEffectParamScript(12, "B", 1, "Amount", 5), setEffectParamBody(12, "B", 1, "Amount", 5)],
+      ["setLayerStyleParam", setLayerStyleParamScript(12, "B", "dropShadow", "Size", 5), setLayerStyleParamBody(12, "B", "dropShadow", "Size", 5)],
+      ["removeLayerStyle", removeLayerStyleScript(12, "B", "satin"), removeLayerStyleBody(12, "B", "satin")],
+      ["addToEssentialGraphics", addToEssentialGraphicsScript(12, "B", "position", undefined), addToEssentialGraphicsBody(12, "B", "position", undefined)],
+      ["setText", setTextScript({ compId: 12, layerIndex: "Title", text: "x" }), setTextBody({ compId: 12, layerIndex: "Title", text: "x" })],
+      ["addMarker", addMarkerScript(12, 1, "m", "B", undefined), addMarkerBody(12, 1, "m", "B", undefined)],
+      ["queueRender", queueRenderScript("Main", "C:/r.mov", undefined), queueRenderBody("Main", "C:/r.mov", undefined)],
+    ];
+    expect(pairs).toHaveLength(AE_BATCH_TOOLS.length);
+    for (const [name, script, body] of pairs) {
+      expect(script, name).toBe(wrapAe(body));
+      expect(body.startsWith("\n"), name).toBe(true);
+      expect(es3Violations(body), name).toEqual([]);
+      expect(es5Calls(body), name).toEqual([]);
+    }
+  });
+
+  it("emits a number ref with num() and a name ref as an escaped literal, in every helper call", () => {
+    // Numbers are byte-identical (the pins above); names are lit() strings, quotes and U+2028 escaped.
+    expect(SAMPLES["propsByName"]).toContain('var c = __comp("Say \\"hi\\""); var l = __layer(c, "Say \\"hi\\"");');
+    expect(SAMPLES["propsByName"]).toContain('var parentLayer = __layer(c, "Parent", "Parent");');
+    expect(SAMPLES["getCompByName"]).toContain('var c = __comp("Main");');
+    expect(SAMPLES["getLayerByName"]).toContain('var c = __comp("Main"); var l = __layer(c, "Title");');
+    expect(getLayerScript(`a${LS}b`, `c${LS}d`)).toContain('__comp("a\\u2028b"); var l = __layer(c, "c\\u2028d");');
+    expect(SAMPLES["findLayersFiltered"]).toContain('__comp("Say \\"hi\\"")');
+    expect(SAMPLES["findLayersFiltered"]).toContain('"a\\"b"');
+    // nameOnly (true): ae_render_comp takes no compId, so __compNamed's next steps offer none.
+    expect(SAMPLES["compByName"]).toContain('__compNamed("Say \\"hi\\"", true)');
+  });
+
+  it("checks a self-parent by name on the host, before the undo group (spec 11.2)", () => {
+    const named = SAMPLES["propsByName"]!;
+    expect(named).toContain("if (parentLayer.index === l.index) { throw new Error(");
+    expect(named.indexOf("parentLayer.index === l.index")).toBeLessThan(named.indexOf('__undo("Set layer properties"'));
+    // Numeric refs keep b2f9060's body: the server refuses a numeric self-parent before dispatch instead.
+    expect(SAMPLES["props"]).not.toContain("parentLayer.index === l.index");
+  });
+
+  it("ae_add_marker resolves its layer before the undo group and returns layerName (spec 11.5)", () => {
+    const m = SAMPLES["layerMarker"]!;
+    expect(m).toContain("var tl = __layer(c, 3);");
+    expect(m.indexOf("var tl = __layer(c, 3);")).toBeLessThan(m.indexOf('__undo("Add marker"'));
+    expect(m).toContain('on: tl === null ? "comp" : "layer " + tl.index');
+    expect(m).toContain("r.layerName = tl.name;");
+    expect(SAMPLES["marker"]).toContain("var tl = null;");
+    expect(SAMPLES["markerByName"]).toContain('var tl = __layer(c, "Title");');
+  });
+
+  it("ae_queue_render refuses a repeated composition name through __compNamed, after its own miss message (spec 11.4)", () => {
+    const q = afterPrelude(SAMPLES["queueRender"]!);
+    expect(q).toContain('target = __compNamed("Main", true);');
+    expect(q.indexOf('compositions: " + __list(')).toBeLessThan(q.indexOf("__compNamed("));
+  });
+
+  it("ae_find_layers filters by kind, name, text and enabled, all through lit()", () => {
+    const f = SAMPLES["findLayersFiltered"]!;
+    expect(f).toContain('var nq = "a\\"b", kq = "text", tq = "Hello", eq = true;');
+    expect(f).toContain("k = __kind(l);");
+    expect(f).toContain('l.property("ADBE Text Properties").property("ADBE Text Document").value.text');
+    expect(SAMPLES["findLayers"]).toContain("var nq = null, kq = null, tq = null, eq = null;");
+    expect(afterPrelude(SAMPLES["findLayers"]!)).not.toContain("__undo(");
+  });
+
+  it("ae_undo / ae_redo run Edit > Undo (16) / Redo (2035) by fixed id, never the label lookup (spec 11.1)", () => {
+    expect(AE_UNDO_COMMAND).toBe(16);
+    expect(AE_REDO_COMMAND).toBe(2035);
+    expect(afterPrelude(SAMPLES["undo"]!)).toContain("app.executeCommand(16);");
+    expect(afterPrelude(SAMPLES["undo"]!)).toContain('return { command: "Undo", menuId: 16 };');
+    expect(afterPrelude(SAMPLES["redo"]!)).toContain("app.executeCommand(2035);");
+    expect(afterPrelude(SAMPLES["redo"]!)).toContain('return { command: "Redo", menuId: 2035 };');
+    for (const s of [SAMPLES["undo"]!, SAMPLES["redo"]!]) {
+      // findMenuCommandId("Undo") is Edit > Purge > Undo (2371): it would clear the history.
+      expect(s).not.toContain("findMenuCommandId");
+      expect(s).not.toContain("2371");
+      expect(afterPrelude(s)).not.toContain("__undo(");
+      expect(afterPrelude(s)).not.toContain("UndoGroup");
+    }
+  });
+
+  it("ae_batch opens exactly one undo group of its own and shims __undo; the sentinel and the rollback only when atomic", () => {
+    for (const [name, atomic] of [["batchAtomic", true], ["batchLoose", false]] as const) {
+      const frame = afterPrelude(SAMPLES[name]!);
+      expect(count(frame, "app.beginUndoGroup("), name).toBe(1);
+      expect(count(frame, "app.endUndoGroup()"), name).toBe(1);
+      expect(frame, name).toContain("__undo = function (n, f) { __chg = true; return f(); };");
+      expect(frame, name).toContain("__res[__res.length] = (function () {");
+      expect(frame.includes('addFolder("__acm_batch")'), name).toBe(atomic);
+      expect(frame.includes("app.executeCommand(16);"), name).toBe(atomic);
+      expect(frame, name).not.toContain("findMenuCommandId");
+    }
+    const atomic = afterPrelude(SAMPLES["batchAtomic"]!);
+    expect(atomic).toContain('app.beginUndoGroup("Batch \\"x\\"");');
+    // The sentinel is created and removed inside the group, and never touched after it closes.
+    const end = atomic.indexOf("app.endUndoGroup()");
+    expect(atomic.indexOf('addFolder("__acm_batch")')).toBeLessThan(end);
+    expect(atomic.indexOf(".remove();")).toBeLessThan(end);
+    expect(atomic.slice(end)).not.toContain(".remove()");
+    expect(atomic.indexOf("app.executeCommand(16);")).toBeGreaterThan(end);
+  });
+
+  it("records where each operation's body sits, from the assembled script itself (spec 11.2)", () => {
+    const bodies = [
+      createCompBody({ name: "Shot", width: 1920, height: 1080, frameRate: 30, duration: 10, pixelAspect: 1 }),
+      addLayerBody({ compId: "Shot", kind: "text", text: "multi\nline" }),
+      setLayerPropsBody("Shot", 1, { opacity: 50, name: `x${LS}y` }),
+      deleteLayerBody("Shot", 1),
+    ];
+    for (const atomic of [true, false]) {
+      const b = buildAeBatch(bodies.map((body, i) => ({ tool: `t${i}`, body })), atomic, "Batch");
+      expect(b.script).toBe(aeBatchScript(bodies.map((body, i) => ({ tool: `t${i}`, body })), atomic, "Batch"));
+      const lines = b.script.split(/\r\n|[\n\r\u2028\u2029]/);
+      expect(b.segments).toHaveLength(bodies.length);
+      b.segments.forEach((seg, i) => {
+        const bodyLines = bodies[i]!.slice(1).split(/\r\n|[\n\r\u2028\u2029]/);
+        expect(seg.tool).toBe(`t${i}`);
+        expect(lines[seg.first - 1], `op ${i + 1} first`).toBe(bodyLines[0]);
+        expect(lines[seg.last - 1], `op ${i + 1} last`).toBe(bodyLines[bodyLines.length - 1]);
+        expect(seg.last - seg.first + 1).toBe(lineCount(bodies[i]!) - 1);
+      });
+      expect(es3Violations(b.script)).toEqual([]);
+      expect(es5Calls(b.script)).toEqual([]);
+      expect(/^[\x00-\x7f]*$/.test(b.script)).toBe(true);
+    }
+  });
+
+  it("lists every After Effects tool as batchable or excluded with a reason, never both", () => {
+    expect(AE_BATCH_TOOLS).toHaveLength(19);
+    expect(Object.keys(AE_BATCH_OPS).sort()).toEqual([...AE_BATCH_TOOLS].sort());
+    for (const t of AE_BATCH_TOOLS) expect(AE_BATCH_EXCLUDED[t], t).toBeUndefined();
+    for (const t of ["ae_queue_render", "ae_add_to_essential_graphics"]) expect(AE_BATCH_TOOLS).toContain(t);
+    for (const t of ["ae_add_layer_style", "ae_run_script", "ae_undo", "ae_redo", "ae_batch", "ae_find_layers", "ae_import_footage"]) {
+      expect(AE_BATCH_EXCLUDED[t], t).toMatch(/\S/);
+    }
   });
 });
 

@@ -16,7 +16,8 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
 - Everything is verified live on **Windows 11** with the Adobe 2026 apps: Photoshop 21
   (+ `ps_batch_play`, unit-tested only since X-01 — see the next bullet),
   After Effects 34 (+ `ae_run_script`, live on After Effects 26.5 since AE-01 — see the AE-01
-  bullet), Premiere Pro 29, Illustrator 7 (+ Adobe's 46 via `ai_beta_call`),
+  bullet; + `ae_find_layers`, `ae_batch`, `ae_undo` and `ae_redo`, unit-tested only — see the
+  AE-03 bullet), Premiere Pro 29, Illustrator 7 (+ Adobe's 46 via `ai_beta_call`),
   Audition 12, Media Encoder 6, audio/ffmpeg 9, pipelines 4, jobs 4. (`tool-counts.test.ts`
   checks the "Expect N tools" line below and the README's per-app headers; it does not check
   this line, so update it by hand from the numbers the test reports.)
@@ -152,6 +153,25 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
     never-saved project; `close(DO_NOT_SAVE_CHANGES)` with suppression off on a never-saved
     project. The refusal says "not verified live" for each of these, and an expected save prompt
     as expected.
+- **AE-03 (name addressing, `ae_find_layers`, `ae_batch`, `ae_undo` / `ae_redo`).** Every `ae_*`
+  tool that takes a composition or a layer takes it by name too (`compName`, `layerName`,
+  `parentName`); the server refuses both or neither of a pair before dispatch, and the helpers
+  `__compNamed` / `__layerNamed` resolve a name exactly, failing with the matches for a repeated
+  one. `ae_batch` concatenates the 19 batchable tools' bodies (`xxxBody`, `AE_BATCH_OPS`) into one
+  script with one undo group (`buildAeBatch`); `atomic` rolls back in the same eval with Edit >
+  Undo (id 16), checked by an empty sentinel folder. `ae_undo` / `ae_redo` run ids 16 and 2035.
+  Index-based scripts are byte-identical to b2f9060 (`test/ae-sample-bodies.b2f9060.json`), except
+  `ae_add_marker` (its layer lookup moved before the group) and `ae_queue_render` (a repeated name).
+  - **Probed live on After Effects 26.5x89 (Windows 11, 2026-10-13)** before the build, through
+    `cc_eval_script` on a scratch project: the Undo and Redo command ids, that
+    `findMenuCommandId("Undo")` is Edit > Purge > Undo, that an Undo takes effect inside the same
+    eval, that an empty group makes no undo entry, that Undo with nothing to undo is a silent
+    no-op, and that a render-queue add and an Essential Graphics add are undone by one Undo. The
+    operator saw no dialog. Details: `docs/spikes/06-aftereffects-tools-live.md`, "AE-03 probes",
+    and `docs/quirks/ae-undo-redo.md`.
+  - **Unit-tested only (live run pending):** the four tools and the name addressing themselves, in
+    the node:vm stand-in (`test/ae-host.ts`, which now models the undo history as the probes saw
+    it). Not tried live: a 200-operation batch's duration, a non-English After Effects.
 - **macOS run on 2026-08-28** (macOS 26, Adobe 2026 apps, Node 26): panels, Illustrator via
   osascript, previews, ffmpeg all fine as written. Two real bugs fixed — the aerender path
   (`Folder.appPackage` is the `.app` itself on macOS) and Media Encoder (nested console bundle,
@@ -236,7 +256,7 @@ Install it somewhere isolated and make it talk, rather than trusting the workflo
 then spawn `/tmp/t/bin/brainferno-mcp-bridge` with `HOME` pointed at a scratch directory (a
 fresh-machine simulation — no user config, no remote-mode port to collide with the running
 server) and speak JSON-RPC over stdio: `initialize`, `notifications/initialized`, `tools/list`.
-Expect 131 tools (127 in v0.3.3, before `cc_get_capabilities` and the always-registered
+Expect 135 tools (131 before AE-03's `ae_find_layers`, `ae_batch`, `ae_undo` and `ae_redo`; 127 in v0.3.3, before `cc_get_capabilities` and the always-registered
 raw-script tools `cc_eval_script`/`ps_batch_play`/`ae_run_script`; 125 as of v0.3.1, before the
 `ae_add_shape`/`ae_add_mask` tools; 124 in
 v0.3.0, before `ae_set_comp_props`; 113 in v0.2.2, before the mogrt, layer-style, Essential

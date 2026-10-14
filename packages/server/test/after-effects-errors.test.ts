@@ -55,6 +55,22 @@ import {
   withEffectSuggestions,
   wrapAe,
   type InstalledEffect,
+  // AE-03
+  addLayerBody,
+  addMarkerScript,
+  aeBatchExcerpt,
+  aeBatchScript,
+  aeNameToIndex,
+  buildAeBatch,
+  compByNameScript,
+  createCompBody,
+  deleteLayerBody,
+  findLayersScript,
+  locateAeBatchError,
+  setCompPropsScript,
+  setLayerPropsBody,
+  setTextBody,
+  undoRedoScript,
 } from "../src/tools/after-effects.js";
 import { runAsToolCall } from "../src/tools/call-context.js";
 import { MESSAGE_LIMIT, setRedactionSecrets } from "../src/tools/echo.js";
@@ -2113,5 +2129,402 @@ describe("After Effects call sites (R4)", () => {
       expect(lines[i]!.trim(), `after-effects.ts:${i + 1}`).toBe("server.registerTool(");
       expect(i > first && i < last, `after-effects.ts:${i + 1} is outside registerAfterEffectsTools`).toBe(true);
     }
+  });
+});
+
+// ---- AE-03: name addressing, the batch's line map, the undo history -----------------------------
+
+describe("AE-03 name lookups (__compNamed, __layerNamed; AT2)", () => {
+  /** Comp 12 "Main": two layers named "dup" at 2 (text) and 5 (shape). */
+  const DUPS: ProjectSpec = {
+    comps: [
+      {
+        id: 12,
+        name: "Main",
+        layers: [
+          { kind: "null", name: "Ctrl" },
+          { kind: "text", name: "dup", text: "x" },
+          { kind: "solid", name: "BG" },
+          { kind: "solid", name: "Plate" },
+          { kind: "shape", name: "dup" },
+        ],
+      },
+    ],
+  };
+
+  it("a repeated layer name fails with the matching layers (FR:26 verbatim) before anything changes", () => {
+    const script = setLayerPropsScript(12, "dup", { opacity: 50 });
+    const r = fail(script, DUPS);
+    expect(r.message).toBe(`The name "dup" matches 2 layers in "Main" (id 12): 2 "dup" (text), 5 "dup" (shape) ${DASH} pass layerIndex to pick one.`);
+    expect(locateAeError(script, r.line ?? undefined)).toEqual({ kind: "helper", helper: "__layerNamed" });
+    expect(r.host.mutations).toEqual([]);
+    expect(r.host.undo.begin).toBe(0);
+  });
+
+  it("a repeated parent name names the parent role", () => {
+    const r = fail(setLayerPropsScript(12, "BG", { parentIndex: "dup" }), DUPS);
+    expect(r.message).toBe(`The name "dup" matches 2 layers in "Main" (id 12): 2 "dup" (text), 5 "dup" (shape) ${DASH} pass parentIndex to pick one.`);
+    expect(r.host.undo.begin).toBe(0);
+  });
+
+  it("a repeated composition name lists each match with its id, before anything changes", () => {
+    const spec: ProjectSpec = { comps: [{ id: 12, name: "dup" }, { id: 14, name: "Other" }, { id: 15, name: "dup" }] };
+    const script = setCompPropsScript("dup", { duration: 5 });
+    const r = fail(script, spec);
+    expect(r.message).toBe(`The name "dup" matches 2 compositions: 12 "dup", 15 "dup" ${DASH} pass compId to pick one.`);
+    expect(locateAeError(script, r.line ?? undefined)).toEqual({ kind: "helper", helper: "__compNamed" });
+    expect(r.host.undo.begin).toBe(0);
+  });
+
+  it("a layer name that is not there lists the layers (FR:26 verbatim), and says so for an empty comp", () => {
+    const script = setLayerPropsScript(12, "Titel", { opacity: 50 });
+    const r = fail(script);
+    expect(r.message).toBe(
+      `No layer named "Titel" in "Main" (id 12): 1 "Title" (text), 2 "Logo" (shape), 3 "BG" (solid) ${DASH} names match exactly, case included; pass one of these names or its layerIndex.`,
+    );
+    expect(locateAeError(script, r.line ?? undefined)).toEqual({ kind: "helper", helper: "__layerNamed" });
+    expect(r.host.undo.begin).toBe(0);
+    // Case counts.
+    expect(fail(getLayerScript(12, "title")).message).toMatch(/^No layer named "title" in "Main"/);
+    expect(fail(getLayerScript(12, "A"), { comps: [{ id: 12, name: "Main", layers: [] }] }).message).toBe(
+      `No layer named "A": "Main" (id 12) has no layers ${DASH} add one first (ae_add_layer).`,
+    );
+    expect(fail(setLayerPropsScript(12, 1, { parentIndex: "Nope" })).message).toBe(
+      `No parent layer named "Nope" in "Main" (id 12): 1 "Title" (text), 2 "Logo" (shape), 3 "BG" (solid) ${DASH} names match exactly, case included; pass one of these names or its parentIndex.`,
+    );
+    expect(fail(setLayerPropsScript(12, 1, { parentIndex: "Nope" }), { comps: [{ id: 12, name: "Main", layers: [{ kind: "null", name: "X" }] }] }).message).toMatch(
+      /^No parent layer named "Nope" in "Main" \(id 12\): 1 "X" \(null\) — /,
+    );
+  });
+
+  it("a composition name that is not there lists the compositions, or says how to make one", () => {
+    const script = getCompScript("Mian");
+    const r = fail(script, { comps: [MAIN, { id: 15, name: "LT" }] });
+    expect(r.message).toBe(`No composition named "Mian"; the project has 2: 12 "Main", 15 "LT" ${DASH} names match exactly, case included; pass one of these names or its compId.`);
+    expect(locateAeError(script, r.line ?? undefined)).toEqual({ kind: "helper", helper: "__compNamed" });
+    expect(fail(getCompScript("Main"), { comps: [] }).message).toBe(
+      `No composition named "Main"; the project has no compositions ${DASH} create one with ae_create_comp and pass its name or id.`,
+    );
+    // A folder or footage item of that name is not a composition.
+    expect(fail(getCompScript("Assets"), { comps: [MAIN], folders: [{ id: 5, name: "Assets" }] }).message).toMatch(/^No composition named "Assets"; the project has 1: 12 "Main" — /);
+  });
+
+  it("a name resolves to the one matching layer or composition, whatever the order (AT1 at the host)", () => {
+    for (const order of [["A", "B", "C"], ["C", "B", "A"], ["B", "C", "A"]]) {
+      const host = aeHost({ comps: [{ id: 12, name: "Main", layers: order.map((name) => ({ kind: "solid" as const, name })) }] });
+      expect(host.eval(setLayerPropsScript("Main", "B", { opacity: 50 })).ok).toBe(true);
+      expect(host.changes).toEqual(["B: Opacity.setValue"]);
+      expect(host.layers(12).map((l) => [l.name, l.opacity])).toEqual(order.map((n) => [n, n === "B" ? 50 : 100]));
+    }
+  });
+
+  it("a name never matches a layer whose name cannot be read", () => {
+    const host = aeHost({ comps: [{ id: 12, name: "Main", layers: [{ kind: "solid", name: "B" }, { kind: "solid", name: "B" }] }] });
+    Object.defineProperty(host.comp(12).layer(1), "name", { get: () => { throw new host.VmError("unreadable"); } });
+    expect(host.eval(setLayerPropsScript(12, "B", { opacity: 50 })).ok).toBe(true);
+    expect(host.comp(12).layer(2).property("ADBE Transform Group").property("ADBE Opacity").value).toBe(50);
+  });
+
+  it("a layer that would be its own parent by name is refused before the undo group (spec 11.2)", () => {
+    const r = fail(setLayerPropsScript(12, "BG", { parentIndex: "BG" }));
+    expect(r.message).toBe(`Layer 3 "BG" (solid) cannot be its own parent ${DASH} pass a different parentIndex or parentName, or parentIndex null to unparent.`);
+    expect(r.host.undo.begin).toBe(0);
+    expect(fail(setLayerPropsScript(12, 3, { parentIndex: "BG" })).message).toMatch(/cannot be its own parent/);
+  });
+
+  it("ae_add_marker: a layer miss changes nothing; a layer marker names its layer; a comp marker has no layerName", () => {
+    const miss = fail(addMarkerScript(12, 1, "m", "Nope", undefined));
+    expect(miss.message).toMatch(/^No layer named "Nope" in "Main"/);
+    expect(miss.host.undo.begin).toBe(0);
+    expect(miss.host.mutations).toEqual([]);
+    const host = aeHost();
+    expect(host.eval(addMarkerScript(12, 1, "m", "Logo", 0.5))).toEqual({ ok: true, value: { time: 1, comment: "m", on: "layer 2", layerName: "Logo" } });
+    expect(host.eval(addMarkerScript(12, 1, "m", 2, undefined))).toEqual({ ok: true, value: { time: 1, comment: "m", on: "layer 2", layerName: "Logo" } });
+    expect(host.eval(addMarkerScript(12, 2, "c", undefined, undefined))).toEqual({ ok: true, value: { time: 2, comment: "c", on: "comp" } });
+    expect(host.changes).toEqual(["Logo: marker at 1", "Logo: marker at 1", "comp Main: marker at 2"]);
+  });
+
+  it("ae_queue_render: a repeated name fails through __compNamed; a unique one still queues", () => {
+    const spec: ProjectSpec = { comps: [{ id: 12, name: "dup" }, { id: 15, name: "dup" }] };
+    const r = fail(queueRenderScript("dup", "C:/r/a.mov", undefined), spec);
+    // ae_queue_render takes no compId, so the next step cannot be "pass compId".
+    expect(r.message).toBe(`The name "dup" matches 2 compositions: 12 "dup", 15 "dup" ${DASH} rename all but one with ae_set_comp_props (name), then retry.`);
+    expect(r.host.undo.begin).toBe(0);
+  });
+
+  it("compByNameScript answers the one composition, and fails for a repeated name (ae_render_comp's check, spec 11.4)", () => {
+    expect(aeHost().eval(compByNameScript("Main"))).toEqual({ ok: true, value: { id: 12, name: "Main" } });
+    const dup = fail(compByNameScript("dup"), { comps: [{ id: 12, name: "dup" }, { id: 15, name: "dup" }] }).message;
+    expect(dup).toMatch(/^The name "dup" matches 2 compositions: /);
+    // ae_render_comp takes no compId: neither next step may offer one.
+    expect(dup).not.toMatch(/compId/);
+    expect(dup).toMatch(/rename all but one with ae_set_comp_props \(name\), then retry\.$/);
+    const miss = fail(compByNameScript("Mian"), { comps: [MAIN] }).message;
+    expect(miss).toBe(`No composition named "Mian"; the project has 1: 12 "Main" ${DASH} names match exactly, case included; pass one of these names.`);
+  });
+
+  it("cuts a long list of repeats by length and keeps the next step", () => {
+    const long = "d".repeat(60);
+    const spec: ProjectSpec = { comps: [{ id: 12, name: "Main", layers: Array.from({ length: 40 }, () => ({ kind: "solid" as const, name: long })) }] };
+    const r = fail(getLayerScript(12, long), spec);
+    expect(r.message.length).toBeLessThan(1000);
+    expect(r.message).toMatch(/ \.\.\. and \d+ more — pass layerIndex to pick one\.$/);
+    const comps: ProjectSpec = { comps: Array.from({ length: 40 }, (_, i) => ({ id: 100 + i, name: long })) };
+    const c = fail(getCompScript(long), comps);
+    expect(c.message.length).toBeLessThan(1000);
+    expect(c.message).toMatch(/ \.\.\. and \d+ more — pass compId to pick one\.$/);
+  });
+});
+
+describe("AE-03 ae_find_layers at the host (AT3)", () => {
+  const KINDS: ProjectSpec = {
+    comps: [
+      {
+        id: 12,
+        name: "Main",
+        layers: [
+          { kind: "text", name: "Title", text: "Hello World" },
+          { kind: "text", name: "Sub", text: "goodbye" },
+          { kind: "shape", name: "Logo" },
+          { kind: "solid", name: "BG" },
+          { kind: "null", name: "Ctrl" },
+          { kind: "adjustment", name: "Grade" },
+          { kind: "camera", name: "Camera 1" },
+          { kind: "light", name: "Light 1" },
+          { kind: "footage", name: "clip.mov" },
+        ],
+      },
+    ],
+  };
+  const find = (f: Parameters<typeof findLayersScript>[1], spec: ProjectSpec = KINDS) => {
+    const r = aeHost(spec).eval(findLayersScript(12, f));
+    if (!r.ok) throw new Error(r.error.message);
+    return r.value as { index: number; name: string; kind: string; enabled: boolean }[];
+  };
+
+  it("returns only text layers for kind text, in timeline order (FR acceptance 3)", () => {
+    expect(find({ kind: "text" })).toEqual([
+      { index: 1, name: "Title", kind: "text", enabled: true },
+      { index: 2, name: "Sub", kind: "text", enabled: true },
+    ]);
+    expect(aeHost().eval(findLayersScript(12, { kind: "text" }))).toEqual({ ok: true, value: [{ index: 1, name: "Title", kind: "text", enabled: true }] });
+  });
+
+  it("finds every kind __kind reports, cameras and lights included", () => {
+    for (const [kind, name] of [["shape", "Logo"], ["solid", "BG"], ["null", "Ctrl"], ["adjustment", "Grade"], ["camera", "Camera 1"], ["light", "Light 1"], ["footage", "clip.mov"]] as const) {
+      expect(find({ kind }).map((l) => l.name), kind).toEqual([name]);
+    }
+    expect(find({ kind: "precomp" })).toEqual([]);
+  });
+
+  it("matches nameContains and textContains case-insensitively, text on text layers only, every filter ANDed", () => {
+    expect(find({ nameContains: "t" }).map((l) => l.name)).toEqual(["Title", "Ctrl", "Light 1"]);
+    expect(find({ textContains: "WORLD" }).map((l) => l.name)).toEqual(["Title"]);
+    expect(find({ textContains: "o" }).map((l) => l.name)).toEqual(["Title", "Sub"]);
+    expect(find({ textContains: "o", nameContains: "su" }).map((l) => l.name)).toEqual(["Sub"]);
+    expect(find({ kind: "shape", textContains: "o" })).toEqual([]);
+  });
+
+  it("filters on enabled, and an empty result is [] (not an error)", () => {
+    const host = aeHost(KINDS);
+    host.comp(12).layer(4).enabled = false;
+    const r = host.eval(findLayersScript(12, { enabled: false }));
+    expect(r).toEqual({ ok: true, value: [{ index: 4, name: "BG", kind: "solid", enabled: false }] });
+    expect(find({ nameContains: "zzz" })).toEqual([]);
+    expect(host.mutations).toEqual([]);
+    expect(host.undo.begin).toBe(0);
+  });
+
+  it("a bad comp ref is __comp's error", () => {
+    expect(fail(findLayersScript(99, {})).message).toMatch(/^No composition with id 99; /);
+    expect(fail(findLayersScript("Nope", {})).message).toMatch(/^No composition named "Nope"; /);
+  });
+});
+
+describe("AE-03 ae_undo / ae_redo at the host (AT6)", () => {
+  it("undo reverses the last tool call, redo restores it, and neither adds an entry", () => {
+    const host = aeHost();
+    expect(host.eval(setLayerPropsScript(12, 2, { opacity: 50 })).ok).toBe(true);
+    expect(host.history()).toEqual({ undo: 1, redo: 0 });
+    const opacity = () => host.comp(12).layer(2).property("ADBE Transform Group").property("ADBE Opacity").value;
+    expect(opacity()).toBe(50);
+    expect(host.eval(undoRedoScript("undo"))).toEqual({ ok: true, value: { command: "Undo", menuId: 16 } });
+    expect(opacity()).toBe(100);
+    expect(host.history()).toEqual({ undo: 0, redo: 1 });
+    expect(host.eval(undoRedoScript("redo"))).toEqual({ ok: true, value: { command: "Redo", menuId: 2035 } });
+    expect(opacity()).toBe(50);
+    expect(host.history()).toEqual({ undo: 1, redo: 0 });
+    expect(host.undo.begin).toBe(1);
+  });
+
+  it("undo reverses edits whose setters the host does not log: comp duration and a layer's enabled", () => {
+    const host = aeHost();
+    expect(host.eval(setCompPropsScript(12, { duration: 5 })).ok).toBe(true);
+    expect(host.eval(setLayerPropsScript(12, 1, { enabled: false })).ok).toBe(true);
+    expect(host.history()).toEqual({ undo: 2, redo: 0 });
+    expect(host.mutations).toEqual([]);
+    expect(host.eval(undoRedoScript("undo")).ok).toBe(true);
+    expect(host.comp(12).layer(1).enabled).toBe(true);
+    expect(host.comp(12).duration).toBe(5);
+    expect(host.eval(undoRedoScript("undo")).ok).toBe(true);
+    expect(host.comp(12).duration).toBe(10);
+    expect(host.history()).toEqual({ undo: 0, redo: 2 });
+  });
+
+  it("with nothing to undo it is a silent no-op (live L3)", () => {
+    const host = aeHost();
+    expect(host.eval(undoRedoScript("undo"))).toEqual({ ok: true, value: { command: "Undo", menuId: 16 } });
+    expect(host.history()).toEqual({ undo: 0, redo: 0 });
+  });
+
+  it("the label lookup the FR asked for would purge the history: the host returns Purge > Undo for it", () => {
+    const host = aeHost();
+    host.eval(setLayerPropsScript(12, 2, { opacity: 50 }));
+    expect(host.eval(wrapAe('\n  return app.findMenuCommandId("Undo");'))).toEqual({ ok: true, value: 2371 });
+    host.eval(wrapAe('\n  app.executeCommand(app.findMenuCommandId("Undo"));\n  return 1;'));
+    expect(host.history()).toEqual({ undo: 0, redo: 0 });
+  });
+});
+
+describe("AE-03 ae_batch at the host (AT4, AT5)", () => {
+  const shotOps = [
+    { tool: "ae_create_comp", body: createCompBody({ name: "Shot", width: 1920, height: 1080, frameRate: 30, duration: 10, pixelAspect: 1 }) },
+    { tool: "ae_add_layer", body: addLayerBody({ compId: "Shot", kind: "solid", name: "A" }) },
+    { tool: "ae_add_layer", body: addLayerBody({ compId: "Shot", kind: "solid", name: "B" }) },
+    { tool: "ae_add_layer", body: addLayerBody({ compId: "Shot", kind: "solid", name: "C" }) },
+    { tool: "ae_set_layer_props", body: setLayerPropsBody("Shot", "B", { opacity: 50 }) },
+  ];
+  type Ok = { ok: true; results: unknown[]; names: { id: number; layers: [number, string][] }[] };
+  type Failed = { ok: false; at: number; message: string; line: number | null; results: unknown[]; rolledBack?: boolean | null; names?: unknown };
+
+  it("runs 5 operations in one undo group, removes its sentinel inside it, and one Undo restores everything (AT4)", () => {
+    const host = aeHost();
+    const r = host.eval(aeBatchScript(shotOps, true, "Batch"));
+    if (!r.ok) throw new Error(r.error.message);
+    const v = r.value as Ok;
+    expect(v.ok).toBe(true);
+    expect(v.results).toHaveLength(5);
+    expect(host.undo).toEqual({ begin: 1, end: 1 });
+    expect(host.itemsNamed("__acm_batch")).toEqual([]);
+    const shot = host.itemsNamed("Shot")[0];
+    expect(v.names).toEqual([{ id: shot.id, layers: [[1, "C"], [2, "B"], [3, "A"]] }]);
+    expect(aeNameToIndex(v.names)).toEqual({ [String(shot.id)]: { C: 1, B: 2, A: 3 } });
+    expect(host.history()).toEqual({ undo: 1, redo: 0 });
+    expect(host.eval(undoRedoScript("undo")).ok).toBe(true);
+    expect(host.itemsNamed("Shot")).toEqual([]);
+    expect(host.history()).toEqual({ undo: 0, redo: 1 });
+  });
+
+  it("a bad operation 3 with atomic true leaves the project as it was, rolled back in the same eval (AT5)", () => {
+    const host = aeHost();
+    // The operator's own earlier step, which the rollback must not touch.
+    host.eval(setLayerPropsScript(12, 1, { opacity: 10 }));
+    const before = host.layers(12);
+    const ops = [shotOps[0]!, shotOps[1]!, { tool: "ae_set_layer_props", body: setLayerPropsBody("Shot", "nope", { opacity: 50 }) }, shotOps[2]!, shotOps[3]!];
+    const batch = buildAeBatch(ops, true, "Batch");
+    const r = host.eval(batch.script);
+    if (!r.ok) throw new Error(r.error.message);
+    const v = r.value as Failed;
+    expect(v).toMatchObject({ ok: false, at: 3, rolledBack: true });
+    expect(v.message).toMatch(/^No layer named "nope" in "Shot"/);
+    expect(v.results).toHaveLength(2);
+    expect(host.itemsNamed("Shot")).toEqual([]);
+    expect(host.itemsNamed("__acm_batch")).toEqual([]);
+    expect(host.layers(12)).toEqual(before);
+    // The failed batch sits on the Redo stack; the operator's step is still the next Undo.
+    expect(host.history()).toEqual({ undo: 1, redo: 1 });
+    expect(locateAeBatchError(batch, v.line ?? undefined, v.at)).toEqual({ kind: "helper", helper: "__layerNamed" });
+  });
+
+  it("with atomic false, what ran stays as one undo entry and the current names come back", () => {
+    const host = aeHost();
+    const ops = [shotOps[0]!, shotOps[1]!, { tool: "ae_set_layer_props", body: setLayerPropsBody("Shot", "nope", { opacity: 50 }) }];
+    const r = host.eval(aeBatchScript(ops, false, "Batch"));
+    if (!r.ok) throw new Error(r.error.message);
+    const v = r.value as Failed;
+    expect(v).toMatchObject({ ok: false, at: 3 });
+    expect(v.rolledBack).toBeUndefined();
+    expect(host.itemsNamed("Shot")).toHaveLength(1);
+    expect(host.itemsNamed("__acm_batch")).toEqual([]);
+    expect(v.names).toEqual([{ id: host.itemsNamed("Shot")[0].id, layers: [[1, "A"]] }]);
+    expect(host.history()).toEqual({ undo: 1, redo: 0 });
+  });
+
+  it("a lookup failing in operation 1 rolls back only the sentinel: the operator's earlier step stays (AT5, L7)", () => {
+    const host = aeHost();
+    host.eval(setLayerPropsScript(12, 1, { opacity: 10 }));
+    const r = host.eval(aeBatchScript([{ tool: "ae_delete_layer", body: deleteLayerBody(12, "nope") }], true, "Batch"));
+    if (!r.ok) throw new Error(r.error.message);
+    expect(r.value).toMatchObject({ ok: false, at: 1, rolledBack: true, results: [] });
+    expect(host.comp(12).layer(1).property("ADBE Transform Group").property("ADBE Opacity").value).toBe(10);
+    expect(host.history()).toEqual({ undo: 1, redo: 1 });
+    // A non-atomic batch that fails before changing anything leaves no entry at all.
+    const loose = aeHost();
+    loose.eval(setLayerPropsScript(12, 1, { opacity: 10 }));
+    const lr = loose.eval(aeBatchScript([{ tool: "ae_delete_layer", body: deleteLayerBody(12, "nope") }], false, "Batch"));
+    // entered false: no operation reached its change step, so the server can say nothing changed.
+    expect(lr).toMatchObject({ ok: true, value: { ok: false, at: 1, entered: false } });
+    expect(loose.history()).toEqual({ undo: 1, redo: 0 });
+  });
+
+  it("reports rolledBack false when Edit > Undo does not remove the batch, and never touches the sentinel after the group", () => {
+    const host = aeHost();
+    host.app.executeCommand = () => undefined;
+    const ops = [shotOps[0]!, { tool: "ae_delete_layer", body: deleteLayerBody("Shot", "nope") }];
+    const r = host.eval(aeBatchScript(ops, true, "Batch"));
+    if (!r.ok) throw new Error(r.error.message);
+    expect(r.value).toMatchObject({ ok: false, at: 2, rolledBack: false });
+    expect(host.itemsNamed("__acm_batch")).toHaveLength(1);
+    expect(host.mutations.filter((m) => m === "folder.remove")).toEqual([]);
+  });
+
+  it("the operations' own __undo calls open no nested group", () => {
+    const host = aeHost();
+    let depth = 0;
+    let deepest = 0;
+    const begin = host.app.beginUndoGroup;
+    const end = host.app.endUndoGroup;
+    host.app.beginUndoGroup = (n: string) => {
+      deepest = Math.max(deepest, ++depth);
+      begin.call(host.app, n);
+    };
+    host.app.endUndoGroup = () => {
+      depth--;
+      end.call(host.app);
+    };
+    expect(host.eval(aeBatchScript(shotOps, true, "Batch")).ok).toBe(true);
+    expect(deepest).toBe(1);
+  });
+
+  it("maps a body line to that operation's body line, a helper line to the helper, a frame line to outside", () => {
+    const ops = [shotOps[0]!, { tool: "ae_add_layer", body: addLayerBody({ compId: 12, kind: "solid", name: "X" }) }, { tool: "ae_set_text", body: setTextBody({ compId: 12, layerIndex: 3, text: "x" }) }];
+    const batch = buildAeBatch(ops, true, "Batch");
+    const host = aeHost();
+    const r = host.eval(batch.script);
+    if (!r.ok) throw new Error(r.error.message);
+    const v = r.value as Failed;
+    expect(v.at).toBe(3);
+    expect(v.message).toMatch(/is not a text layer/);
+    const body = ops[2]!.body;
+    const k = body.split("\n").findIndex((l) => l.includes("is not a text layer")); // body line (lead line is index 0)
+    expect(locateAeBatchError(batch, v.line ?? undefined, 3)).toEqual({ kind: "body", bodyLine: k });
+    expect(aeBatchExcerpt(batch, 3, k)[1]).toMatch(new RegExp(`^>>> ${k}: if \\(l\\.matchName !== "ADBE Text Layer"\\)`));
+    // A frame line (the __undo shim) and a line of another operation's body read as outside.
+    const frameLine = batch.script.split("\n").findIndex((l) => l.includes("__undo = function (n, f)")) + 1;
+    expect(locateAeBatchError(batch, frameLine, 3)).toEqual({ kind: "outside" });
+    expect(locateAeBatchError(batch, batch.segments[1]!.first, 3)).toEqual({ kind: "outside" });
+    expect(locateAeBatchError(batch, lineCount(batch.script) + 5, 3)).toEqual({ kind: "outside" });
+    expect(locateAeBatchError(batch, undefined, 3)).toEqual({ kind: "unknown" });
+    const helperLine = aeHelperRanges().find((h) => h.name === "__comp")!.first + 1;
+    expect(locateAeBatchError(batch, helperLine, 3)).toEqual({ kind: "helper", helper: "__comp" });
+  });
+
+  it("builds nameToIndex from plain data: repeated names give arrays, and __proto__ or toString are ordinary keys", () => {
+    const map = aeNameToIndex([{ id: 12, layers: [[1, "__proto__"], [2, "toString"], [3, "dup"], [4, "constructor"], [5, "dup"]] }]);
+    expect(Object.getPrototypeOf(map["12"])).toBe(Object.prototype);
+    expect(Object.keys(map["12"]!)).toEqual(["__proto__", "toString", "dup", "constructor"]);
+    expect(map["12"]!["dup"]).toEqual([3, 5]);
+    expect(JSON.parse(JSON.stringify(map))).toEqual(JSON.parse('{"12":{"__proto__":1,"toString":2,"dup":[3,5],"constructor":4}}'));
+    expect(aeNameToIndex("garbage")).toEqual({});
   });
 });

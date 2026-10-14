@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-One run-script contract and a gate clients can see (X-01); After Effects errors that say where and why (AE-16); `ae_run_script`, a raw After Effects script as one undo step (AE-01).
+One run-script contract and a gate clients can see (X-01); After Effects errors that say where and why (AE-16); `ae_run_script`, a raw After Effects script as one undo step (AE-01); After Effects layers and compositions by name, `ae_find_layers`, `ae_batch`, `ae_undo` and `ae_redo` (AE-03).
 
 **Breaking**
 
@@ -159,9 +159,38 @@ One run-script contract and a gate clients can see (X-01); After Effects errors 
   failure" (and it is logged at `warn`, no longer as an unhandled error), and in a failed job
   step (`ae_render_comp`, `pp_export_sequence`, the pipelines), instead of the bare disconnect
   message.
+- `ae_queue_render` (AE-03) refuses a composition name that more than one composition has, listing
+  the matches, instead of queueing the first; a name that is not there gets the same message as
+  before. `ae_render_comp` (and `pipeline_render_and_import`) first checks, read-only, that its
+  composition name is there and unique, because aerender renders the first match: a missing or
+  repeated name now fails before the project is saved or aerender starts.
+- `ae_add_marker` (AE-03) looks its layer up before the undo group opens, so a bad index or name
+  changes nothing; a layer marker's result adds `layerName` (`on` is still `"layer <index>"`).
+- `ae_set_layer_props` (AE-03) refuses a layer as its own parent, before anything changes (two
+  indexes are refused in plain text before anything is sent).
 
 **Added**
 
+- After Effects name addressing (AE-03): every `ae_*` tool that takes `compId` also takes `compName`, every
+  `ae_*` tool that takes `layerIndex` also takes `layerName`, and `ae_set_layer_props` takes `parentName`
+  beside `parentIndex`. Names match exactly, case included; a name that is not there lists what is,
+  and a name more than one layer or composition has fails with the matches. Both or neither of a
+  pair is refused in plain text before anything is sent. Index-based calls send the same scripts
+  as before.
+- `ae_find_layers` (AE-03, read-only): a composition's layers filtered by `nameContains`, `kind`,
+  `textContains` and `enabled`, as `[{ index, name, kind, enabled }]`.
+- `ae_batch` (AE-03): up to 200 `ae_*` edits (19 tools) as one eval and one undo step, returning
+  `{ results, nameToIndex }` (`nameToIndex` keyed by composition id). It stops at the first
+  failure, which names the operation and echoes only its arguments; with `atomic` (the default)
+  the whole batch is undone in the same eval. Every operation is checked before anything is sent
+  (tool, arguments strictly, references, at least one change), and the script is capped at
+  2,000,000 characters.
+- `ae_undo` / `ae_redo` (AE-03): After Effects' own Edit > Undo and Edit > Redo, by their fixed
+  command ids (16 and 2035). The label lookup the feature request suggested is not used:
+  `findMenuCommandId("Undo")` returns Edit > Purge > Undo, which clears the history
+  (`docs/quirks/ae-undo-redo.md`).
+- AE-03's four tools and the name addressing are unit-tested; their live run is pending. The
+  host facts they rely on were probed live on After Effects 26.5 (spike 06).
 - `cc_get_capabilities` (read-only, contacts no app): server and protocol versions, whether the
   session is local or remote, the raw-script gate, one row per gated tool (enabled, how to
   enable it, app connected, panel supports the command), and each panel's version and host

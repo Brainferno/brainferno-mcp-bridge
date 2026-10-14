@@ -16,7 +16,7 @@ software for use with those Adobe products; it is not made or endorsed by Adobe 
 comp, cuts the sequence, normalizes the audio, renders the file, and shows you previews along
 the way. Every action is one undo step in the app, so you can always step back.
 
-- **131 tools** across six applications, plus an ffmpeg audio lane that works with every
+- **135 tools** across six applications, plus an ffmpeg audio lane that works with every
   Adobe app closed.
 - **Cross-app pipelines**: one request runs Photoshop → After Effects → aerender → Premiere
   → ffmpeg → back onto the timeline, with progress and a clear report if a step fails.
@@ -86,7 +86,7 @@ remove), place an image as a smart object, fill, filters (Gaussian/motion/unshar
 resize, crop. Plus a raw batchPlay escape hatch (`ps_batch_play`) that is always listed but
 refuses until you enable raw scripts for Photoshop — see [Raw scripts](#raw-scripts-opt-in).
 
-### After Effects — 35 tools
+### After Effects — 39 tools
 Project info and file, compositions and footage (list, create, import), import a layered
 PSD or AI file as a composition (one layer each, with PSD layer styles editable), layers of
 every kind (footage, solid, text, null, adjustment), shape layers (rectangle, ellipse, star,
@@ -95,6 +95,13 @@ keyframes with easing, expressions, effects and their parameters, layer styles (
 glows, bevel, stroke… — add, adjust, read, remove), text content/font/color/justification,
 markers, Essential Graphics (expose a control, export a Motion Graphics template),
 single-frame preview, render queue, and headless rendering through `aerender` (the UI stays free).
+Every `ae_*` tool that takes a composition or a layer takes it by id or index, or by exact name
+(`compName`, `layerName`, and `parentName` for a parent): indexes shift as layers are added,
+names do not, and a name more than one layer or composition has fails with the matches.
+`ae_find_layers` finds layers by name, kind, text and enabled state. `ae_batch` runs up to 200
+edits as one eval and one undo step, and by default undoes the whole batch when one of them
+fails; `ae_undo` and `ae_redo` run After Effects' own Edit > Undo and Redo. These four are
+unit-tested; their live run is pending.
 Plus a raw ExtendScript tool (`ae_run_script`) that runs a whole script as one undo step and is
 always listed but refuses until you enable raw scripts for After Effects — see
 [Raw scripts](#raw-scripts-opt-in). It is verified live on Windows (After Effects 26.5).
@@ -352,7 +359,7 @@ The wire protocol is documented in [`docs/protocol.md`](docs/protocol.md).
 | `cc_get_capabilities` | all | What the server can do for *this* session, without contacting any app: server and protocol versions, local or remote session, the raw-script gate, one row per gated tool (enabled or not, how to enable it, app connected, panel supports it), and each panel's version and host version |
 | `cc_job_status` · `cc_list_jobs` · `cc_job_wait` · `cc_job_cancel` | jobs | Background jobs; `wait` streams progress; long renders/exports take `wait:false` and return a jobId |
 | `ps_*` (22) | Photoshop | Documents (list/create/open/save/export/preview), layers (create/text/props/move/duplicate/delete), layer styles, place image, fill, filters, resize, crop, and the gated `ps_batch_play` (below) — [live run](docs/spikes/05-photoshop-tools-live.md) |
-| `ae_*` (34) | After Effects | The typed tools: project/comps/footage, PSD/AI import as comp, layers of every kind, shapes and masks, keyframes + easing, expressions, effects + params, layer styles, text, markers, Essential Graphics, frame preview, render queue, headless aerender; the gated `ae_run_script` has its own row (below) — [live run](docs/spikes/06-aftereffects-tools-live.md) |
+| `ae_*` (38) | After Effects | The typed tools: project/comps/footage, PSD/AI import as comp, layers of every kind (by index or by name), find layers, shapes and masks, keyframes + easing, expressions, effects + params, layer styles, text, markers, Essential Graphics, frame preview, render queue, headless aerender, several edits as one undo step (`ae_batch`), Edit > Undo / Redo; the gated `ae_run_script` has its own row (below) — [live run](docs/spikes/06-aftereffects-tools-live.md) |
 | `pp_*` (29) | Premiere Pro | Project/sequences/items, get_sequence (tracks + clips), import, create sequence from media, insert/overwrite, ripple remove, move/trim/props, transitions, effects + keyframes, markers, frame preview, export presets, export in-app or to Media Encoder — [live run](docs/spikes/07-premiere-tools-live.md) |
 | `ai_*` (7) | Illustrator | Documents, shapes, text, save, export artboard, preview (panel-less) |
 | `ai_beta_status` · `ai_beta_list_tools` · `ai_beta_call` | Illustrator (Adobe's MCP) | Pass-through to Adobe's 46 Illustrator tools — needs a key ([docs](docs/illustrator-beta.md), [sweep](docs/spikes/12-illustrator-beta-sweep.md)) |
@@ -374,7 +381,10 @@ reconnect; a panel older than the server says to update or reload it. Errors fro
 After Effects tools (`ae_*` other than `ae_run_script`) also name the tool and its arguments
 (cut short, keys and tokens removed), say where the tool's script failed (quoting the failing
 line and its neighbours when it is the tool's own code), and suggest close names for an
-unknown effect, property or effect parameter.
+unknown effect, property or effect parameter. A layer or composition name that is not there
+lists what is; a name more than one has lists the matches and says to pass the index or id.
+A failing `ae_batch` operation reads the same, with its position in the batch, only its own
+arguments, and whether the batch was undone.
 
 ### Raw scripts (opt-in)
 

@@ -6,6 +6,7 @@ import { join, posix, win32 } from "node:path";
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { jsStringLiteral } from "../bridge/script-escape.js";
 import {
@@ -21,7 +22,7 @@ import type { RawScriptApp } from "../config.js";
 import { MAX_EXPLICIT_TIMEOUT_MS } from "../drivers/osscript.js";
 import type { JobRegistry } from "../jobs.js";
 import { log } from "../logging.js";
-import { currentToolCall, withToolContext } from "./call-context.js";
+import { currentToolCall, runAsToolCall, withToolContext } from "./call-context.js";
 import { MESSAGE_LIMIT, QUOTED_SPAN, capCodePoints, echoArgs, excerptLine, messageText, oneLine } from "./echo.js";
 import { runOrQueue, waitParam, type ProgressExtra } from "./jobs.js";
 import {
@@ -36,7 +37,7 @@ import {
   toEnvelope,
   viaOf,
 } from "./raw-script.js";
-import { errorResult, guard, imageResult, jsonResult } from "./result.js";
+import { errorResult, guard, imageResult, jsonResult, scriptErrorText } from "./result.js";
 import { fold, rank, stripAeVendor, suggestionThreshold } from "./suggest.js";
 
 /**
@@ -49,13 +50,22 @@ import { fold, rank, stripAeVendor, suggestionThreshold } from "./suggest.js";
  * Renders: `ae_render_frame` uses CompItem.saveFrameToPng on a temporary
  * downscaled comp; `ae_render_comp` saves the project and spawns aerender
  * (headless, never freezes the UI). Layers are addressed by comp id + layer
- * index (1-based, top of the timeline = 1), as After Effects does.
+ * index (1-based, top of the timeline = 1), as After Effects does, or (AE-03) by
+ * exact name: a comp ref or a layer ref is a number (id, index) or a string (name).
  */
 
 const lit = jsStringLiteral;
 const num = (n: number): string => String(n);
 const opt = (v: string | undefined | null): string => (v === undefined || v === null ? "null" : lit(v));
 const optNum = (v: number | undefined | null): string => (v === undefined || v === null ? "null" : num(v));
+
+/**
+ * A composition or layer reference (AE-03): a number is an id (comp) or an index (layer), a string an exact
+ * name. __comp and __layer take either, so a builder emits num() for a number, which keeps every index-based
+ * script byte-identical, and lit() for a name.
+ */
+export type AeRef = number | string;
+const ref = (v: AeRef): string => (typeof v === "number" ? num(v) : lit(v));
 const rgb = (hex: string): string => {
   const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex)!;
   return `[${parseInt(m[1]!, 16) / 255}, ${parseInt(m[2]!, 16) / 255}, ${parseInt(m[3]!, 16) / 255}]`;
@@ -165,6 +175,7 @@ const HELPERS = String.raw`
     return "the project has " + n + ": " + out + (n > shown ? " ... and " + (n - shown) + " more" : "");
   }
   function __comp(id) {
+    if (typeof id === "string") { return __compNamed(id); }
     var item = null, list, what;
     // itemByID throws (it does not return null) for an id no item has; verified live on 26.3.
     try { item = app.project.itemByID(id); } catch (e) { item = null; }
@@ -179,10 +190,83 @@ const HELPERS = String.raw`
     throw new Error(what + "; " + list + " \u2014 pass one of these compIds (ae_list_compositions lists them all).");
   }
   function __layer(comp, index, role) {
+    if (typeof index === "string") { return __layerNamed(comp, index, role); }
     if (index >= 1 && index <= comp.numLayers) { return comp.layer(index); }
     var what = (role ? role + " layer" : "Layer") + " index " + index + " is out of range";
     if (comp.numLayers === 0) { throw new Error(what + ": " + __q(comp.name) + " (id " + comp.id + ") has no layers \u2014 add one first (ae_add_layer)."); }
     throw new Error(what + " (1.." + comp.numLayers + ") in " + __q(comp.name) + " (id " + comp.id + "): " + __layerList(comp, 20) + " \u2014 pass one of these indexes (ae_get_comp lists every layer).");
+  }
+  function __compNamed(name, nameOnly) {
+    // AE-03. Every composition whose name is exactly name (case included). A host lookup by name would
+    // take the first and hide a repeat, so the loop reads them all; a name that cannot be read never matches.
+    // nameOnly: the calling tool takes no compId (ae_queue_render, ae_render_comp), so no next step offers one.
+    var hits = [], out = "", shown = 0, list, i, it, s;
+    for (i = 1; i <= app.project.numItems; i++) {
+      it = app.project.item(i);
+      if (it instanceof CompItem) {
+        s = null;
+        try { s = String(it.name); } catch (e) { s = null; }
+        if (s === name) { hits.push(it); }
+      }
+    }
+    if (hits.length === 1) { return hits[0]; }
+    if (hits.length === 0) {
+      list = __compList(20);
+      if (list === "") { throw new Error("No composition named " + __q(name) + "; the project has no compositions \u2014 create one with ae_create_comp and pass its name or id."); }
+      throw new Error("No composition named " + __q(name) + "; " + list + " \u2014 names match exactly, case included; pass one of these names" + (nameOnly ? "." : " or its compId."));
+    }
+    for (i = 0; i < hits.length; i++) {
+      s = hits[i].id + " " + __q(name);
+      if (shown > 0 && out.length + 2 + s.length > __BUDGET) { break; }
+      out += (shown > 0 ? ", " : "") + s;
+      shown++;
+    }
+    if (hits.length > shown) { out += " ... and " + (hits.length - shown) + " more"; }
+    throw new Error("The name " + __q(name) + " matches " + hits.length + " compositions: " + out + (nameOnly ? " \u2014 rename all but one with ae_set_comp_props (name), then retry." : " \u2014 pass compId to pick one."));
+  }
+  function __layerNamed(comp, name, role) {
+    // AE-03. The one layer of comp whose name is exactly name (case included); role "Parent" words the
+    // messages for a parent. A layer whose name cannot be read never matches.
+    var f = role ? String(role).toLowerCase() : "layer", what = role ? f + " layer" : "layer", hits = [], out = "", shown = 0, i, s;
+    for (i = 1; i <= comp.numLayers; i++) {
+      s = null;
+      try { s = String(comp.layer(i).name); } catch (e) { s = null; }
+      if (s === name) { hits.push(i); }
+    }
+    if (hits.length === 1) { return comp.layer(hits[0]); }
+    if (hits.length === 0) {
+      if (comp.numLayers === 0) { throw new Error("No " + what + " named " + __q(name) + ": " + __q(comp.name) + " (id " + comp.id + ") has no layers \u2014 add one first (ae_add_layer)."); }
+      throw new Error("No " + what + " named " + __q(name) + " in " + __q(comp.name) + " (id " + comp.id + "): " + __layerList(comp, 20) + " \u2014 names match exactly, case included; pass one of these names or its " + f + "Index.");
+    }
+    for (i = 0; i < hits.length; i++) {
+      try { s = __layerLabel(comp.layer(hits[i])); } catch (e) { s = hits[i] + " (unreadable)"; }
+      if (shown > 0 && out.length + 2 + s.length > __BUDGET) { break; }
+      out += (shown > 0 ? ", " : "") + s;
+      shown++;
+    }
+    if (hits.length > shown) { out += " ... and " + (hits.length - shown) + " more"; }
+    throw new Error("The name " + __q(name) + " matches " + hits.length + " layers in " + __q(comp.name) + " (id " + comp.id + "): " + out + " \u2014 pass " + f + "Index to pick one.");
+  }
+  function __names(seen) {
+    // AE-03, ae_batch: each composition the batch looked up, as plain data read now: { id, layers:
+    // [[index, name], ...] }. The server builds nameToIndex from it, so no layer name is ever used as a
+    // property key here; seen's keys are "c" + the comp id. A comp or layer that cannot be read is skipped.
+    var out = [], k, c, ls, i, n;
+    for (k in seen) {
+      if (Object.prototype.hasOwnProperty.call(seen, k)) {
+        c = seen[k];
+        ls = [];
+        try {
+          for (i = 1; i <= c.numLayers; i++) {
+            n = null;
+            try { n = String(c.layer(i).name); } catch (e) { n = null; }
+            if (n !== null) { ls.push([i, n]); }
+          }
+          out.push({ id: c.id, layers: ls });
+        } catch (x) {}
+      }
+    }
+    return out;
   }
   function __undo(name, fn) {
     app.beginUndoGroup(name);
@@ -529,14 +613,55 @@ export function locateAeError(script: string, scriptLine: number | undefined): A
   if (scriptLine === undefined || !Number.isInteger(scriptLine) || scriptLine < 1) return { kind: "unknown" };
   const body = aeBody(script);
   if (body === null) return { kind: "unknown" };
-  if (scriptLine <= AE_PRELUDE_LINES) {
-    const h = AE_HELPERS.find((r) => scriptLine >= r.first && scriptLine <= r.last);
-    return h === undefined ? { kind: "outside" } : { kind: "helper", helper: h.name };
-  }
+  if (scriptLine <= AE_PRELUDE_LINES) return preludeLocation(scriptLine);
   const lead = body.startsWith("\n") ? 1 : 0; // every body today starts with "\n"
   const k = scriptLine - AE_PRELUDE_LINES; // 1-based line of the body string
   if (k <= lead || k > lineCount(body)) return { kind: "outside" };
   return { kind: "body", bodyLine: k - lead };
+}
+
+/** A prelude line: inside a shared helper, or outside the tool's code (line 1, the guard, a top-level helper var). */
+function preludeLocation(scriptLine: number): AeErrorLocation {
+  const h = AE_HELPERS.find((r) => scriptLine >= r.first && scriptLine <= r.last);
+  return h === undefined ? { kind: "outside" } : { kind: "helper", helper: h.name };
+}
+
+/**
+ * Where a host-reported line falls in an ae_batch script (AE-03): a shared helper; a body line of operation `at`
+ * (its first statement is body line 1); or outside (the frame, the lines that open and close each operation, another
+ * operation's body, past the end). Without `at` (a failure the panel itself reported) any operation's body counts.
+ */
+export function locateAeBatchError(batch: AeBatch, scriptLine: number | undefined, at?: number): AeErrorLocation {
+  if (scriptLine === undefined || !Number.isInteger(scriptLine) || scriptLine < 1) return { kind: "unknown" };
+  if (scriptLine <= AE_PRELUDE_LINES) return preludeLocation(scriptLine);
+  const segs = at === undefined ? batch.segments : at >= 1 && at <= batch.segments.length ? [batch.segments[at - 1]!] : [];
+  const seg = segs.find((s) => scriptLine >= s.first && scriptLine <= s.last);
+  return seg === undefined ? { kind: "outside" } : { kind: "body", bodyLine: scriptLine - seg.first + 1 };
+}
+
+/** aeExcerpt for operation `at` of an ae_batch script. */
+export function aeBatchExcerpt(batch: AeBatch, at: number, bodyLine: number): string[] {
+  const seg = batch.segments[at - 1];
+  return seg === undefined ? [] : bodyExcerpt(seg.body, bodyLine);
+}
+
+/** How enrichAeError reads a script that wrap() did not build as one body (AE-03's ae_batch). */
+export interface AeLocator {
+  locate(scriptLine: number | undefined): AeErrorLocation;
+  excerpt(bodyLine: number): string[];
+}
+
+/** The locator for an ae_batch script: operation `at`'s body, or any operation's when `at` is not given. */
+export function aeBatchLocator(batch: AeBatch, at?: number): AeLocator {
+  let found: AeBatchSegment | undefined; // the operation the last located line fell in
+  return {
+    locate: (line) => {
+      const where = locateAeBatchError(batch, line, at);
+      found = where.kind === "body" ? batch.segments.find((s) => line! >= s.first && line! <= s.last) : undefined;
+      return where;
+    },
+    excerpt: (bodyLine) => (found === undefined ? [] : bodyExcerpt(found.body, bodyLine)),
+  };
 }
 
 /** The line terminators lineCount() counts. */
@@ -545,7 +670,11 @@ const LINE_SPLIT = new RegExp("\\r\\n|[\\n\\r\\u2028\\u2029]");
 /** Up to 3 lines around bodyLine, as "N: code" with ">>> " on the failing one; blank neighbours dropped; redacted and capped. */
 export function aeExcerpt(script: string, bodyLine: number): string[] {
   const body = aeBody(script);
-  if (body === null) return [];
+  return body === null ? [] : bodyExcerpt(body, bodyLine);
+}
+
+/** aeExcerpt's work on a body string. */
+function bodyExcerpt(body: string, bodyLine: number): string[] {
   const lines = body.split(LINE_SPLIT);
   const lead = body.startsWith("\n") ? 1 : 0;
   const last = lines.length - lead;
@@ -625,15 +754,16 @@ function nextStep(message: string, at: AeErrorLocation): string | undefined {
  * none (nextStep).
  * Anything else is returned unchanged; message, appId and scriptLine never change.
  */
-export function enrichAeError(error: unknown, script: string): unknown {
+export function enrichAeError(error: unknown, script: string, locator?: AeLocator): unknown {
   if (!(error instanceof ScriptError) || error.appId !== "after_effects" || error.details.where !== undefined) return error;
-  const at = locateAeError(script, error.scriptLine);
+  const at = locator !== undefined ? locator.locate(error.scriptLine) : locateAeError(script, error.scriptLine);
   const call = currentToolCall();
   const names = aeListSuggestions(error.message);
   const next = nextStep(error.message, at);
+  const excerpt = (bodyLine: number) => (locator !== undefined ? locator.excerpt(bodyLine) : aeExcerpt(script, bodyLine));
   return error.withDetails({
     where: at.kind,
-    ...(at.kind === "body" ? { bodyLine: at.bodyLine, excerpt: aeExcerpt(script, at.bodyLine) } : {}),
+    ...(at.kind === "body" ? { bodyLine: at.bodyLine, excerpt: excerpt(at.bodyLine) } : {}),
     ...(at.kind === "helper" ? { helper: at.helper } : {}),
     ...(call !== undefined ? { tool: call.tool, ...(call.args !== undefined ? { args: echoArgs(call.args) } : {}) } : {}),
     ...(names.length > 0 ? { suggestions: names.map((name) => ({ name })) } : {}),
@@ -641,12 +771,15 @@ export function enrichAeError(error: unknown, script: string): unknown {
   });
 }
 
-/** bridge.evaluate for wrap()ped After Effects scripts: a ScriptError comes back enriched. Use it at every AE evaluate site. */
-export async function evaluateAe(bridge: AppBridge, script: string, options?: EvalOptions): Promise<JsonValue> {
+/**
+ * bridge.evaluate for wrap()ped After Effects scripts: a ScriptError comes back enriched. Use it at every AE evaluate
+ * site. `locator` reads a script that is not one wrap()ped body (AE-03's ae_batch).
+ */
+export async function evaluateAe(bridge: AppBridge, script: string, options?: EvalOptions, locator?: AeLocator): Promise<JsonValue> {
   try {
     return await bridge.evaluate(script, options);
   } catch (error) {
-    throw enrichAeError(error, script);
+    throw enrichAeError(error, script, locator);
   }
 }
 
@@ -797,17 +930,17 @@ export const LIST_FOOTAGE = wrap(`
   }
   return out;`);
 
-export function getCompScript(compId: number): string {
+export function getCompScript(compId: AeRef): string {
   return wrap(`
-  var c = __comp(${num(compId)});
+  var c = __comp(${ref(compId)});
   var layers = [];
   for (var i = 1; i <= c.numLayers; i++) { layers.push(__layerInfo(c.layer(i))); }
   var info = __compInfo(c); info.layers = layers; return info;`);
 }
 
-export function getLayerScript(compId: number, layerIndex: number): string {
+export function getLayerScript(compId: AeRef, layerIndex: AeRef): string {
   return wrap(`
-  var c = __comp(${num(compId)}); var l = __layer(c, ${num(layerIndex)});
+  var c = __comp(${ref(compId)}); var l = __layer(c, ${ref(layerIndex)});
   var info = __layerInfo(l);
   var t = l.property("ADBE Transform Group");
   var names = ["position", "scale", "rotation", "opacity", "anchorPoint"];
@@ -899,12 +1032,20 @@ export interface CreateCompParams {
   pixelAspect: number;
 }
 
+// AE-03: each tool ae_batch can run has a xxxBody builder (the script text between the prelude and the
+// suffix, starting with a newline) and its xxxScript = wrap(xxxBody(...)), so the batch concatenates the
+// same text the single tool sends.
+
 export function createCompScript(p: CreateCompParams): string {
-  return wrap(`
+  return wrap(createCompBody(p));
+}
+
+export function createCompBody(p: CreateCompParams): string {
+  return `
   return __undo("Create comp", function () {
     var c = app.project.items.addComp(${lit(p.name)}, ${num(p.width)}, ${num(p.height)}, ${num(p.pixelAspect)}, ${num(p.duration)}, ${num(p.frameRate)});
     return __compInfo(c);
-  });`);
+  });`;
 }
 
 export interface CompProps {
@@ -915,22 +1056,26 @@ export interface CompProps {
   height?: number;
 }
 
-export function setCompPropsScript(compId: number, p: CompProps): string {
+export function setCompPropsScript(compId: AeRef, p: CompProps): string {
+  return wrap(setCompPropsBody(compId, p));
+}
+
+export function setCompPropsBody(compId: AeRef, p: CompProps): string {
   const lines =
     (p.name !== undefined ? `    c.name = ${lit(p.name)};\n` : "") +
     (p.frameRate !== undefined ? `    c.frameRate = ${num(p.frameRate)};\n` : "") +
     (p.width !== undefined ? `    c.width = ${num(p.width)};\n` : "") +
     (p.height !== undefined ? `    c.height = ${num(p.height)};\n` : "") +
     (p.duration !== undefined ? `    c.duration = ${num(p.duration)}; __trimLayers(c, ${num(p.duration)});\n` : "");
-  return wrap(`
-  var c = __comp(${num(compId)});
+  return `
+  var c = __comp(${ref(compId)});
   return __undo("Set comp properties", function () {
 ${lines}    return __compInfo(c);
-  });`);
+  });`;
 }
 
 export interface AddLayerParams {
-  compId: number;
+  compId: AeRef;
   kind: "footage" | "solid" | "text" | "null" | "adjustment";
   itemId?: number;
   color?: string;
@@ -945,6 +1090,10 @@ export interface AddLayerParams {
 export type TextAnchor = "center" | "origin";
 
 export function addLayerScript(p: AddLayerParams): string {
+  return wrap(addLayerBody(p));
+}
+
+export function addLayerBody(p: AddLayerParams): string {
   const color = p.color ? rgb(p.color) : "[1, 1, 1]";
   // Footage: look the item up before the undo group opens, so a bad id changes nothing. itemByID
   // throws for an unknown id (verified live on 26.3) and is never called with null.
@@ -963,8 +1112,8 @@ export function addLayerScript(p: AddLayerParams): string {
       : `
   var item = null, itemId = ${optNum(p.itemId)};
   if (itemId === null) { throw new Error("kind 'footage' needs itemId — ${pass}"); }${lookup}`;
-  return wrap(`
-  var c = __comp(${num(p.compId)});${footage}
+  return `
+  var c = __comp(${ref(p.compId)});${footage}
   return __undo("Add layer", function () {
     var kind = ${lit(p.kind)}, l;
     if (kind === "footage") {
@@ -981,11 +1130,11 @@ export function addLayerScript(p: AddLayerParams): string {
     if (name !== null) { l.name = name; }
     if (kind === "text") { ${p.anchor === "origin" ? "__originAnchor(l);" : "__centerAnchor(l);"} }
     return __layerInfo(l);
-  });`);
+  });`;
 }
 
 export interface AddShapeParams {
-  compId: number;
+  compId: AeRef;
   kind: "rectangle" | "ellipse" | "star" | "polygon";
   width?: number;
   height?: number;
@@ -1007,6 +1156,10 @@ export interface AddShapeParams {
  * shape, then Fill, then Stroke (stroke last so it draws on top). Verified live.
  */
 export function addShapeScript(p: AddShapeParams): string {
+  return wrap(addShapeBody(p));
+}
+
+export function addShapeBody(p: AddShapeParams): string {
   const w = p.width ?? 200;
   const h = p.height ?? 200;
   const points = p.points ?? 5;
@@ -1034,8 +1187,8 @@ export function addShapeScript(p: AddShapeParams): string {
     shape.property("ADBE Vector Star Outer Radius").setValue(${num(outer)});
     ${p.kind === "star" ? `shape.property("ADBE Vector Star Inner Radius").setValue(${num(inner)});` : ""}`;
   }
-  return wrap(`
-  var c = __comp(${num(p.compId)});
+  return `
+  var c = __comp(${ref(p.compId)});
   return __undo("Add shape", function () {
     var l = c.layers.addShape();
     var name = ${opt(p.name)}; if (name !== null) { l.name = name; }
@@ -1047,12 +1200,12 @@ export function addShapeScript(p: AddShapeParams): string {
     ${strokeWidth > 0 ? `var st = gc.addProperty("ADBE Vector Graphic - Stroke"); st.property("ADBE Vector Stroke Color").setValue(${rgb(strokeColor)}); st.property("ADBE Vector Stroke Width").setValue(${num(strokeWidth)});` : ""}
     l.property("ADBE Transform Group").property("ADBE Position").setValue(${pos});
     return __layerInfo(l);
-  });`);
+  });`;
 }
 
 export interface AddMaskParams {
-  compId: number;
-  layerIndex: number;
+  compId: AeRef;
+  layerIndex: AeRef;
   kind: "rectangle" | "ellipse";
   left?: number;
   top?: number;
@@ -1072,6 +1225,10 @@ export interface AddMaskParams {
  * Verified live on a solid.
  */
 export function addMaskScript(p: AddMaskParams): string {
+  return wrap(addMaskBody(p));
+}
+
+export function addMaskBody(p: AddMaskParams): string {
   const mode = { add: "ADD", subtract: "SUBTRACT", intersect: "INTERSECT", lighten: "LIGHTEN", darken: "DARKEN", difference: "DIFFERENCE", none: "NONE" }[p.mode ?? "add"];
   const L = p.left === undefined ? "0" : num(p.left);
   const T = p.top === undefined ? "0" : num(p.top);
@@ -1085,8 +1242,8 @@ export function addMaskScript(p: AddMaskParams): string {
          s.inTangents  = [[rx * k, 0], [0, -ry * k], [-rx * k, 0], [0, ry * k]];
          s.outTangents = [[-rx * k, 0], [0, ry * k], [rx * k, 0], [0, -ry * k]];
          s.closed = true;`;
-  return wrap(`
-  var c = __comp(${num(p.compId)}); var l = __layer(c, ${num(p.layerIndex)});
+  return `
+  var c = __comp(${ref(p.compId)}); var l = __layer(c, ${ref(p.layerIndex)});
   return __undo("Add mask", function () {
     var parade = l.property("ADBE Mask Parade");
     if (!parade) { throw new Error("Layer " + __layerLabel(l) + " cannot take masks — cameras and lights have none; address another layer."); }
@@ -1101,7 +1258,7 @@ export function addMaskScript(p: AddMaskParams): string {
     ${p.opacity === undefined ? "" : `mask.property("ADBE Mask Opacity").setValue(${num(p.opacity)});`}
     ${p.expansion ? `mask.property("ADBE Mask Offset").setValue(${num(p.expansion)});` : ""}
     return { mask: mask.name, mode: ${lit(p.mode ?? "add")}, masks: parade.numProperties };
-  });`);
+  });`;
 }
 
 export interface LayerProps {
@@ -1115,15 +1272,29 @@ export interface LayerProps {
   rotation?: number;
   opacity?: number;
   anchorPoint?: number[];
-  parentIndex?: number | null;
+  /** The new parent: its index, or (AE-03) its exact name; null unparents. */
+  parentIndex?: AeRef | null;
 }
 
-export function setLayerPropsScript(compId: number, layerIndex: number, p: LayerProps): string {
+/** The self-parent refusal's next step (AE-03, spec 11.2); the host and the server both end with it. */
+const SELF_PARENT_NEXT = "pass a different parentIndex or parentName, or parentIndex null to unparent.";
+
+export function setLayerPropsScript(compId: AeRef, layerIndex: AeRef, p: LayerProps): string {
+  return wrap(setLayerPropsBody(compId, layerIndex, p));
+}
+
+export function setLayerPropsBody(compId: AeRef, layerIndex: AeRef, p: LayerProps): string {
   const arr = (v: number[] | undefined): string => (v === undefined ? "null" : `[${v.map(num).join(", ")}]`);
-  // A numeric parent is resolved before the undo group: an out-of-range index then changes nothing.
-  const parent = typeof p.parentIndex === "number" ? `\n  var parentLayer = __layer(c, ${num(p.parentIndex)}, "Parent");` : "";
-  return wrap(`
-  var c = __comp(${num(compId)}); var l = __layer(c, ${num(layerIndex)});${parent}
+  // A parent is resolved before the undo group: an out-of-range index or a missing name then changes nothing.
+  // With a name on either side, the host checks that the layer is not its own parent; for two indexes the
+  // server already refused that (so an index-only script stays as it was before AE-03).
+  const named = typeof layerIndex === "string" || typeof p.parentIndex === "string";
+  const self = named
+    ? `\n  if (parentLayer.index === l.index) { throw new Error("Layer " + __layerLabel(l) + " cannot be its own parent — ${SELF_PARENT_NEXT}"); }`
+    : "";
+  const parent = p.parentIndex !== undefined && p.parentIndex !== null ? `\n  var parentLayer = __layer(c, ${ref(p.parentIndex)}, "Parent");${self}` : "";
+  return `
+  var c = __comp(${ref(compId)}); var l = __layer(c, ${ref(layerIndex)});${parent}
   return __undo("Set layer properties", function () {
     var v;
     v = ${opt(p.name)}; if (v !== null) { l.name = v; }
@@ -1139,40 +1310,52 @@ export function setLayerPropsScript(compId: number, layerIndex: number, p: Layer
     v = ${arr(p.anchorPoint)}; if (v !== null) { t.property("ADBE Anchor Point").setValue(v); }
     ${p.parentIndex === undefined ? "" : p.parentIndex === null ? "l.parent = null;" : "l.parent = parentLayer;"}
     return __layerInfo(l);
-  });`);
+  });`;
 }
 
-export function duplicateLayerScript(compId: number, layerIndex: number, name: string | undefined): string {
-  return wrap(`
-  var c = __comp(${num(compId)}); var l = __layer(c, ${num(layerIndex)});
+export function duplicateLayerScript(compId: AeRef, layerIndex: AeRef, name: string | undefined): string {
+  return wrap(duplicateLayerBody(compId, layerIndex, name));
+}
+
+export function duplicateLayerBody(compId: AeRef, layerIndex: AeRef, name: string | undefined): string {
+  return `
+  var c = __comp(${ref(compId)}); var l = __layer(c, ${ref(layerIndex)});
   return __undo("Duplicate layer", function () {
     var d = l.duplicate();
     var name = ${opt(name)}; if (name !== null) { d.name = name; }
     return __layerInfo(d);
-  });`);
+  });`;
 }
 
-export function deleteLayerScript(compId: number, layerIndex: number): string {
-  return wrap(`
-  var c = __comp(${num(compId)}); var l = __layer(c, ${num(layerIndex)});
-  return __undo("Delete layer", function () { var name = l.name; l.remove(); return { deleted: name }; });`);
+export function deleteLayerScript(compId: AeRef, layerIndex: AeRef): string {
+  return wrap(deleteLayerBody(compId, layerIndex));
+}
+
+export function deleteLayerBody(compId: AeRef, layerIndex: AeRef): string {
+  return `
+  var c = __comp(${ref(compId)}); var l = __layer(c, ${ref(layerIndex)});
+  return __undo("Delete layer", function () { var name = l.name; l.remove(); return { deleted: name }; });`;
 }
 
 export interface KeyframeParams {
-  compId: number;
-  layerIndex: number;
+  compId: AeRef;
+  layerIndex: AeRef;
   property: string;
   propertyPath?: string[];
   keys: { time: number; value: number | number[]; easy?: boolean }[];
 }
 
 export function setKeyframesScript(p: KeyframeParams): string {
+  return wrap(setKeyframesBody(p));
+}
+
+export function setKeyframesBody(p: KeyframeParams): string {
   const path = p.propertyPath ? `[${p.propertyPath.map(lit).join(", ")}]` : "null";
   const keys = p.keys
     .map((k) => `{ t: ${num(k.time)}, v: ${Array.isArray(k.value) ? `[${k.value.map(num).join(", ")}]` : num(k.value)}, e: ${k.easy ? "true" : "false"} }`)
     .join(", ");
-  return wrap(`
-  var c = __comp(${num(p.compId)}); var l = __layer(c, ${num(p.layerIndex)});
+  return `
+  var c = __comp(${ref(p.compId)}); var l = __layer(c, ${ref(p.layerIndex)});
   var prop = __prop(l, ${lit(p.property)}, ${path});
   var keys = [${keys}];
   return __undo("Set keyframes", function () {
@@ -1188,35 +1371,43 @@ export function setKeyframesScript(p: KeyframeParams): string {
       }
     }
     return { property: prop.name, numKeys: prop.numKeys };
-  });`);
+  });`;
 }
 
-export function getKeyframesScript(compId: number, layerIndex: number, property: string, propertyPath: string[] | undefined): string {
+export function getKeyframesScript(compId: AeRef, layerIndex: AeRef, property: string, propertyPath: string[] | undefined): string {
   const path = propertyPath ? `[${propertyPath.map(lit).join(", ")}]` : "null";
   return wrap(`
-  var c = __comp(${num(compId)}); var l = __layer(c, ${num(layerIndex)});
+  var c = __comp(${ref(compId)}); var l = __layer(c, ${ref(layerIndex)});
   var prop = __prop(l, ${lit(property)}, ${path});
   var keys = [];
   for (var i = 1; i <= prop.numKeys; i++) { keys.push({ time: prop.keyTime(i), value: prop.keyValue(i) }); }
   return { property: prop.name, value: prop.value, numKeys: prop.numKeys, keys: keys, expression: prop.expressionEnabled ? prop.expression : null };`);
 }
 
-export function removeKeyframesScript(compId: number, layerIndex: number, property: string, propertyPath: string[] | undefined): string {
+export function removeKeyframesScript(compId: AeRef, layerIndex: AeRef, property: string, propertyPath: string[] | undefined): string {
+  return wrap(removeKeyframesBody(compId, layerIndex, property, propertyPath));
+}
+
+export function removeKeyframesBody(compId: AeRef, layerIndex: AeRef, property: string, propertyPath: string[] | undefined): string {
   const path = propertyPath ? `[${propertyPath.map(lit).join(", ")}]` : "null";
-  return wrap(`
-  var c = __comp(${num(compId)}); var l = __layer(c, ${num(layerIndex)});
+  return `
+  var c = __comp(${ref(compId)}); var l = __layer(c, ${ref(layerIndex)});
   var prop = __prop(l, ${lit(property)}, ${path});
   return __undo("Remove keyframes", function () {
     var n = prop.numKeys;
     while (prop.numKeys > 0) { prop.removeKey(1); }
     return { property: prop.name, removed: n };
-  });`);
+  });`;
 }
 
-export function setExpressionScript(compId: number, layerIndex: number, property: string, propertyPath: string[] | undefined, expression: string | null): string {
+export function setExpressionScript(compId: AeRef, layerIndex: AeRef, property: string, propertyPath: string[] | undefined, expression: string | null): string {
+  return wrap(setExpressionBody(compId, layerIndex, property, propertyPath, expression));
+}
+
+export function setExpressionBody(compId: AeRef, layerIndex: AeRef, property: string, propertyPath: string[] | undefined, expression: string | null): string {
   const path = propertyPath ? `[${propertyPath.map(lit).join(", ")}]` : "null";
-  return wrap(`
-  var c = __comp(${num(compId)}); var l = __layer(c, ${num(layerIndex)});
+  return `
+  var c = __comp(${ref(compId)}); var l = __layer(c, ${ref(layerIndex)});
   var prop = __prop(l, ${lit(property)}, ${path});
   return __undo("Set expression", function () {
     var e = ${opt(expression)};
@@ -1231,7 +1422,7 @@ export function setExpressionScript(compId: number, layerIndex: number, property
       throw new Error("Expression error: " + err + " — fix the expression; the property keeps its previous one.");
     }
     return { property: prop.name, expression: prop.expression, enabled: prop.expressionEnabled };
-  });`);
+  });`;
 }
 
 /** The marker both the ES3 throw in applyEffectScript and the server's "did you mean" check use. */
@@ -1251,9 +1442,13 @@ const effectParade = (indent: string): string =>
   `${indent}var fx = l.property("ADBE Effect Parade");\n` +
   `${indent}if (!fx) { throw new Error("Layer " + __layerLabel(l) + " cannot have effects — address a footage, solid, text, shape, null, adjustment or precomp layer."); }`;
 
-export function applyEffectScript(compId: number, layerIndex: number, matchName: string, name?: string): string {
-  return wrap(`
-  var c = __comp(${num(compId)}); var l = __layer(c, ${num(layerIndex)});
+export function applyEffectScript(compId: AeRef, layerIndex: AeRef, matchName: string, name?: string): string {
+  return wrap(applyEffectBody(compId, layerIndex, matchName, name));
+}
+
+export function applyEffectBody(compId: AeRef, layerIndex: AeRef, matchName: string, name?: string): string {
+  return `
+  var c = __comp(${ref(compId)}); var l = __layer(c, ${ref(layerIndex)});
   return __undo("Apply effect", function () {
 ${effectParade("    ")}
     if (!fx.canAddProperty(${lit(matchName)})) { throw new Error(${lit(EFFECT_MISS)} + __q(${lit(matchName)}) + " (layer " + __layerLabel(l) + ") — use an installed effect's match name, e.g. 'ADBE Gaussian Blur 2', or its display name."); }
@@ -1262,16 +1457,20 @@ ${name !== undefined ? `    e.name = ${lit(name)};\n` : ""}
     var params = [];
     for (var i = 1; i <= e.numProperties; i++) { var pp = e.property(i); params.push({ index: i, name: pp.name, matchName: pp.matchName }); }
     return { index: e.propertyIndex, name: e.name, matchName: e.matchName, params: params };
-  });`);
+  });`;
 }
 
-export function setEffectParamScript(compId: number, layerIndex: number, effect: number | string, param: string, value: number | number[] | string): string {
+export function setEffectParamScript(compId: AeRef, layerIndex: AeRef, effect: number | string, param: string, value: number | number[] | string): string {
+  return wrap(setEffectParamBody(compId, layerIndex, effect, param, value));
+}
+
+export function setEffectParamBody(compId: AeRef, layerIndex: AeRef, effect: number | string, param: string, value: number | number[] | string): string {
   const v = typeof value === "string" ? lit(value) : Array.isArray(value) ? `[${value.map(num).join(", ")}]` : num(value);
   const eff = typeof effect === "number" ? num(effect) : lit(effect);
   // The parameter list answers in the caller's vocabulary (the same rule as __byName).
   const byName = !param.startsWith("ADBE ");
-  return wrap(`
-  var c = __comp(${num(compId)}); var l = __layer(c, ${num(layerIndex)});
+  return `
+  var c = __comp(${ref(compId)}); var l = __layer(c, ${ref(layerIndex)});
 ${effectParade("  ")}
   if (!(fx.numProperties > 0)) { throw new Error("Layer " + __layerLabel(l) + " has no effects — apply one first (ae_apply_effect)."); }
   var e = null;
@@ -1280,7 +1479,7 @@ ${effectParade("  ")}
   var pp = null;
   try { pp = e.property(${lit(param)}); } catch (x) { pp = null; }
   if (!pp) { var pk = __kids(e, 20, ${byName ? "true" : "false"}); throw new Error(__miss("Parameter not found on effect " + __q(e.name) + ": " + __q(${lit(param)}) + "; parameters: ", pk, e, ${lit(param)}, null)); }
-  return __undo("Set effect parameter", function () { pp.setValue(${v}); return { effect: e.name, param: pp.name, value: pp.value }; });`);
+  return __undo("Set effect parameter", function () { pp.setValue(${v}); return { effect: e.name, param: pp.name, value: pp.value }; });`;
 }
 
 // ---- installed effects and effect "did you mean" ------------------------------
@@ -1528,11 +1727,11 @@ const LAYER_STYLE_MENU: Record<LayerStyleName, { label: string; id: number }> = 
   stroke: { label: "Stroke", id: 9008 },
 };
 
-export function addLayerStyleScript(compId: number, layerIndex: number, style: LayerStyleName): string {
+export function addLayerStyleScript(compId: AeRef, layerIndex: AeRef, style: LayerStyleName): string {
   const key = LAYER_STYLE_KEYS[style];
   const menu = LAYER_STYLE_MENU[style];
   return wrap(`
-  var c = __comp(${num(compId)}); var l = __layer(c, ${num(layerIndex)});
+  var c = __comp(${ref(compId)}); var l = __layer(c, ${ref(layerIndex)});
   var g = __styles(l);
   var s = __styleGroup(g, ${lit(key)});
   if (s) {
@@ -1567,9 +1766,9 @@ export function addLayerStyleScript(compId: number, layerIndex: number, style: L
   });`);
 }
 
-export function getLayerStylesScript(compId: number, layerIndex: number): string {
+export function getLayerStylesScript(compId: AeRef, layerIndex: AeRef): string {
   return wrap(`
-  var c = __comp(${num(compId)}); var l = __layer(c, ${num(layerIndex)});
+  var c = __comp(${ref(compId)}); var l = __layer(c, ${ref(layerIndex)});
   var g = __styles(l);
   var out = { enabled: g.enabled, styles: [] };
   for (var i = 1; i <= g.numProperties; i++) {
@@ -1581,15 +1780,19 @@ export function getLayerStylesScript(compId: number, layerIndex: number): string
   return out;`);
 }
 
-export function setLayerStyleParamScript(compId: number, layerIndex: number, style: LayerStyleName, param: string, value: number | number[] | string): string {
+export function setLayerStyleParamScript(compId: AeRef, layerIndex: AeRef, style: LayerStyleName, param: string, value: number | number[] | string): string {
+  return wrap(setLayerStyleParamBody(compId, layerIndex, style, param, value));
+}
+
+export function setLayerStyleParamBody(compId: AeRef, layerIndex: AeRef, style: LayerStyleName, param: string, value: number | number[] | string): string {
   const key = LAYER_STYLE_KEYS[style];
   // Hex colors become AE's [r, g, b, a] 0–1 arrays; other strings pass through.
   const hexMatch = typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value);
   const v = hexMatch ? `${rgb(value as string).slice(0, -1)}, 1]` : typeof value === "string" ? lit(value) : Array.isArray(value) ? `[${value.map(num).join(", ")}]` : num(value);
   // The parameter list answers in the caller's vocabulary: match names ("dropShadow/blur") hold a slash.
   const byName = !param.includes("/");
-  return wrap(`
-  var c = __comp(${num(compId)}); var l = __layer(c, ${num(layerIndex)});
+  return `
+  var c = __comp(${ref(compId)}); var l = __layer(c, ${ref(layerIndex)});
   var g = __styles(l);
   var s = __styleGroup(g, ${lit(key)});
   if (!s) { throw new Error("The " + ${lit(style)} + " style is not on layer " + __layerLabel(l) + " — add it first with ae_add_layer_style."); }
@@ -1604,20 +1807,24 @@ export function setLayerStyleParamScript(compId: number, layerIndex: number, sty
     var pk = __kids(s, 20, ${byName ? "true" : "false"});
     throw new Error(__miss("Parameter not found on the " + ${lit(style)} + " style of layer " + __layerLabel(l) + ": " + __q(want) + "; parameters: ", pk, s, want, pk.dup ? " — a repeated name reaches only the first of them; pass the parameter's match name instead (ae_get_layer_styles lists them)." : " — use one of these names."));
   }
-  return __undo("Set layer style parameter", function () { q.setValue(${v}); return { style: ${lit(style)}, param: q.name, matchName: q.matchName, value: q.value }; });`);
+  return __undo("Set layer style parameter", function () { q.setValue(${v}); return { style: ${lit(style)}, param: q.name, matchName: q.matchName, value: q.value }; });`;
 }
 
-export function removeLayerStyleScript(compId: number, layerIndex: number, style: LayerStyleName): string {
+export function removeLayerStyleScript(compId: AeRef, layerIndex: AeRef, style: LayerStyleName): string {
+  return wrap(removeLayerStyleBody(compId, layerIndex, style));
+}
+
+export function removeLayerStyleBody(compId: AeRef, layerIndex: AeRef, style: LayerStyleName): string {
   const key = LAYER_STYLE_KEYS[style];
   // After Effects keeps a permanent slot per style and rejects .remove() on it,
   // so "remove" turns the style off (enabled = false) — the visible effect goes
   // away, matching what the eyeball toggle does in the UI.
-  return wrap(`
-  var c = __comp(${num(compId)}); var l = __layer(c, ${num(layerIndex)});
+  return `
+  var c = __comp(${ref(compId)}); var l = __layer(c, ${ref(layerIndex)});
   var g = __styles(l);
   var s = __styleGroup(g, ${lit(key)});
   if (!s) { throw new Error("The " + ${lit(style)} + " style is not on layer " + __layerLabel(l) + " — nothing to turn off; ae_get_layer_styles lists the styles on this layer."); }
-  return __undo("Turn off layer style", function () { s.enabled = false; return { style: ${lit(style)}, enabled: false }; });`);
+  return __undo("Turn off layer style", function () { s.enabled = false; return { style: ${lit(style)}, enabled: false }; });`;
 }
 
 // ---- Essential Graphics / Motion Graphics templates -------------------------
@@ -1629,10 +1836,14 @@ export function removeLayerStyleScript(compId: number, layerIndex: number, style
  * property lives in; the control is named after the property (AE 26.3 has no
  * script to rename it). Source Text lives at ADBE Text Properties > Text Document.
  */
-export function addToEssentialGraphicsScript(compId: number, layerIndex: number, property: string, propertyPath: string[] | undefined): string {
+export function addToEssentialGraphicsScript(compId: AeRef, layerIndex: AeRef, property: string, propertyPath: string[] | undefined): string {
+  return wrap(addToEssentialGraphicsBody(compId, layerIndex, property, propertyPath));
+}
+
+export function addToEssentialGraphicsBody(compId: AeRef, layerIndex: AeRef, property: string, propertyPath: string[] | undefined): string {
   const path = propertyPath ? `[${propertyPath.map(lit).join(", ")}]` : "null";
-  return wrap(`
-  var c = __comp(${num(compId)}); var l = __layer(c, ${num(layerIndex)});
+  return `
+  var c = __comp(${ref(compId)}); var l = __layer(c, ${ref(layerIndex)});
   var prop = __prop(l, ${lit(property)}, ${path});
   if (!prop.canAddToMotionGraphicsTemplate(c)) {
     throw new Error("Property " + __q(prop.name) + " of layer " + __layerLabel(l) + " cannot be added to Essential Graphics: its type is not supported, or the panel already has a control with that name — pass another property (a transform channel, sourceText or an effect control), or rename that control in the Essential Graphics panel, then retry.");
@@ -1644,7 +1855,7 @@ export function addToEssentialGraphicsScript(compId: number, layerIndex: number,
     var names = [];
     for (var i = 1; i <= count; i++) { names.push(c.getMotionGraphicsTemplateControllerName(i)); }
     return { added: prop.name, controllerCount: count, controllers: names };
-  });`);
+  });`;
 }
 
 /**
@@ -1656,9 +1867,9 @@ export function addToEssentialGraphicsScript(compId: number, layerIndex: number,
  * Without overwrite, an existing file is refused before anything is saved or exported, so the
  * file check after the export only ever sees a folder it could not write or an export that failed.
  */
-export function exportMogrtScript(compId: number, folder: string, name: string, overwrite: boolean): string {
+export function exportMogrtScript(compId: AeRef, folder: string, name: string, overwrite: boolean): string {
   return wrap(`
-  var c = __comp(${num(compId)});
+  var c = __comp(${ref(compId)});
   if (!app.project.file) { throw new Error("The project has never been saved, and exporting a Motion Graphics template needs a saved project — save it first with ae_save_project (pass a path ending in .aep), then retry."); }
   var outPath = ${lit(folder)} + "/" + ${lit(name)} + ".mogrt";
 ${overwrite ? "" : `  if (new File(outPath).exists) { throw new Error("A file already exists at " + outPath + " — pass overwrite: true (the default) or another outputPath."); }\n`}  var fo = new Folder(${lit(folder)});
@@ -1685,8 +1896,8 @@ ${overwrite ? "" : `  if (new File(outPath).exists) { throw new Error("A file al
 }
 
 export interface SetTextParams {
-  compId: number;
-  layerIndex: number;
+  compId: AeRef;
+  layerIndex: AeRef;
   text?: string;
   fontSize?: number;
   font?: string;
@@ -1696,8 +1907,12 @@ export interface SetTextParams {
 }
 
 export function setTextScript(p: SetTextParams): string {
-  return wrap(`
-  var c = __comp(${num(p.compId)}); var l = __layer(c, ${num(p.layerIndex)});
+  return wrap(setTextBody(p));
+}
+
+export function setTextBody(p: SetTextParams): string {
+  return `
+  var c = __comp(${ref(p.compId)}); var l = __layer(c, ${ref(p.layerIndex)});
   if (l.matchName !== "ADBE Text Layer") { throw new Error("Layer " + __layerLabel(l) + " is not a text layer — address a text layer (ae_get_comp lists each layer's kind)."); }
   return __undo("Set text", function () {
     var st = l.property("ADBE Text Properties").property("ADBE Text Document");
@@ -1716,25 +1931,35 @@ export function setTextScript(p: SetTextParams): string {
     // anchor "origin" leaves it at [0, 0]: position is then the left baseline.
     ${p.anchor === "origin" ? "__originAnchor(l);" : "__centerAnchor(l);"}
     var info = __layerInfo(l); info.text = st.value.text; return info;
-  });`);
+  });`;
 }
 
-export function addMarkerScript(compId: number, time: number, comment: string, layerIndex: number | undefined, duration: number | undefined): string {
-  return wrap(`
-  var c = __comp(${num(compId)});
+export function addMarkerScript(compId: AeRef, time: number, comment: string, layerIndex: AeRef | undefined, duration: number | undefined): string {
+  return wrap(addMarkerBody(compId, time, comment, layerIndex, duration));
+}
+
+/**
+ * AE-03: the layer is looked up before the undo group opens (a bad index or name changes nothing), and a layer
+ * marker's result adds layerName; `on` stays "layer " + its index, as before.
+ */
+export function addMarkerBody(compId: AeRef, time: number, comment: string, layerIndex: AeRef | undefined, duration: number | undefined): string {
+  return `
+  var c = __comp(${ref(compId)});
+  var tl = ${layerIndex === undefined ? "null" : `__layer(c, ${ref(layerIndex)})`};
   return __undo("Add marker", function () {
     var m = new MarkerValue(${lit(comment)});
     var dur = ${optNum(duration)}; if (dur !== null) { m.duration = dur; }
-    var li = ${optNum(layerIndex)};
-    var target = li === null ? c.markerProperty : __layer(c, li).property("ADBE Marker");
+    var target = tl === null ? c.markerProperty : tl.property("ADBE Marker");
     target.setValueAtTime(${num(time)}, m);
-    return { time: ${num(time)}, comment: ${lit(comment)}, on: li === null ? "comp" : "layer " + li };
-  });`);
+    var r = { time: ${num(time)}, comment: ${lit(comment)}, on: tl === null ? "comp" : "layer " + tl.index };
+    if (tl !== null) { r.layerName = tl.name; }
+    return r;
+  });`;
 }
 
-export function renderFrameScript(compId: number, time: number, path: string, maxDimension: number): string {
+export function renderFrameScript(compId: AeRef, time: number, path: string, maxDimension: number): string {
   return wrap(`
-  var c = __comp(${num(compId)});
+  var c = __comp(${ref(compId)});
   var longest = Math.max(c.width, c.height);
   var s = longest > ${num(maxDimension)} ? ${num(maxDimension)} / longest : 1;
   var w = Math.max(4, Math.round(c.width * s)), h = Math.max(4, Math.round(c.height * s));
@@ -1752,7 +1977,11 @@ export function renderFrameScript(compId: number, time: number, path: string, ma
 
 /** Add a comp (by name) to the render queue with an output path and optional output-module template. */
 export function queueRenderScript(compName: string, outputPath: string, templateName: string | undefined): string {
-  return wrap(`
+  return wrap(queueRenderBody(compName, outputPath, templateName));
+}
+
+export function queueRenderBody(compName: string, outputPath: string, templateName: string | undefined): string {
+  return `
   var target = null;
   for (var i = 1; i <= app.project.numItems; i++) { var item = app.project.item(i); if (item instanceof CompItem && item.name === ${lit(compName)}) { target = item; break; } }
   if (target === null) {
@@ -1762,6 +1991,8 @@ export function queueRenderScript(compName: string, outputPath: string, template
     if (n === 0) { throw new Error("No composition named " + __q(${lit(compName)}) + "; the project has no compositions — create one with ae_create_comp, then queue it."); }
     throw new Error("No composition named " + __q(${lit(compName)}) + "; compositions: " + __list(names, n, __BUDGET) + " — pass one of these names exactly (ae_list_compositions lists them all).");
   }
+  // AE-03: a name more than one composition has fails with the matches, instead of queueing the first.
+  target = __compNamed(${lit(compName)}, true);
   return __undo("Queue render", function () {
     var rqItem = app.project.renderQueue.items.add(target);
     var output = rqItem.outputModule(1);
@@ -1769,7 +2000,187 @@ export function queueRenderScript(compName: string, outputPath: string, template
     if (template !== null) { output.applyTemplate(template); }
     output.file = new File(${lit(outputPath)});
     return { queueIndex: app.project.renderQueue.numItems, compName: target.name, outputPath: output.file.fsName, status: "queued" };
-  });`);
+  });`;
+}
+
+// ---- AE-03: ae_find_layers, the unique-name check, ae_undo / ae_redo, ae_batch ----------------
+
+/** The kinds __kind reports, which ae_find_layers filters on (camera and light added to the FR's list). */
+export const AE_LAYER_KINDS = ["text", "shape", "solid", "null", "precomp", "footage", "adjustment", "camera", "light"] as const;
+export type AeLayerKind = (typeof AE_LAYER_KINDS)[number];
+
+export interface FindLayersFilter {
+  /** Substring of the layer name, case-insensitive. */
+  nameContains?: string;
+  kind?: AeLayerKind;
+  /** Substring of a text layer's source text, case-insensitive; matches text layers only. */
+  textContains?: string;
+  enabled?: boolean;
+}
+
+/** ae_find_layers: [{ index, name, kind, enabled }] in timeline order, every filter ANDed. Read-only. */
+export function findLayersScript(comp: AeRef, f: FindLayersFilter): string {
+  return wrap(`
+  var c = __comp(${ref(comp)});
+  var nq = ${opt(f.nameContains)}, kq = ${opt(f.kind)}, tq = ${opt(f.textContains)}, eq = ${f.enabled === undefined ? "null" : String(f.enabled)};
+  var out = [], i, l, k, n, t;
+  for (i = 1; i <= c.numLayers; i++) {
+    l = c.layer(i);
+    k = __kind(l);
+    n = String(l.name);
+    if (kq !== null && k !== kq) { continue; }
+    if (eq !== null && (l.enabled === true) !== eq) { continue; }
+    if (nq !== null && n.toLowerCase().indexOf(nq.toLowerCase()) < 0) { continue; }
+    if (tq !== null) {
+      t = null;
+      if (k === "text") { try { t = String(l.property("ADBE Text Properties").property("ADBE Text Document").value.text); } catch (e) { t = null; } }
+      if (t === null || t.toLowerCase().indexOf(tq.toLowerCase()) < 0) { continue; }
+    }
+    out.push({ index: i, name: n, kind: k, enabled: l.enabled === true });
+  }
+  return out;`);
+}
+
+/**
+ * The one composition with this exact name, or __compNamed's error (none, or several). Read-only. ae_render_comp runs
+ * it before it saves: aerender's -comp takes the first match, so a repeated name fails here instead (spec 11.4).
+ */
+export function compByNameScript(name: string): string {
+  return wrap(`
+  var c = __compNamed(${lit(name)}, true);
+  return { id: c.id, name: c.name };`);
+}
+
+/**
+ * Edit > Undo and Edit > Redo as app.executeCommand ids, read live on After Effects 26.5x89 (Windows 11, English UI,
+ * 2026-10-13; spike 06, docs/quirks/ae-undo-redo.md). Fixed ids, never a label lookup: findMenuCommandId("Undo")
+ * returns 2371, which is Edit > Purge > Undo (between Purge 2370 and All Memory 2373) and would clear the history, and
+ * findMenuCommandId("Redo") returns 0. Command ids are expected not to depend on the UI language (not verified: only an
+ * English After Effects was probed, L12).
+ */
+export const AE_UNDO_COMMAND = 16;
+export const AE_REDO_COMMAND = 2035;
+
+/**
+ * ae_undo / ae_redo: run Edit > Undo or Redo once. No undo group (one around an Undo is undefined). With nothing to undo
+ * After Effects does nothing and shows no dialog (live L3); the script cannot read which step it undid.
+ */
+export function undoRedoScript(which: "undo" | "redo"): string {
+  const id = which === "undo" ? AE_UNDO_COMMAND : AE_REDO_COMMAND;
+  return wrap(`
+  app.executeCommand(${num(id)});
+  return { command: ${lit(which === "undo" ? "Undo" : "Redo")}, menuId: ${num(id)} };`);
+}
+
+/** Where one ae_batch operation's body sits in the batch script: script lines `first` (its body line 1) to `last`. */
+export interface AeBatchSegment {
+  readonly tool: string;
+  readonly first: number;
+  readonly last: number;
+  /** The body as sent (after asciiSource), for the excerpt. */
+  readonly body: string;
+}
+
+export interface AeBatch {
+  readonly script: string;
+  readonly segments: readonly AeBatchSegment[];
+}
+
+/** The empty folder an atomic batch adds first inside its group (and removes inside it on success). */
+export const AE_BATCH_SENTINEL = "__acm_batch";
+
+/**
+ * ae_batch's script: the prelude, one undo group around every operation's body (each in its own function, so its
+ * `var`s stay its own), and the suffix. Every frame line is its own script line, so the segment map is exact.
+ *
+ * - The frame owns the one group: __undo is shimmed to just run its function, so no operation opens a nested group.
+ *   __comp is shimmed to record each composition an operation looks up (for nameToIndex); __comp0 is the original,
+ *   so a miss still throws inside __comp or __compNamed.
+ * - __at is the running operation (1-based), 0 outside the operations: it names the failing one, the line does not.
+ * - Every statement after app.beginUndoGroup runs inside the try, and app.endUndoGroup() runs exactly once.
+ * - atomic: an empty folder (AE_BATCH_SENTINEL) is added first inside the group, so the group is never empty (an empty
+ *   group makes no undo entry, and Edit > Undo would then revert the operator's previous step) and its absence proves
+ *   a rollback took. On success it is removed inside the group: one entry. On a failure the group is closed, Edit >
+ *   Undo (AE_UNDO_COMMAND) runs in the same eval (it takes effect synchronously, live 2026-10-13), and itemByID of the
+ *   folder decides rolledBack: it throws for an item that is gone. The folder is never touched after the group
+ *   closes: that would be a new undo entry, and Ctrl-Z would then restore the folder instead of removing the batch.
+ * - not atomic: no folder; what ran stays as one entry, and the current names come back with the failure. entered says
+ *   whether any operation reached its change step (the shimmed __undo): false means nothing changed, so the group was
+ *   empty and left no undo entry (a lookup runs before any change, spec 3.3).
+ * Returns { ok: true, results, names } or { ok: false, at, message, line, results, rolledBack | names + entered }: a failure is a
+ * value, not a throw, because the panel keeps only a thrown error's message and line, and the cursor would be lost.
+ */
+export function buildAeBatch(ops: readonly { tool: string; body: string }[], atomic: boolean, undoGroupName: string): AeBatch {
+  let script = AE_PRELUDE;
+  let line = lineCount(script); // the script line the next text starts on
+  const add = (text: string): void => {
+    const t = asciiSource(text);
+    script += t;
+    line += lineCount(t) - 1;
+  };
+  const segments: AeBatchSegment[] = [];
+  add("  var __at = 0, __res = [], __err = null, __seen = {}, __comp0 = __comp, __sid = null, __names0 = null, __back = null, __msg = \"\", __line = null, __chg = false;\n");
+  add("  __undo = function (n, f) { __chg = true; return f(); };\n");
+  add("  __comp = function (r) { var c = __comp0(r); __seen[\"c\" + c.id] = c; return c; };\n");
+  add(`  app.beginUndoGroup(${lit(undoGroupName)});\n`);
+  add("  try {\n");
+  if (atomic) add(`    __sid = app.project.items.addFolder(${lit(AE_BATCH_SENTINEL)}).id;\n`);
+  ops.forEach((op, i) => {
+    add(`    __at = ${i + 1}; __res[__res.length] = (function () {`);
+    const body = asciiSource(op.body);
+    const lead = body.startsWith("\n") ? 1 : 0;
+    segments.push({ tool: op.tool, first: line + lead, last: line + lineCount(body) - 1, body });
+    add(op.body);
+    add("\n    })();\n");
+  });
+  add("    __at = 0;\n");
+  add("    __names0 = __names(__seen);\n");
+  if (atomic) add("    app.project.itemByID(__sid).remove();\n");
+  add("  } catch (e) { __err = e; }\n");
+  add("  app.endUndoGroup();\n");
+  add("  if (__err === null) { return { ok: true, results: __res, names: __names0 }; }\n");
+  add("  try { __msg = String(__err && __err.message ? __err.message : __err); } catch (x) { __msg = \"(the error could not be read)\"; }\n");
+  add("  try { __line = typeof __err.line === \"number\" ? __err.line : null; } catch (x) { __line = null; }\n");
+  if (atomic) {
+    add("  if (__sid === null) { return { ok: false, at: __at, message: __msg, line: __line, results: __res, rolledBack: null }; }\n");
+    add(`  try { app.executeCommand(${num(AE_UNDO_COMMAND)}); } catch (x) {}\n`);
+    add("  __back = false;\n");
+    add("  try { app.project.itemByID(__sid); } catch (x) { __back = true; }\n");
+    add("  return { ok: false, at: __at, message: __msg, line: __line, results: __res, rolledBack: __back };");
+  } else {
+    add("  return { ok: false, at: __at, message: __msg, line: __line, results: __res, names: __names(__seen), entered: __chg };");
+  }
+  script += AE_SUFFIX;
+  return { script, segments };
+}
+
+/** buildAeBatch's script alone (the classify test's builder; NO_UNDO_OK: it opens its own app.beginUndoGroup). */
+export function aeBatchScript(ops: readonly { tool: string; body: string }[], atomic: boolean, undoGroupName: string): string {
+  return buildAeBatch(ops, atomic, undoGroupName).script;
+}
+
+/**
+ * nameToIndex from the plain data __names returns ([{ id, layers: [[index, name], ...] }]): { "<comp id>": { "<layer
+ * name>": index, or [indexes] for a name more than one layer has } }. Built with Map and Object.fromEntries, so a
+ * layer named __proto__, toString or constructor is an ordinary own key. Anything else in the data is skipped.
+ */
+export function aeNameToIndex(names: unknown): Record<string, Record<string, number | number[]>> {
+  const comps = new Map<string, Record<string, number | number[]>>();
+  if (!Array.isArray(names)) return {};
+  for (const c of names) {
+    if (c === null || typeof c !== "object") continue;
+    const { id, layers } = c as { id?: unknown; layers?: unknown };
+    if (typeof id !== "number" || !Array.isArray(layers)) continue;
+    const byName = new Map<string, number | number[]>();
+    for (const pair of layers) {
+      if (!Array.isArray(pair) || typeof pair[0] !== "number" || typeof pair[1] !== "string") continue;
+      const [index, name] = pair as [number, string];
+      const prev = byName.get(name);
+      byName.set(name, prev === undefined ? index : Array.isArray(prev) ? [...prev, index] : [prev, index]);
+    }
+    comps.set(String(id), Object.fromEntries(byName));
+  }
+  return Object.fromEntries(comps);
 }
 
 export const AERENDER_INFO = wrap(`
@@ -1861,6 +2272,9 @@ export interface RenderCompOptions {
  * ae_render_comp tool and the pipelines; throws with an actionable message.
  */
 export async function renderCompHeadless(bridge: AppBridge, o: RenderCompOptions, ctx: { signal?: AbortSignal; log?: (line: string) => void } = {}): Promise<{ outputPath: string; compName: string; log: string }> {
+  // AE-03: aerender's -comp renders the first composition with the name; a missing or repeated name fails here, before
+  // the project is saved or aerender starts (read-only).
+  await evaluateAe(bridge, compByNameScript(o.compName), { timeoutClass: "fast" });
   const info = (await evaluateAe(bridge, saveProjectScript(undefined), { timeoutClass: "slow" })) as { path?: string };
   const meta = (await evaluateAe(bridge, AERENDER_INFO, { timeoutClass: "fast" })) as { projectPath: string | null; appFolder: string; isWindows: boolean };
   if (!info.path || !meta.projectPath) throw new Error("The project has no file — save it first with ae_save_project (pass a path ending in .aep), then retry.");
@@ -2641,8 +3055,32 @@ const RUN_SCRIPT_ALLOW_SWITCH_TEXT =
 
 // ---- registration --------------------------------------------------------------
 
-const compId = z.number().int().describe("Composition id from ae_list_compositions.");
-const layerIndex = z.number().int().min(1).describe("Layer index in the comp (1 = top of the timeline), from ae_get_comp.");
+const compId = z.number().int().optional().describe("Composition id from ae_list_compositions. Give compId or compName, not both.");
+const compName = z
+  .string()
+  .min(1)
+  .optional()
+  .describe(
+    "Exact composition name (case included), as an alternative to compId. Give one of the two. Fails, listing the matches, if more than one composition has this name.",
+  );
+const layerIndex = z
+  .number()
+  .int()
+  .min(1)
+  .optional()
+  .describe(
+    "Layer index (1 = top of the timeline), from ae_get_comp or ae_find_layers. Give layerIndex or layerName, not both. Indexes shift when a layer is added at the top; prefer layerName in multi-step work.",
+  );
+const layerName = z
+  .string()
+  .min(1)
+  .optional()
+  .describe(
+    "Exact layer name (case included), as an alternative to layerIndex. Give one of the two. Fails, listing the matches, if more than one layer has this name. Not the same as name, which renames.",
+  );
+/** The `name` that sets a layer's name (AE-03 adds the pointer to layerName). */
+const newLayerName = (what: string, dflt: string) =>
+  z.string().min(1).optional().describe(`Sets the ${what}'s name. To pick a layer by name, use layerName. Default: ${dflt}.`);
 const hexColor = z.string().regex(/^#[0-9a-fA-F]{6}$/, "hex color like #ff8800").describe("Hex color like #ff8800.");
 const propertyName = z
   .enum(["position", "scale", "rotation", "opacity", "anchorPoint"])
@@ -2653,6 +3091,512 @@ const propertyPath = z
   .optional()
   .describe("Optional explicit property path of match names or display names from the layer, e.g. [\"ADBE Effect Parade\", \"Gaussian Blur\", \"Blurriness\"]. Overrides `property`.");
 const seconds = (what: string) => z.number().finite().nonnegative().describe(`${what}, in seconds.`);
+const styleName = z
+  .enum(["dropShadow", "innerShadow", "outerGlow", "innerGlow", "bevelEmboss", "satin", "colorOverlay", "gradientOverlay", "stroke"])
+  .describe("Layer style name.");
+
+// ---- AE-03: comp and layer references (exactly one of id/index and name, checked before dispatch) ----------
+
+/** The plain-text refusals for a reference pair (spec 3.1). */
+export const AE_REF_TEXTS = {
+  bothComp: "Pass compId or compName, not both — compId picks the composition by id, compName by its exact name; drop one.",
+  noComp: "Pass compId or compName — ae_list_compositions lists both.",
+  bothLayer: "Pass layerIndex or layerName, not both — layerIndex picks the layer by position, layerName by its exact name; drop one.",
+  noLayer: "Pass layerIndex or layerName — ae_find_layers or ae_get_comp lists both.",
+  bothParent: "Pass parentIndex or parentName, not both — drop one (parentIndex null unparents).",
+} as const;
+
+type Refused = { readonly error: string };
+type Prepared = { readonly body: string } | Refused;
+
+/** A tool's comp reference: compId or compName, exactly one. */
+function compRef(a: { compId?: number | undefined; compName?: string | undefined }): { ref: AeRef } | Refused {
+  if (a.compId !== undefined && a.compName !== undefined) return { error: AE_REF_TEXTS.bothComp };
+  if (a.compId !== undefined) return { ref: a.compId };
+  if (a.compName !== undefined) return { ref: a.compName };
+  return { error: AE_REF_TEXTS.noComp };
+}
+
+/** A tool's layer reference: layerIndex or layerName; exactly one, or (optional) at most one. */
+function layerRef(a: { layerIndex?: number | undefined; layerName?: string | undefined }, optional = false): { ref: AeRef | undefined } | Refused {
+  if (a.layerIndex !== undefined && a.layerName !== undefined) return { error: AE_REF_TEXTS.bothLayer };
+  if (a.layerIndex !== undefined) return { ref: a.layerIndex };
+  if (a.layerName !== undefined) return { ref: a.layerName };
+  return optional ? { ref: undefined } : { error: AE_REF_TEXTS.noLayer };
+}
+
+/** compRef and a required layerRef together, the comp checked first. */
+function compAndLayer(
+  a: { compId?: number | undefined; compName?: string | undefined; layerIndex?: number | undefined; layerName?: string | undefined },
+): { comp: AeRef; layer: AeRef } | Refused {
+  const c = compRef(a);
+  if ("error" in c) return c;
+  const l = layerRef(a);
+  if ("error" in l) return l;
+  return { comp: c.ref, layer: l.ref! };
+}
+
+/** A body built from a comp and a layer reference, or the refusal. */
+const onLayer = (
+  a: { compId?: number | undefined; compName?: string | undefined; layerIndex?: number | undefined; layerName?: string | undefined },
+  body: (comp: AeRef, layer: AeRef) => string,
+): Prepared => {
+  const r = compAndLayer(a);
+  return "error" in r ? r : { body: body(r.comp, r.layer) };
+};
+
+/** A body built from a comp reference, or the refusal. */
+const onComp = (a: { compId?: number | undefined; compName?: string | undefined }, body: (comp: AeRef) => string): Prepared => {
+  const r = compRef(a);
+  return "error" in r ? r : { body: body(r.ref) };
+};
+
+/** Drops the reference keys, so a builder's params hold only its own fields. */
+function withoutRefs<T extends Record<string, unknown>>(a: T): Omit<T, "compId" | "compName" | "layerIndex" | "layerName"> {
+  const { compId: _c, compName: _n, layerIndex: _i, layerName: _l, ...rest } = a;
+  return rest;
+}
+
+/** The parent for ae_set_layer_props: parentIndex (null unparents) or parentName, at most one; undefined leaves it. */
+function parentRef(a: { parentIndex?: number | null | undefined; parentName?: string | undefined }): { ref: AeRef | null | undefined } | Refused {
+  if (a.parentIndex !== undefined && a.parentName !== undefined) return { error: AE_REF_TEXTS.bothParent };
+  return { ref: a.parentName !== undefined ? a.parentName : a.parentIndex };
+}
+
+// ---- AE-03: the tools ae_batch can run: one shape and one args-to-body mapping each, shared with the single tool --------
+
+interface BatchOpDef<S extends z.ZodRawShape> {
+  readonly shape: S;
+  /** The tool's script body for its parsed args, or the plain-text refusal of a bad reference. */
+  readonly body: (a: z.objectOutputType<S, z.ZodTypeAny>) => Prepared;
+  /** ae_batch only: false when the args change nothing (a tool whose fields are all optional). */
+  readonly changes?: (a: z.objectOutputType<S, z.ZodTypeAny>) => boolean;
+}
+const batchOp = <S extends z.ZodRawShape>(d: BatchOpDef<S>): BatchOpDef<S> => d;
+
+const setLayerPropsShape = {
+  compId,
+  compName,
+  layerIndex,
+  layerName,
+  name: newLayerName("layer", "unchanged"),
+  enabled: z.boolean().optional(),
+  startTime: z.number().finite().optional(),
+  inPoint: z.number().finite().optional(),
+  outPoint: z.number().finite().optional(),
+  position: z.array(z.number().finite()).min(2).max(3).optional(),
+  scale: z.array(z.number().finite()).min(2).max(3).optional(),
+  rotation: z.number().finite().optional(),
+  opacity: z.number().min(0).max(100).optional(),
+  anchorPoint: z.array(z.number().finite()).min(2).max(3).optional(),
+  parentIndex: z
+    .number()
+    .int()
+    .min(1)
+    .nullable()
+    .optional()
+    .describe("Index of the new parent layer; null unparents. Give parentIndex or parentName, not both. Default: the parent is left as it is."),
+  parentName: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Exact name of the new parent layer (case included), as an alternative to parentIndex. Give one of the two. Fails, listing the matches, if more than one layer has this name. Default: the parent is left as it is.",
+    ),
+};
+
+/**
+ * Every tool ae_batch can run (spec 5.2: the mutating tools whose builders use __undo, minus the ones in
+ * AE_BATCH_EXCLUDED), with its input shape and how its args become its script body. The single tools register with
+ * the same shape and mapping, so the two cannot drift.
+ */
+export const AE_BATCH_OPS = {
+  ae_create_comp: batchOp({
+    shape: {
+      name: z.string().min(1).describe("Composition name."),
+      width: z.number().int().positive().describe("Pixels."),
+      height: z.number().int().positive().describe("Pixels."),
+      frameRate: z.number().positive().optional().describe("Defaults to 30."),
+      duration: z.number().positive().optional().describe("Seconds. Defaults to 10."),
+      pixelAspect: z.number().positive().optional().describe("Defaults to 1."),
+    },
+    body: (p) => ({ body: createCompBody({ ...p, frameRate: p.frameRate ?? 30, duration: p.duration ?? 10, pixelAspect: p.pixelAspect ?? 1 }) }),
+  }),
+  ae_set_comp_props: batchOp({
+    shape: {
+      compId,
+      compName,
+      name: z.string().min(1).optional().describe("New composition name. Default: unchanged."),
+      duration: z.number().positive().optional().describe("Seconds."),
+      frameRate: z.number().positive().optional(),
+      width: z.number().int().positive().optional().describe("Pixels."),
+      height: z.number().int().positive().optional().describe("Pixels."),
+    },
+    body: (a) => onComp(a, (c) => setCompPropsBody(c, withoutRefs(a))),
+    changes: (a) => a.name !== undefined || a.duration !== undefined || a.frameRate !== undefined || a.width !== undefined || a.height !== undefined,
+  }),
+  ae_add_layer: batchOp({
+    shape: {
+      compId,
+      compName,
+      kind: z.enum(["footage", "solid", "text", "null", "adjustment"]),
+      itemId: z.number().int().optional().describe("footage: id from ae_list_footage or ae_list_compositions."),
+      color: hexColor.optional().describe("solid: fill color. Defaults to white."),
+      name: newLayerName("new layer", "After Effects names it"),
+      text: z.string().optional().describe("text: initial content."),
+      anchor: z
+        .enum(["center", "origin"])
+        .optional()
+        .describe("text: center (default) makes position the text's visual centre; origin makes position the left baseline (use with left justification for lower thirds)."),
+      width: z.number().int().positive().optional().describe("solid: defaults to comp width."),
+      height: z.number().int().positive().optional().describe("solid: defaults to comp height."),
+    },
+    body: (a) => onComp(a, (c) => addLayerBody({ ...withoutRefs(a), compId: c })),
+  }),
+  ae_add_shape: batchOp({
+    shape: {
+      compId,
+      compName,
+      kind: z.enum(["rectangle", "ellipse", "star", "polygon"]),
+      width: z.number().positive().optional().describe("rectangle/ellipse width in px. Defaults to 200."),
+      height: z.number().positive().optional().describe("rectangle/ellipse height in px. Defaults to 200."),
+      points: z.number().int().min(3).optional().describe("star/polygon point count. Defaults to 5."),
+      outerRadius: z.number().positive().optional().describe("star/polygon outer radius in px. Defaults to 100."),
+      innerRadius: z.number().positive().optional().describe("star inner radius in px. Defaults to 50."),
+      roundness: z.number().min(0).optional().describe("rectangle corner roundness in px."),
+      position: z.array(z.number().finite()).length(2).optional().describe("[x, y] layer centre. Defaults to the comp centre."),
+      fill: hexColor.nullable().optional().describe("Fill color (hex). Defaults to white; null for no fill."),
+      stroke: hexColor.optional().describe("Stroke color (hex). Omit for no stroke."),
+      strokeWidth: z.number().min(0).optional().describe("Stroke width in px (defaults to 4 when a stroke color is given)."),
+      name: newLayerName("new shape layer", "After Effects names it"),
+    },
+    body: (p) =>
+      onComp(p, (c) =>
+        addShapeBody({
+          compId: c,
+          kind: p.kind,
+          ...(p.width !== undefined ? { width: p.width } : {}),
+          ...(p.height !== undefined ? { height: p.height } : {}),
+          ...(p.points !== undefined ? { points: p.points } : {}),
+          ...(p.outerRadius !== undefined ? { outerRadius: p.outerRadius } : {}),
+          ...(p.innerRadius !== undefined ? { innerRadius: p.innerRadius } : {}),
+          ...(p.roundness !== undefined ? { roundness: p.roundness } : {}),
+          ...(p.position !== undefined ? { position: [p.position[0]!, p.position[1]!] as [number, number] } : {}),
+          ...(p.fill !== undefined ? { fill: p.fill } : {}),
+          ...(p.stroke !== undefined ? { stroke: p.stroke } : {}),
+          ...(p.strokeWidth !== undefined ? { strokeWidth: p.strokeWidth } : {}),
+          ...(p.name !== undefined ? { name: p.name } : {}),
+        }),
+      ),
+  }),
+  ae_add_mask: batchOp({
+    shape: {
+      compId,
+      compName,
+      layerIndex,
+      layerName,
+      kind: z.enum(["rectangle", "ellipse"]),
+      left: z.number().finite().optional(),
+      top: z.number().finite().optional(),
+      right: z.number().finite().optional(),
+      bottom: z.number().finite().optional(),
+      mode: z.enum(["add", "subtract", "intersect", "lighten", "darken", "difference", "none"]).optional(),
+      feather: z.number().min(0).optional(),
+      opacity: z.number().min(0).max(100).optional(),
+      expansion: z.number().finite().optional(),
+      name: z.string().min(1).optional().describe("The mask's name. Default: After Effects names it."),
+    },
+    body: (p) =>
+      onLayer(p, (c, l) =>
+        addMaskBody({
+          compId: c,
+          layerIndex: l,
+          kind: p.kind,
+          ...(p.left !== undefined ? { left: p.left } : {}),
+          ...(p.top !== undefined ? { top: p.top } : {}),
+          ...(p.right !== undefined ? { right: p.right } : {}),
+          ...(p.bottom !== undefined ? { bottom: p.bottom } : {}),
+          ...(p.mode !== undefined ? { mode: p.mode } : {}),
+          ...(p.feather !== undefined ? { feather: p.feather } : {}),
+          ...(p.opacity !== undefined ? { opacity: p.opacity } : {}),
+          ...(p.expansion !== undefined ? { expansion: p.expansion } : {}),
+          ...(p.name !== undefined ? { name: p.name } : {}),
+        }),
+      ),
+  }),
+  ae_set_layer_props: batchOp({
+    shape: setLayerPropsShape,
+    body: (a) => {
+      const r = compAndLayer(a);
+      if ("error" in r) return r;
+      const parent = parentRef(a);
+      if ("error" in parent) return parent;
+      // Two indexes: refused here, so the index-only script stays as it was before AE-03; a name is checked by the host.
+      if (typeof r.layer === "number" && typeof parent.ref === "number" && r.layer === parent.ref) {
+        return { error: `Layer ${r.layer} cannot be its own parent — ${SELF_PARENT_NEXT}` };
+      }
+      const { parentIndex: _i, parentName: _n, ...props } = withoutRefs(a);
+      return { body: setLayerPropsBody(r.comp, r.layer, { ...props, ...(parent.ref !== undefined ? { parentIndex: parent.ref } : {}) }) };
+    },
+    changes: (a) =>
+      (
+        ["name", "enabled", "startTime", "inPoint", "outPoint", "position", "scale", "rotation", "opacity", "anchorPoint", "parentIndex", "parentName"] as const
+      ).some((k) => a[k] !== undefined),
+  }),
+  ae_duplicate_layer: batchOp({
+    shape: { compId, compName, layerIndex, layerName, name: newLayerName("copy", "After Effects names it") },
+    body: (a) => onLayer(a, (c, l) => duplicateLayerBody(c, l, a.name)),
+  }),
+  ae_delete_layer: batchOp({
+    shape: { compId, compName, layerIndex, layerName },
+    body: (a) => onLayer(a, (c, l) => deleteLayerBody(c, l)),
+  }),
+  ae_set_keyframes: batchOp({
+    shape: {
+      compId,
+      compName,
+      layerIndex,
+      layerName,
+      property: propertyName,
+      propertyPath,
+      keys: z
+        .array(z.object({ time: seconds("Key time"), value: z.union([z.number(), z.array(z.number())]), easy: z.boolean().optional() }))
+        .min(1),
+    },
+    body: (a) => onLayer(a, (c, l) => setKeyframesBody({ ...withoutRefs(a), compId: c, layerIndex: l })),
+  }),
+  ae_remove_keyframes: batchOp({
+    shape: { compId, compName, layerIndex, layerName, property: propertyName, propertyPath },
+    body: (a) => onLayer(a, (c, l) => removeKeyframesBody(c, l, a.property, a.propertyPath)),
+  }),
+  ae_set_expression: batchOp({
+    shape: {
+      compId,
+      compName,
+      layerIndex,
+      layerName,
+      property: propertyName,
+      propertyPath,
+      expression: z.string().nullable().describe("Expression source, or null to remove."),
+    },
+    body: (a) => onLayer(a, (c, l) => setExpressionBody(c, l, a.property, a.propertyPath, a.expression)),
+  }),
+  ae_apply_effect: batchOp({
+    shape: {
+      compId,
+      compName,
+      layerIndex,
+      layerName,
+      matchName: z
+        .string()
+        .min(1)
+        .max(EFFECT_NAME_MAX)
+        .describe(
+          `Effect match name (e.g. 'ADBE Gaussian Blur 2') or display name (e.g. 'Gaussian Blur'), at most ${EFFECT_NAME_MAX} characters. An unknown name fails with up to 3 close installed names.`,
+        ),
+      name: z.string().min(1).optional().describe("Rename the effect once applied (e.g. a Slider Control named 'Speed'). Essential Graphics shows a control under this name."),
+    },
+    body: (a) => onLayer(a, (c, l) => applyEffectBody(c, l, a.matchName, a.name)),
+  }),
+  ae_set_effect_param: batchOp({
+    shape: {
+      compId,
+      compName,
+      layerIndex,
+      layerName,
+      effect: z.union([z.number().int().min(1), z.string().min(1)]).describe("Effect index (from ae_apply_effect / ae_get_layer) or name."),
+      param: z.string().min(1).describe("Parameter display name or match name, e.g. 'Blurriness'."),
+      value: z
+        .union([z.number(), z.array(z.number()), z.string()])
+        .describe(
+          "The new value: a number (a slider, angle or opacity; a checkbox as 1 or 0; a menu as its item number, 1 = first), " +
+            "an array of numbers (a point as [x, y] or [x, y, z]; a color as [r, g, b] with each channel 0–1), or a string (a text parameter).",
+        ),
+    },
+    body: (a) => onLayer(a, (c, l) => setEffectParamBody(c, l, a.effect, a.param, a.value)),
+  }),
+  ae_set_layer_style_param: batchOp({
+    shape: {
+      compId,
+      compName,
+      layerIndex,
+      layerName,
+      style: styleName,
+      param: z.string().min(1).describe("Parameter display name or match name."),
+      value: z.union([z.number(), z.array(z.number()), z.string()]).describe("Number, [r,g,b] 0–1 array, or hex color like #ff8800."),
+    },
+    body: (a) => onLayer(a, (c, l) => setLayerStyleParamBody(c, l, a.style, a.param, a.value)),
+  }),
+  ae_remove_layer_style: batchOp({
+    shape: { compId, compName, layerIndex, layerName, style: styleName },
+    body: (a) => onLayer(a, (c, l) => removeLayerStyleBody(c, l, a.style)),
+  }),
+  ae_add_to_essential_graphics: batchOp({
+    shape: {
+      compId,
+      compName,
+      layerIndex,
+      layerName,
+      property: z
+        .enum(["position", "scale", "rotation", "opacity", "anchorPoint", "sourceText"])
+        .optional()
+        .describe("Transform channel, or sourceText for a text layer's content. For anything else, use propertyPath."),
+      propertyPath,
+    },
+    body: (a) =>
+      onLayer(a, (c, l) => {
+        const path = a.property === "sourceText" && !a.propertyPath ? ["ADBE Text Properties", "ADBE Text Document"] : a.propertyPath;
+        const prop = a.property && a.property !== "sourceText" ? a.property : "position";
+        return addToEssentialGraphicsBody(c, l, prop, path);
+      }),
+  }),
+  ae_set_text: batchOp({
+    shape: {
+      compId,
+      compName,
+      layerIndex,
+      layerName,
+      text: z.string().optional(),
+      fontSize: z.number().positive().optional(),
+      font: z.string().min(1).optional().describe("PostScript font name, e.g. Arial-BoldMT."),
+      color: hexColor.optional(),
+      justification: z.enum(["left", "center", "right"]).optional(),
+      anchor: z
+        .enum(["center", "origin"])
+        .optional()
+        .describe("Where the anchor ends up: center (default) = position is the text's visual centre; origin = position is the left baseline. Every call re-applies this, so pass it whenever you moved the anchor yourself."),
+    },
+    body: (a) => onLayer(a, (c, l) => setTextBody({ ...withoutRefs(a), compId: c, layerIndex: l })),
+  }),
+  ae_add_marker: batchOp({
+    shape: {
+      compId,
+      compName,
+      time: seconds("Marker time"),
+      comment: z.string().describe("The marker's comment."),
+      layerIndex: z
+        .number()
+        .int()
+        .min(1)
+        .optional()
+        .describe("Index of the layer to mark (1 = top of the timeline). Give layerIndex or layerName for a layer marker, or neither for a comp marker (the default)."),
+      layerName: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Exact name of the layer to mark (case included), as an alternative to layerIndex; fails, listing the matches, if more than one layer has it. Default: a comp marker."),
+      duration: seconds("Marker duration").optional(),
+    },
+    body: (a) => {
+      const c = compRef(a);
+      if ("error" in c) return c;
+      const l = layerRef(a, true);
+      if ("error" in l) return l;
+      return { body: addMarkerBody(c.ref, a.time, a.comment, l.ref, a.duration) };
+    },
+  }),
+  ae_queue_render: batchOp({
+    shape: {
+      compName: z
+        .string()
+        .min(1)
+        .describe("Exact name of the composition to queue (case included). Fails, listing the matches, if more than one composition has it."),
+      outputPath: z.string().min(1).describe("Absolute output file path."),
+      templateName: z.string().min(1).optional().describe("Output module template, e.g. 'H.264 - Match Render Settings'."),
+    },
+    body: (a) => ({ body: queueRenderBody(a.compName, a.outputPath, a.templateName) }),
+  }),
+};
+
+export type AeBatchTool = keyof typeof AE_BATCH_OPS;
+
+/** One checked ae_batch operation: its tool, its strictly parsed args (echoed on its failure only) and its body. */
+interface BatchOperation {
+  readonly tool: AeBatchTool;
+  readonly args: Record<string, unknown>;
+  readonly body: string;
+}
+/** The 19 tools ae_batch can run, in AE_BATCH_OPS order. */
+export const AE_BATCH_TOOLS = Object.keys(AE_BATCH_OPS) as AeBatchTool[];
+
+/** Every other ae_* tool, with why ae_batch refuses it (spec 5.2). A new tool is classified on purpose (server test). */
+export const AE_BATCH_EXCLUDED: Readonly<Record<string, string>> = Object.freeze({
+  ae_project_info: "it only reads; a batch holds edits",
+  ae_list_compositions: "it only reads; a batch holds edits",
+  ae_list_footage: "it only reads; a batch holds edits",
+  ae_get_comp: "it only reads; a batch holds edits",
+  ae_get_layer: "it only reads; a batch holds edits",
+  ae_get_keyframes: "it only reads; a batch holds edits",
+  ae_get_layer_styles: "it only reads; a batch holds edits",
+  ae_find_layers: "it only reads; a batch holds edits",
+  ae_render_frame: "it writes a file and returns an image",
+  ae_render_comp: "it saves the project and runs aerender as a job",
+  ae_export_mogrt: "it saves the project and exports a file, outside the undo history",
+  ae_open_project: "it opens a project, which resets the undo history",
+  ae_save_project: "it saves the project, outside the undo history",
+  ae_run_script: "it has its own gate, audit line and consent step",
+  ae_undo: "an Edit > Undo inside the batch's own undo group is undefined",
+  ae_redo: "an Edit > Redo inside the batch's own undo group is undefined",
+  ae_batch: "a batch cannot hold another batch",
+  ae_add_layer_style: "it drives a menu command that did not take when other scripts ran around it",
+  ae_import_footage: "a later operation cannot use the item it imports, since every operation's args are fixed before the batch runs",
+  ae_import_as_comp: "a later operation cannot use the composition it imports, since every operation's args are fixed before the batch runs",
+});
+
+/** ae_batch's caps (spec 11.6): checked before anything is sent. */
+export const AE_BATCH_MAX_OPS = 200;
+export const AE_BATCH_MAX_CHARS = 2_000_000;
+
+/** The zod issues of an operation's args, one per line, as "path: message" (redacted, one line each, capped). */
+function issueText(error: z.ZodError): string {
+  return error.issues.map((i) => `${i.path.length > 0 ? i.path.join(".") : "args"}: ${capCodePoints(messageText(i.message), 300)}`).join("\n");
+}
+
+/** The results of the operations that ran, each one's JSON cut at 1000 characters, about 8000 in all. */
+function ranResults(results: readonly unknown[]): string {
+  const parts: string[] = [];
+  let used = 0;
+  for (let i = 0; i < results.length; i++) {
+    let s = JSON.stringify(results[i]) ?? "null";
+    if (s.length > 1000) s = `${s.slice(0, 1000)}...`;
+    if (used + s.length > 8000) {
+      parts.push(`... ${results.length - i} more not shown`);
+      break;
+    }
+    parts.push(`${i + 1}: ${s}`);
+    used += s.length;
+  }
+  return messageText(parts.join("; "));
+}
+
+const BATCH_DESCRIPTION =
+  "Run several After Effects edits as ONE eval and ONE undo step on the open project: operations [{ tool, args }] run " +
+  "in order, each with that tool's own args, and the batch stops at the first failure. atomic (default true): a failure " +
+  "undoes the whole batch, so After Effects is as it was; atomic false keeps what ran before the failure (one Ctrl-Z " +
+  "undoes it). Prefer layerName and compName over indexes: adding a layer puts it at index 1 and moves every other " +
+  "layer down one, and each operation resolves its names when it runs, so a later operation can name a layer an " +
+  "earlier one added. A solid, text or duplicated layer without a name gets an automatic one — pass name, or read " +
+  "nameToIndex. Args are fixed before the batch runs: a later operation cannot use an id an earlier one returns; use " +
+  "names. Returns { results: [one per operation], nameToIndex: { \"<comp id>\": { \"<layer name>\": index, or [indexes] " +
+  `for a repeated name } } } for each composition the batch looked up by compId or compName. At most ${AE_BATCH_MAX_OPS} operations; ` +
+  "split work that may run near two minutes: a timed-out batch keeps running in After Effects, and when it ends it has " +
+  "applied in full (one undo step), or on a failure undone itself (atomic) or kept what ran (atomic false) — check with ae_get_comp or ae_find_layers " +
+  "before you press Ctrl-Z or call ae_undo. An error that starts \"ae_batch sent nothing\" means nothing was sent; one " +
+  "that starts \"ae_batch stopped\" names the failing operation and says what was undone; any other ae_batch error means " +
+  "it was sent and may have partly run, and says what was undone.";
+
+const UNDO_DESCRIPTION =
+  "Run After Effects' Edit > Undo once. It reverts the newest entry in After Effects' undo history, whoever made it (the " +
+  "operator or a tool): it cannot tell which step that is, or whether there was one, and does nothing when there is " +
+  "nothing to undo. Each ae_* edit that changed something, and each ae_batch that was not rolled back, is one entry. A " +
+  "call that failed before changing anything, and a rolled-back ae_batch, leave none, so do not call ae_undo after them: " +
+  "it would revert an earlier step. Check with ae_get_comp or ae_find_layers afterwards.";
+
+const REDO_DESCRIPTION =
+  "Run After Effects' Edit > Redo once. It re-applies the newest undone entry, whoever undid it: it cannot tell which step " +
+  "that is, or whether there was one, and does nothing when there is nothing to redo. After an ae_batch that was rolled " +
+  "back, the failed batch itself is the newest Redo entry, so ae_redo would re-apply it. Check with ae_get_comp or " +
+  "ae_find_layers afterwards.";
 
 export interface AfterEffectsToolOptions {
   /** When given, ae_render_comp runs as a job (progress, cancel, wait:false). */
@@ -2682,6 +3626,116 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
   // One per MCP session; refreshed when the panel reconnects. Read only on an effect miss.
   const effects = new EffectCatalog(bridge);
   const run = (script: string, opts?: EvalOptions) => guard(async () => jsonResult(await evaluateAe(bridge, script, opts)));
+  /**
+   * AE-03: a tool's prepared body (or, with isBody false, its whole script) run as its one eval; a reference refusal
+   * (both or neither of a pair) is plain text and sends nothing.
+   */
+  const runPrepared = async (p: Prepared, opts?: EvalOptions, isBody = true): Promise<CallToolResult> =>
+    "error" in p ? errorResult(p.error) : run(isBody ? wrap(p.body) : p.body, opts);
+
+  /**
+   * ae_batch (AE-03): every operation is checked first (the tool, its args strictly, its references, that it changes
+   * something), then the whole batch goes as one eval. Any refusal is plain text and sends nothing.
+   */
+  const runBatch = async (operations: readonly { tool: string; args: Record<string, unknown> }[], atomic: boolean, undoGroupName: string): Promise<CallToolResult> => {
+    const m = operations.length;
+    const ops: BatchOperation[] = [];
+    for (let i = 0; i < m; i++) {
+      const { tool, args } = operations[i]!;
+      const which = `operation ${i + 1} of ${m}`;
+      if (Object.hasOwn(AE_BATCH_EXCLUDED, tool)) {
+        return errorResult(`ae_batch sent nothing: ${which}: ${tool} cannot run inside ae_batch (${AE_BATCH_EXCLUDED[tool]}) — call it on its own, before or after the batch.`);
+      }
+      if (!Object.hasOwn(AE_BATCH_OPS, tool)) {
+        return errorResult(`ae_batch sent nothing: ${which}: ${capCodePoints(messageText(tool), 80)} is not a tool ae_batch can run — it runs: ${AE_BATCH_TOOLS.join(", ")}.`);
+      }
+      const def = AE_BATCH_OPS[tool as AeBatchTool] as unknown as BatchOpDef<z.ZodRawShape>;
+      // Strict: a misspelt key (opacty) is refused, not dropped.
+      const parsed = z.object(def.shape).strict().safeParse(args);
+      if (!parsed.success) {
+        return errorResult(
+          `ae_batch sent nothing: ${which} (${tool}): ${issueText(parsed.error)} — fix that operation's args (they are that tool's own, checked strictly) and resend the batch.`,
+        );
+      }
+      const p = def.body(parsed.data);
+      if ("error" in p) return errorResult(`ae_batch sent nothing: ${which} (${tool}): ${p.error}`);
+      if (def.changes !== undefined && !def.changes(parsed.data)) {
+        return errorResult(`ae_batch sent nothing: ${which} (${tool}): it sets nothing — give at least one field to change.`);
+      }
+      ops.push({ tool: tool as AeBatchTool, args: parsed.data, body: p.body });
+    }
+    const batch = buildAeBatch(ops, atomic, undoGroupName);
+    if (batch.script.length > AE_BATCH_MAX_CHARS) {
+      return errorResult(`ae_batch sent nothing: the batch script is ${batch.script.length} characters, over ${AE_BATCH_MAX_CHARS} — split it into smaller batches.`);
+    }
+    return guard(async () => batchOutcome(await evaluateAe(bridge, batch.script, { timeoutClass: "slow" }, aeBatchLocator(batch)), batch, ops, atomic));
+  };
+
+  /** ae_batch's answer: { results, nameToIndex }, or the failing operation's error, with what was undone or kept. */
+  const batchOutcome = async (raw: JsonValue, batch: AeBatch, ops: readonly BatchOperation[], atomic: boolean): Promise<CallToolResult> => {
+    const v = (raw !== null && typeof raw === "object" && !Array.isArray(raw) ? raw : {}) as Record<string, JsonValue | undefined>;
+    if (v["ok"] === true) return jsonResult({ results: Array.isArray(v["results"]) ? v["results"] : [], nameToIndex: aeNameToIndex(v["names"]) });
+    if (v["ok"] !== false) {
+      return errorResult("ae_batch: After Effects answered something other than a batch result — check the project in After Effects (one Ctrl-Z undoes what the batch did), then retry.");
+    }
+    const m = ops.length;
+    const at = typeof v["at"] === "number" ? v["at"] : 0;
+    const results = Array.isArray(v["results"]) ? v["results"] : [];
+    const error = new ScriptError("after_effects", typeof v["message"] === "string" ? v["message"] : "(no message)", typeof v["line"] === "number" ? v["line"] : undefined, {
+      code: "HOST_ERROR",
+    });
+    const op = at >= 1 && at <= m ? ops[at - 1] : undefined;
+    // The failing operation's error reads as that tool's own (its name, only its args, its body line); outside the
+    // operations it reads as ae_batch's.
+    const enriched =
+      op === undefined
+        ? enrichAeError(error, batch.script, aeBatchLocator(batch, 0))
+        : await runAsToolCall({ tool: op.tool, args: op.args }, async () => {
+            const e = enrichAeError(error, batch.script, aeBatchLocator(batch, at));
+            return op.tool === "ae_apply_effect" ? withEffectSuggestions(effects, e, String(op.args["matchName"])) : e;
+          });
+    const head = op !== undefined ? `ae_batch stopped at operation ${at} of ${m} (${op.tool}).` : `ae_batch failed outside its operations, after ${results.length} of ${m} ran.`;
+    const errText = enriched instanceof ScriptError ? scriptErrorText(enriched) : String(enriched);
+    const ran = results.length;
+    const ranText = ran === 1 ? "operation 1" : `operations 1–${ran}`;
+    const part = op !== undefined ? at : null;
+    let closing: string;
+    if (atomic) {
+      const back = v["rolledBack"];
+      if (back === true) {
+        closing =
+          "The batch was undone: After Effects is as it was before the batch. The failed batch is now the newest Redo entry " +
+          "(Ctrl+Shift+Z or ae_redo would re-apply it).";
+      } else if (back === null) {
+        closing = "The batch changed nothing: it failed before its first operation ran — nothing to undo; retry the batch.";
+      } else {
+        const what = [ran > 0 ? `the changes of ${ranText}` : null, part !== null ? `any part of operation ${part}` : null].filter((x) => x !== null).join(", ");
+        closing =
+          `The batch could not be undone (Edit > Undo did not remove it): ${what || "its changes"} and an empty folder named ` +
+          `"${AE_BATCH_SENTINEL}" stay as one undo step — press Ctrl-Z once in After Effects, or call ae_undo, to remove them.`;
+      }
+    } else {
+      const names = messageText(JSON.stringify(aeNameToIndex(v["names"])));
+      if (ran > 0) {
+        closing =
+          `${ranText.charAt(0).toUpperCase()}${ranText.slice(1)} ran and ${ran > 1 ? "stay" : "stays"}${part !== null ? `, with any part of operation ${part},` : ""} as one undo step ` +
+          `(one Ctrl-Z undoes ${ran > 1 || part !== null ? "them all" : "it"}). Their results: ${ranResults(results)}. nameToIndex now: ${names}.`;
+      } else if (v["entered"] === false || part === null) {
+        // No operation reached its change step (a lookup runs before any change): the group was empty, and an empty
+        // group makes no undo entry (live, spec 10). An undo now would revert the step before the batch.
+        closing =
+          `No operation ran before it, and ${part !== null ? `operation ${part} failed before changing anything` : "the batch failed before any operation"}: ` +
+          `the batch changed nothing and left no undo entry — do not press Ctrl-Z or call ae_undo for it (that would revert the step ` +
+          `before the batch); fix the operation and resend the batch. nameToIndex now: ${names}.`;
+      } else {
+        closing =
+          `No operation ran before it. If operation ${part} changed anything before it failed, that stays as one undo step; a ` +
+          `failed lookup changes nothing and leaves no undo entry, so check with ae_get_comp or ae_find_layers before you press ` +
+          `Ctrl-Z or call ae_undo (with nothing from the batch to undo, it would revert the step before the batch). nameToIndex now: ${names}.`;
+      }
+    }
+    return errorResult(`${head} ${errText} ${closing}`);
+  };
 
   // ---- read ---------------------------------------------------------------
   server.registerTool(
@@ -2721,11 +3775,11 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
     "ae_get_comp",
     {
       title: "After Effects: comp details with layers",
-      description: "A composition's settings and every layer (index, name, kind, in/out/start, parent). Layer indexes are what the layer tools take.",
-      inputSchema: { compId },
+      description: "A composition's settings and every layer (index, name, kind, in/out/start, parent). Layer indexes and names are what the layer tools take.",
+      inputSchema: { compId, compName },
       annotations: { readOnlyHint: true },
     },
-    async ({ compId: id }) => run(getCompScript(id), { timeoutClass: "fast" }),
+    async (a) => runPrepared(onComp(a, (c) => getCompScript(c)), { timeoutClass: "fast" }, false),
   );
 
   server.registerTool(
@@ -2733,10 +3787,46 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
     {
       title: "After Effects: layer details",
       description: "One layer's transform values (with keyframe counts and expressions), effects, and text content.",
-      inputSchema: { compId, layerIndex },
+      inputSchema: { compId, compName, layerIndex, layerName },
       annotations: { readOnlyHint: true },
     },
-    async ({ compId: id, layerIndex: li }) => run(getLayerScript(id, li), { timeoutClass: "fast" }),
+    async (a) => runPrepared(onLayer(a, (c, l) => getLayerScript(c, l)), { timeoutClass: "fast" }, false),
+  );
+
+  server.registerTool(
+    "ae_find_layers",
+    {
+      title: "After Effects: find layers",
+      description:
+        "Find layers in a composition by name, kind, text content and enabled state. Every filter is optional and they " +
+        "combine (all must match). Returns [{ index, name, kind, enabled }] in timeline order, [] when none match. " +
+        "Indexes shift when a layer is added at the top: pass the names to later calls (layerName).",
+      inputSchema: {
+        compId,
+        compName,
+        nameContains: z.string().min(1).optional().describe("Part of the layer name, case-insensitive. Default: any name."),
+        kind: z
+          .enum(AE_LAYER_KINDS)
+          .optional()
+          .describe("Layer kind, as ae_get_comp reports it; an adjustment layer counts as adjustment, not solid. Default: any kind."),
+        textContains: z.string().min(1).optional().describe("Part of a text layer's text, case-insensitive; matches text layers only. Default: no text filter."),
+        enabled: z.boolean().optional().describe("true: only enabled layers; false: only disabled ones. Default: both."),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async (a) =>
+      runPrepared(
+        onComp(a, (c) =>
+          findLayersScript(c, {
+            ...(a.nameContains !== undefined ? { nameContains: a.nameContains } : {}),
+            ...(a.kind !== undefined ? { kind: a.kind } : {}),
+            ...(a.textContains !== undefined ? { textContains: a.textContains } : {}),
+            ...(a.enabled !== undefined ? { enabled: a.enabled } : {}),
+          }),
+        ),
+        { timeoutClass: "fast" },
+        false,
+      ),
   );
 
   // ---- project ------------------------------------------------------------
@@ -2797,16 +3887,9 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
     {
       title: "After Effects: create a composition",
       description: "Create a new composition. Returns its id.",
-      inputSchema: {
-        name: z.string().min(1),
-        width: z.number().int().positive().describe("Pixels."),
-        height: z.number().int().positive().describe("Pixels."),
-        frameRate: z.number().positive().optional().describe("Defaults to 30."),
-        duration: z.number().positive().optional().describe("Seconds. Defaults to 10."),
-        pixelAspect: z.number().positive().optional().describe("Defaults to 1."),
-      },
+      inputSchema: AE_BATCH_OPS.ae_create_comp.shape,
     },
-    async (p) => run(createCompScript({ ...p, frameRate: p.frameRate ?? 30, duration: p.duration ?? 10, pixelAspect: p.pixelAspect ?? 1 })),
+    async (a) => runPrepared(AE_BATCH_OPS.ae_create_comp.body(a)),
   );
 
   server.registerTool(
@@ -2816,16 +3899,9 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
       description:
         "Change a composition's name, duration (seconds), frame rate, width, or height. Only given fields change. " +
         "Shortening the duration also trims every layer whose outPoint runs past it, so outPoint-based animation lands at the new end.",
-      inputSchema: {
-        compId,
-        name: z.string().min(1).optional(),
-        duration: z.number().positive().optional().describe("Seconds."),
-        frameRate: z.number().positive().optional(),
-        width: z.number().int().positive().optional().describe("Pixels."),
-        height: z.number().int().positive().optional().describe("Pixels."),
-      },
+      inputSchema: AE_BATCH_OPS.ae_set_comp_props.shape,
     },
-    async ({ compId: id, ...p }) => run(setCompPropsScript(id, p)),
+    async (a) => runPrepared(AE_BATCH_OPS.ae_set_comp_props.body(a)),
   );
 
   server.registerTool(
@@ -2834,23 +3910,10 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
       title: "After Effects: add a layer",
       description:
         "Add a layer to a comp: footage (needs itemId — a footage item or another comp), solid (color, optional size), " +
-        "text (initial text), null, or adjustment. New layers go to the top. Returns the layer's index.",
-      inputSchema: {
-        compId,
-        kind: z.enum(["footage", "solid", "text", "null", "adjustment"]),
-        itemId: z.number().int().optional().describe("footage: id from ae_list_footage or ae_list_compositions."),
-        color: hexColor.optional().describe("solid: fill color. Defaults to white."),
-        name: z.string().min(1).optional(),
-        text: z.string().optional().describe("text: initial content."),
-        anchor: z
-          .enum(["center", "origin"])
-          .optional()
-          .describe("text: center (default) makes position the text's visual centre; origin makes position the left baseline (use with left justification for lower thirds)."),
-        width: z.number().int().positive().optional().describe("solid: defaults to comp width."),
-        height: z.number().int().positive().optional().describe("solid: defaults to comp height."),
-      },
+        "text (initial text), null, or adjustment. New layers go to the top, so every other layer's index grows by one. Returns the layer's index.",
+      inputSchema: AE_BATCH_OPS.ae_add_layer.shape,
     },
-    async (p) => run(addLayerScript(p)),
+    async (a) => runPrepared(AE_BATCH_OPS.ae_add_layer.body(a)),
   );
 
   server.registerTool(
@@ -2861,40 +3924,9 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
         "Create a shape layer with one parametric shape and an optional fill and stroke. kind: rectangle or ellipse " +
         "(width/height), star or polygon (points, outerRadius, and — star only — innerRadius). Colors are hex; a stroke " +
         "is added when stroke or strokeWidth is given. position is the layer centre (defaults to the comp centre).",
-      inputSchema: {
-        compId,
-        kind: z.enum(["rectangle", "ellipse", "star", "polygon"]),
-        width: z.number().positive().optional().describe("rectangle/ellipse width in px. Defaults to 200."),
-        height: z.number().positive().optional().describe("rectangle/ellipse height in px. Defaults to 200."),
-        points: z.number().int().min(3).optional().describe("star/polygon point count. Defaults to 5."),
-        outerRadius: z.number().positive().optional().describe("star/polygon outer radius in px. Defaults to 100."),
-        innerRadius: z.number().positive().optional().describe("star inner radius in px. Defaults to 50."),
-        roundness: z.number().min(0).optional().describe("rectangle corner roundness in px."),
-        position: z.array(z.number().finite()).length(2).optional().describe("[x, y] layer centre. Defaults to the comp centre."),
-        fill: hexColor.nullable().optional().describe("Fill color (hex). Defaults to white; null for no fill."),
-        stroke: hexColor.optional().describe("Stroke color (hex). Omit for no stroke."),
-        strokeWidth: z.number().min(0).optional().describe("Stroke width in px (defaults to 4 when a stroke color is given)."),
-        name: z.string().min(1).optional(),
-      },
+      inputSchema: AE_BATCH_OPS.ae_add_shape.shape,
     },
-    async (p) =>
-      run(
-        addShapeScript({
-          compId: p.compId,
-          kind: p.kind,
-          ...(p.width !== undefined ? { width: p.width } : {}),
-          ...(p.height !== undefined ? { height: p.height } : {}),
-          ...(p.points !== undefined ? { points: p.points } : {}),
-          ...(p.outerRadius !== undefined ? { outerRadius: p.outerRadius } : {}),
-          ...(p.innerRadius !== undefined ? { innerRadius: p.innerRadius } : {}),
-          ...(p.roundness !== undefined ? { roundness: p.roundness } : {}),
-          ...(p.position !== undefined ? { position: [p.position[0]!, p.position[1]!] } : {}),
-          ...(p.fill !== undefined ? { fill: p.fill } : {}),
-          ...(p.stroke !== undefined ? { stroke: p.stroke } : {}),
-          ...(p.strokeWidth !== undefined ? { strokeWidth: p.strokeWidth } : {}),
-          ...(p.name !== undefined ? { name: p.name } : {}),
-        }),
-      ),
+    async (a) => runPrepared(AE_BATCH_OPS.ae_add_shape.body(a)),
   );
 
   server.registerTool(
@@ -2905,38 +3937,9 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
         "Add a rectangle or ellipse mask to a layer, in that layer's coordinates. Bounds are left/top/right/bottom " +
         "(default: the whole comp). mode is add (default), subtract, intersect, lighten, darken, difference, or none. " +
         "feather and expansion are in pixels; opacity is 0–100.",
-      inputSchema: {
-        compId,
-        layerIndex,
-        kind: z.enum(["rectangle", "ellipse"]),
-        left: z.number().finite().optional(),
-        top: z.number().finite().optional(),
-        right: z.number().finite().optional(),
-        bottom: z.number().finite().optional(),
-        mode: z.enum(["add", "subtract", "intersect", "lighten", "darken", "difference", "none"]).optional(),
-        feather: z.number().min(0).optional(),
-        opacity: z.number().min(0).max(100).optional(),
-        expansion: z.number().finite().optional(),
-        name: z.string().min(1).optional(),
-      },
+      inputSchema: AE_BATCH_OPS.ae_add_mask.shape,
     },
-    async ({ compId: id, layerIndex: li, ...p }) =>
-      run(
-        addMaskScript({
-          compId: id,
-          layerIndex: li,
-          kind: p.kind,
-          ...(p.left !== undefined ? { left: p.left } : {}),
-          ...(p.top !== undefined ? { top: p.top } : {}),
-          ...(p.right !== undefined ? { right: p.right } : {}),
-          ...(p.bottom !== undefined ? { bottom: p.bottom } : {}),
-          ...(p.mode !== undefined ? { mode: p.mode } : {}),
-          ...(p.feather !== undefined ? { feather: p.feather } : {}),
-          ...(p.opacity !== undefined ? { opacity: p.opacity } : {}),
-          ...(p.expansion !== undefined ? { expansion: p.expansion } : {}),
-          ...(p.name !== undefined ? { name: p.name } : {}),
-        }),
-      ),
+    async (a) => runPrepared(AE_BATCH_OPS.ae_add_mask.body(a)),
   );
 
   server.registerTool(
@@ -2945,24 +3948,10 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
       title: "After Effects: set layer properties",
       description:
         "Set any of: name, enabled, startTime/inPoint/outPoint (seconds), position [x,y] or [x,y,z], scale [%,%], " +
-        "rotation (degrees), opacity (0–100), anchorPoint, parentIndex (null to unparent). Only given fields change.",
-      inputSchema: {
-        compId,
-        layerIndex,
-        name: z.string().min(1).optional(),
-        enabled: z.boolean().optional(),
-        startTime: z.number().finite().optional(),
-        inPoint: z.number().finite().optional(),
-        outPoint: z.number().finite().optional(),
-        position: z.array(z.number().finite()).min(2).max(3).optional(),
-        scale: z.array(z.number().finite()).min(2).max(3).optional(),
-        rotation: z.number().finite().optional(),
-        opacity: z.number().min(0).max(100).optional(),
-        anchorPoint: z.array(z.number().finite()).min(2).max(3).optional(),
-        parentIndex: z.number().int().min(1).nullable().optional(),
-      },
+        "rotation (degrees), opacity (0–100), anchorPoint, parentIndex or parentName (parentIndex null unparents). Only given fields change.",
+      inputSchema: AE_BATCH_OPS.ae_set_layer_props.shape,
     },
-    async ({ compId: id, layerIndex: li, ...props }) => run(setLayerPropsScript(id, li, props)),
+    async (a) => runPrepared(AE_BATCH_OPS.ae_set_layer_props.body(a)),
   );
 
   server.registerTool(
@@ -2970,9 +3959,9 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
     {
       title: "After Effects: duplicate a layer",
       description: "Duplicate a layer (the copy goes directly above it). Returns the copy's index.",
-      inputSchema: { compId, layerIndex, name: z.string().min(1).optional() },
+      inputSchema: AE_BATCH_OPS.ae_duplicate_layer.shape,
     },
-    async ({ compId: id, layerIndex: li, name }) => run(duplicateLayerScript(id, li, name)),
+    async (a) => runPrepared(AE_BATCH_OPS.ae_duplicate_layer.body(a)),
   );
 
   server.registerTool(
@@ -2980,10 +3969,10 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
     {
       title: "After Effects: delete a layer",
       description: "Remove a layer from a comp.",
-      inputSchema: { compId, layerIndex },
+      inputSchema: AE_BATCH_OPS.ae_delete_layer.shape,
       annotations: { destructiveHint: true },
     },
-    async ({ compId: id, layerIndex: li }) => run(deleteLayerScript(id, li)),
+    async (a) => runPrepared(AE_BATCH_OPS.ae_delete_layer.body(a)),
   );
 
   // ---- animation ----------------------------------------------------------
@@ -2994,17 +3983,9 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
       description:
         "Add or replace keyframes on a layer property. Each key is {time, value, easy?}; value is a number (opacity, rotation) " +
         "or an array (position, scale, anchorPoint). easy applies Easy Ease. Use propertyPath for effect parameters.",
-      inputSchema: {
-        compId,
-        layerIndex,
-        property: propertyName,
-        propertyPath,
-        keys: z
-          .array(z.object({ time: seconds("Key time"), value: z.union([z.number(), z.array(z.number())]), easy: z.boolean().optional() }))
-          .min(1),
-      },
+      inputSchema: AE_BATCH_OPS.ae_set_keyframes.shape,
     },
-    async (p) => run(setKeyframesScript(p)),
+    async (a) => runPrepared(AE_BATCH_OPS.ae_set_keyframes.body(a)),
   );
 
   server.registerTool(
@@ -3012,10 +3993,10 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
     {
       title: "After Effects: read a property's keyframes",
       description: "Current value, keyframes (time + value), and expression of a layer property.",
-      inputSchema: { compId, layerIndex, property: propertyName, propertyPath },
+      inputSchema: { compId, compName, layerIndex, layerName, property: propertyName, propertyPath },
       annotations: { readOnlyHint: true },
     },
-    async ({ compId: id, layerIndex: li, property, propertyPath: pp }) => run(getKeyframesScript(id, li, property, pp), { timeoutClass: "fast" }),
+    async (a) => runPrepared(onLayer(a, (c, l) => getKeyframesScript(c, l, a.property, a.propertyPath)), { timeoutClass: "fast" }, false),
   );
 
   server.registerTool(
@@ -3023,10 +4004,10 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
     {
       title: "After Effects: remove all keyframes on a property",
       description: "Delete every keyframe on the property (the value freezes at its current value).",
-      inputSchema: { compId, layerIndex, property: propertyName, propertyPath },
+      inputSchema: AE_BATCH_OPS.ae_remove_keyframes.shape,
       annotations: { destructiveHint: true },
     },
-    async ({ compId: id, layerIndex: li, property, propertyPath: pp }) => run(removeKeyframesScript(id, li, property, pp)),
+    async (a) => runPrepared(AE_BATCH_OPS.ae_remove_keyframes.body(a)),
   );
 
   server.registerTool(
@@ -3037,9 +4018,9 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
         "Set (or clear with null) the expression on a layer property. Use `property` for a transform channel, or " +
         "`propertyPath` (match/display names) to reach an effect parameter, mask, or text source. If the expression " +
         "does not compile it fails with the error text and the property keeps its previous expression.",
-      inputSchema: { compId, layerIndex, property: propertyName, propertyPath, expression: z.string().nullable().describe("Expression source, or null to remove.") },
+      inputSchema: AE_BATCH_OPS.ae_set_expression.shape,
     },
-    async ({ compId: id, layerIndex: li, property, propertyPath: pp, expression }) => run(setExpressionScript(id, li, property, pp, expression)),
+    async (a) => runPrepared(AE_BATCH_OPS.ae_set_expression.body(a)),
   );
 
   // ---- essential graphics / motion graphics templates ---------------------
@@ -3052,21 +4033,9 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
         "Graphics template (.mogrt). Give `property` for a transform channel or `sourceText` for a text layer's " +
         "content, or `propertyPath` (match/display names) for anything else, e.g. an effect's Slider or Color. " +
         "The control takes the property's name (rename it in the panel; After Effects has no script for that).",
-      inputSchema: {
-        compId,
-        layerIndex,
-        property: z
-          .enum(["position", "scale", "rotation", "opacity", "anchorPoint", "sourceText"])
-          .optional()
-          .describe("Transform channel, or sourceText for a text layer's content. For anything else, use propertyPath."),
-        propertyPath,
-      },
+      inputSchema: AE_BATCH_OPS.ae_add_to_essential_graphics.shape,
     },
-    async ({ compId: id, layerIndex: li, property, propertyPath: pp }) => {
-      const path = property === "sourceText" && !pp ? ["ADBE Text Properties", "ADBE Text Document"] : pp;
-      const prop = property && property !== "sourceText" ? property : "position";
-      return run(addToEssentialGraphicsScript(id, li, prop, path));
-    },
+    async (a) => runPrepared(AE_BATCH_OPS.ae_add_to_essential_graphics.body(a)),
   );
 
   server.registerTool(
@@ -3079,18 +4048,19 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
         "once). Returns the written path.",
       inputSchema: {
         compId,
+        compName,
         outputPath: z.string().min(1).describe("Absolute path ending in .mogrt. The file name (minus .mogrt) becomes the template name."),
         overwrite: z.boolean().optional().describe("Overwrite an existing file at that path. Defaults to true."),
       },
       annotations: { destructiveHint: true },
     },
-    async ({ compId: id, outputPath, overwrite }) => {
-      const norm = outputPath.replace(/\\/g, "/");
+    async (a) => {
+      const norm = a.outputPath.replace(/\\/g, "/");
       const slash = norm.lastIndexOf("/");
       const folder = slash >= 0 ? norm.slice(0, slash) : ".";
       const name = (slash >= 0 ? norm.slice(slash + 1) : norm).replace(/\.mogrt$/i, "");
-      if (!name) return run(exportMogrtScript(id, folder, "Untitled", overwrite ?? true)); // unreachable-ish; keeps a name
-      return run(exportMogrtScript(id, folder, name, overwrite ?? true));
+      // An empty name is unreachable-ish; "Untitled" keeps a name.
+      return runPrepared(onComp(a, (c) => exportMogrtScript(c, folder, name || "Untitled", a.overwrite ?? true)), undefined, false);
     },
   );
 
@@ -3102,27 +4072,19 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
       description:
         "Add an effect to a layer by match name (e.g. 'ADBE Gaussian Blur 2', 'ADBE Drop Shadow', 'ADBE Glo2', 'ADBE Tint') " +
         "or display name. Returns the effect index and its parameter names for ae_set_effect_param.",
-      inputSchema: {
-        compId,
-        layerIndex,
-        matchName: z
-          .string()
-          .min(1)
-          .max(EFFECT_NAME_MAX)
-          .describe(
-            `Effect match name (e.g. 'ADBE Gaussian Blur 2') or display name (e.g. 'Gaussian Blur'), at most ${EFFECT_NAME_MAX} characters. An unknown name fails with up to 3 close installed names.`,
-          ),
-        name: z.string().min(1).optional().describe("Rename the effect once applied (e.g. a Slider Control named 'Speed'). Essential Graphics shows a control under this name."),
-      },
+      inputSchema: AE_BATCH_OPS.ae_apply_effect.shape,
     },
-    async ({ compId: id, layerIndex: li, matchName, name }) =>
-      guard(async () => {
+    async (a) => {
+      const p = AE_BATCH_OPS.ae_apply_effect.body(a);
+      if ("error" in p) return errorResult(p.error);
+      return guard(async () => {
         try {
-          return jsonResult(await evaluateAe(bridge, applyEffectScript(id, li, matchName, name)));
+          return jsonResult(await evaluateAe(bridge, wrap(p.body)));
         } catch (error) {
-          throw await withEffectSuggestions(effects, error, matchName);
+          throw await withEffectSuggestions(effects, error, a.matchName);
         }
-      }),
+      });
+    },
   );
 
   server.registerTool(
@@ -3130,27 +4092,12 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
     {
       title: "After Effects: set an effect parameter",
       description: "Set a parameter on an effect (by effect index or name) — number, array (color as [r,g,b] 0–1, point), or text.",
-      inputSchema: {
-        compId,
-        layerIndex,
-        effect: z.union([z.number().int().min(1), z.string().min(1)]).describe("Effect index (from ae_apply_effect / ae_get_layer) or name."),
-        param: z.string().min(1).describe("Parameter display name or match name, e.g. 'Blurriness'."),
-        value: z
-          .union([z.number(), z.array(z.number()), z.string()])
-          .describe(
-            "The new value: a number (a slider, angle or opacity; a checkbox as 1 or 0; a menu as its item number, 1 = first), " +
-              "an array of numbers (a point as [x, y] or [x, y, z]; a color as [r, g, b] with each channel 0–1), or a string (a text parameter).",
-          ),
-      },
+      inputSchema: AE_BATCH_OPS.ae_set_effect_param.shape,
     },
-    async ({ compId: id, layerIndex: li, effect, param, value }) => run(setEffectParamScript(id, li, effect, param, value)),
+    async (a) => runPrepared(AE_BATCH_OPS.ae_set_effect_param.body(a)),
   );
 
   // ---- layer styles -------------------------------------------------------
-  const styleName = z
-    .enum(["dropShadow", "innerShadow", "outerGlow", "innerGlow", "bevelEmboss", "satin", "colorOverlay", "gradientOverlay", "stroke"])
-    .describe("Layer style name.");
-
   server.registerTool(
     "ae_add_layer_style",
     {
@@ -3158,9 +4105,9 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
       description:
         "Add a Photoshop-style layer style (drop shadow, inner shadow, glows, bevel & emboss, satin, color/gradient " +
         "overlay, stroke) to a layer. Returns the style's parameters (names and current values) for ae_set_layer_style_param.",
-      inputSchema: { compId, layerIndex, style: styleName },
+      inputSchema: { compId, compName, layerIndex, layerName, style: styleName },
     },
-    async ({ compId: id, layerIndex: li, style }) => run(addLayerStyleScript(id, li, style)),
+    async (a) => runPrepared(onLayer(a, (c, l) => addLayerStyleScript(c, l, a.style)), undefined, false),
   );
 
   server.registerTool(
@@ -3168,10 +4115,10 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
     {
       title: "After Effects: read a layer's styles",
       description: "List the layer styles on a layer with each style's parameters and current values.",
-      inputSchema: { compId, layerIndex },
+      inputSchema: { compId, compName, layerIndex, layerName },
       annotations: { readOnlyHint: true },
     },
-    async ({ compId: id, layerIndex: li }) => run(getLayerStylesScript(id, li), { timeoutClass: "fast" }),
+    async (a) => runPrepared(onLayer(a, (c, l) => getLayerStylesScript(c, l)), { timeoutClass: "fast" }, false),
   );
 
   server.registerTool(
@@ -3181,15 +4128,9 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
       description:
         "Set a parameter on a layer style already added with ae_add_layer_style — by display name (e.g. 'Distance', " +
         "'Opacity', 'Color') or match name (e.g. 'dropShadow/blur'). Colors take a hex string or [r,g,b] 0–1 array.",
-      inputSchema: {
-        compId,
-        layerIndex,
-        style: styleName,
-        param: z.string().min(1).describe("Parameter display name or match name."),
-        value: z.union([z.number(), z.array(z.number()), z.string()]).describe("Number, [r,g,b] 0–1 array, or hex color like #ff8800."),
-      },
+      inputSchema: AE_BATCH_OPS.ae_set_layer_style_param.shape,
     },
-    async ({ compId: id, layerIndex: li, style, param, value }) => run(setLayerStyleParamScript(id, li, style, param, value)),
+    async (a) => runPrepared(AE_BATCH_OPS.ae_set_layer_style_param.body(a)),
   );
 
   server.registerTool(
@@ -3199,10 +4140,10 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
       description:
         "Turn a layer style off (its visible effect goes away). After Effects keeps a permanent slot per style, " +
         "so this disables the style rather than deleting the slot; ae_add_layer_style turns it back on.",
-      inputSchema: { compId, layerIndex, style: styleName },
+      inputSchema: AE_BATCH_OPS.ae_remove_layer_style.shape,
       annotations: { destructiveHint: true },
     },
-    async ({ compId: id, layerIndex: li, style }) => run(removeLayerStyleScript(id, li, style)),
+    async (a) => runPrepared(AE_BATCH_OPS.ae_remove_layer_style.body(a)),
   );
 
   server.registerTool(
@@ -3210,31 +4151,21 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
     {
       title: "After Effects: set text layer content and style",
       description: "Change a text layer's text, font size, font (PostScript name), color, or justification.",
-      inputSchema: {
-        compId,
-        layerIndex,
-        text: z.string().optional(),
-        fontSize: z.number().positive().optional(),
-        font: z.string().min(1).optional().describe("PostScript font name, e.g. Arial-BoldMT."),
-        color: hexColor.optional(),
-        justification: z.enum(["left", "center", "right"]).optional(),
-        anchor: z
-          .enum(["center", "origin"])
-          .optional()
-          .describe("Where the anchor ends up: center (default) = position is the text's visual centre; origin = position is the left baseline. Every call re-applies this, so pass it whenever you moved the anchor yourself."),
-      },
+      inputSchema: AE_BATCH_OPS.ae_set_text.shape,
     },
-    async (p) => run(setTextScript(p)),
+    async (a) => runPrepared(AE_BATCH_OPS.ae_set_text.body(a)),
   );
 
   server.registerTool(
     "ae_add_marker",
     {
       title: "After Effects: add a marker",
-      description: "Add a comp marker (or a layer marker if layerIndex is given) at a time with a comment.",
-      inputSchema: { compId, time: seconds("Marker time"), comment: z.string(), layerIndex: layerIndex.optional(), duration: seconds("Marker duration").optional() },
+      description:
+        "Add a comp marker, or a layer marker when layerIndex or layerName is given, at a time with a comment. Returns " +
+        "{ time, comment, on } (\"comp\" or \"layer <index>\"), plus layerName for a layer marker.",
+      inputSchema: AE_BATCH_OPS.ae_add_marker.shape,
     },
-    async ({ compId: id, time, comment, layerIndex: li, duration }) => run(addMarkerScript(id, time, comment, li, duration)),
+    async (a) => runPrepared(AE_BATCH_OPS.ae_add_marker.body(a)),
   );
 
   // ---- render -------------------------------------------------------------
@@ -3245,18 +4176,26 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
       description:
         "Render a single frame of a comp at a time (seconds) to a small PNG and return it as an image so you can see it. " +
         "Uses a temporary downscaled comp; the project is left as it was.",
-      inputSchema: { compId, time: seconds("Frame time").optional(), maxDimension: z.number().int().min(64).max(2048).optional().describe("Longest edge in px. Defaults to 1024.") },
+      inputSchema: {
+        compId,
+        compName,
+        time: seconds("Frame time").optional(),
+        maxDimension: z.number().int().min(64).max(2048).optional().describe("Longest edge in px. Defaults to 1024."),
+      },
       annotations: { readOnlyHint: true },
     },
-    async ({ compId: id, time, maxDimension }) =>
-      guard(async () => {
+    async (a) => {
+      const c = compRef(a);
+      if ("error" in c) return errorResult(c.error);
+      return guard(async () => {
         const dir = join(tmpdir(), "brainferno-mcp-bridge", "previews");
         await mkdir(dir, { recursive: true });
         const path = join(dir, `${randomUUID()}.png`).replace(/\\/g, "/");
-        await evaluateAe(bridge, renderFrameScript(id, time ?? 0, path, maxDimension ?? 1024), { timeoutClass: "slow" });
+        await evaluateAe(bridge, renderFrameScript(c.ref, a.time ?? 0, path, a.maxDimension ?? 1024), { timeoutClass: "slow" });
         await waitForFile(path, 20_000);
-        return imageResult(path, "image/png", `Frame at ${time ?? 0}s`);
-      }),
+        return imageResult(path, "image/png", `Frame at ${a.time ?? 0}s`);
+      });
+    },
   );
 
   server.registerTool(
@@ -3264,13 +4203,9 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
     {
       title: "After Effects: add a composition to the render queue",
       description: "Add a comp to the render queue with an output path (and optional output-module template). Queues only; ae_render_comp renders headlessly.",
-      inputSchema: {
-        compName: z.string().min(1).describe("Exact name of the composition to queue."),
-        outputPath: z.string().min(1).describe("Absolute output file path."),
-        templateName: z.string().min(1).optional().describe("Output module template, e.g. 'H.264 - Match Render Settings'."),
-      },
+      inputSchema: AE_BATCH_OPS.ae_queue_render.shape,
     },
-    async ({ compName, outputPath, templateName }) => run(queueRenderScript(compName, outputPath, templateName)),
+    async (a) => runPrepared(AE_BATCH_OPS.ae_queue_render.body(a)),
   );
 
   server.registerTool(
@@ -3281,7 +4216,10 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
         "Save the project, then render a comp with aerender in the background (the After Effects UI stays free). " +
         "Waits for it to finish (up to 30 minutes) and returns the output path. The project must have been saved once (ae_save_project).",
       inputSchema: {
-        compName: z.string().min(1).describe("Exact composition name."),
+        compName: z
+          .string()
+          .min(1)
+          .describe("Exact composition name (case included). It must be unique: aerender renders the first match, so a name more than one composition has fails before anything is saved or rendered."),
         outputPath: z.string().min(1).describe("Absolute output path, e.g. C:/renders/comp.mp4 or .mov; aerender picks the format from the output module."),
         outputModule: z.string().min(1).optional().describe("Output module template name, e.g. 'H.264 - Match Render Settings' or 'Lossless'."),
         renderSettings: z.string().min(1).optional().describe("Render settings template, e.g. 'Best Settings'."),
@@ -3301,6 +4239,56 @@ export function registerAfterEffectsTools(mcp: McpServer, bridge: AppBridge, opt
           { wait: wait ?? options.defaultWait ?? true, timeoutMs: 30 * 60_000, extra: extra as ProgressExtra },
         );
       }),
+  );
+
+  // ---- AE-03: several edits as one undo step; Edit > Undo / Redo -----------------
+  server.registerTool(
+    "ae_batch",
+    {
+      title: "After Effects: run several edits as one undo step",
+      description: BATCH_DESCRIPTION,
+      inputSchema: {
+        operations: z
+          .array(
+            z.object({
+              tool: z.string().describe(`The tool to run, one of: ${AE_BATCH_TOOLS.join(", ")}.`),
+              args: z.record(z.unknown()).describe("That tool's own arguments, exactly as the single tool takes them (an unknown key is refused)."),
+            }),
+          )
+          .min(1)
+          .max(AE_BATCH_MAX_OPS)
+          .describe(`The edits, in order (1 to ${AE_BATCH_MAX_OPS}). Read-only tools, renders, imports, project open and save, ae_export_mogrt, ae_add_layer_style, ae_run_script, ae_undo, ae_redo and ae_batch are refused.`),
+        atomic: z
+          .boolean()
+          .optional()
+          .describe("Default true: on the first failure the whole batch is undone, so After Effects is as it was. false: what ran before the failure stays (one Ctrl-Z undoes it)."),
+        undoGroupName: z.string().min(1).max(100).optional().describe('Label for Edit > Undo. Default "Batch".'),
+      },
+      annotations: { destructiveHint: true },
+    },
+    async ({ operations, atomic, undoGroupName }) => runBatch(operations, atomic ?? true, undoGroupName ?? "Batch"),
+  );
+
+  server.registerTool(
+    "ae_undo",
+    {
+      title: "After Effects: undo the last step",
+      description: UNDO_DESCRIPTION,
+      inputSchema: {},
+      annotations: { destructiveHint: true, readOnlyHint: false, idempotentHint: false },
+    },
+    async () => run(undoRedoScript("undo"), { timeoutClass: "fast" }),
+  );
+
+  server.registerTool(
+    "ae_redo",
+    {
+      title: "After Effects: redo the last undone step",
+      description: REDO_DESCRIPTION,
+      inputSchema: {},
+      annotations: { destructiveHint: true, readOnlyHint: false, idempotentHint: false },
+    },
+    async () => run(undoRedoScript("redo"), { timeoutClass: "fast" }),
   );
 
   // ---- escape hatch -------------------------------------------------------
