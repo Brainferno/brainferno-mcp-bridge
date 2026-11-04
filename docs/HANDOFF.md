@@ -2,7 +2,7 @@
 
 Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `docs/spikes/`.
 
-## Where the project stands (2026-08-30)
+## Where the project stands (2026-11-04)
 
 - Public repo `Brainferno/brainferno-mcp-bridge` (renamed from `adobe-cc-mcp` for Adobe's
   trademark rules), Apache-2.0, `main` is the release branch. CI on every push covers

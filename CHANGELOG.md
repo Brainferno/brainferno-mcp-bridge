@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.4 — 2026-11-04
 
 One run-script contract and a gate clients can see (X-01); After Effects errors that say where and why (AE-16); `ae_run_script`, a raw After Effects script as one undo step (AE-01); After Effects layers and compositions by name, `ae_find_layers`, `ae_batch`, `ae_undo` and `ae_redo` (AE-03).
 

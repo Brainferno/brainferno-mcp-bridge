@@ -25,9 +25,10 @@ the way. Every action is one undo step in the app, so you can always step back.
 - **Runs on your machine.** Nothing leaves your computer unless you turn on *shared* mode
   for other computers on your network (token-protected).
 
-> Status: every typed tool verified live on Windows and macOS, the two platforms Adobe ships
-> Creative Cloud for (Adobe 2026 apps); `ae_run_script` is verified live on Windows (After
-> Effects 26.5), not yet on macOS. The npm badge above is the current version. See [Status](#status).
+> Status: the typed tools are verified live on Windows and macOS, the two platforms Adobe ships
+> Creative Cloud for (Adobe 2026 apps). `ae_run_script`, `ae_find_layers`, `ae_batch`, `ae_undo`,
+> `ae_redo` and After Effects names in place of ids are verified live on Windows (After Effects
+> 26.5), not yet on macOS. The npm badge above is the current version. See [Status](#status).
 
 The companion panel inside each app — here in Adobe After Effects and Adobe Photoshop —
 shows the connection, a live log, and a kill switch:
@@ -676,7 +677,8 @@ docs/                build plan, protocol, live-run notes (spikes/), Audition AP
   Effects 26.5 on Windows (`docs/spikes/06-aftereffects-tools-live.md`), not yet on macOS.
   Its project-switch OK (a refusal stating the risk, then the operator's OK in the chat) is
   verified live there too, from Claude Code; the per-close and later-calls risk texts are
-  unit-tested only.
+  unit-tested only. `ae_find_layers`, `ae_batch`, `ae_undo`, `ae_redo` and the name addressing
+  (AE-03) are verified live on After Effects 26.5 on Windows (same spike), not yet on macOS.
 - Roadmap: `docs/BUILD_PLAN.md` (Phase 6).
 
 ## License
