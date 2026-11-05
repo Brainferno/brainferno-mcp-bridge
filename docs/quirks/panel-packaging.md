@@ -6,17 +6,32 @@ How the panels are packaged into installable plugins via `npm run package`.
 `dist-packages/` (git-ignored), version stamped from the root `package.json` so the
 manifests never drift.
 
-- **UXP (Photoshop `panel-uxp`, Premiere `panel-uxp-ppro`) → `.ccx`**: NOT auto-built.
-  A `.ccx` is a zip under the hood, but Adobe signs it with its own UXP signer and says
-  do NOT hand-zip one — a plain zip fails to install with UPIA **status -267** (confirmed
-  live). The signer is in the UXP Developer Tool's **Package** command and in
-  `@adobe/uxp-devtools-cli` (`uxp plugin package`), whose native module has no prebuild
-  for Node 24 (fails headless here). So `npm run package` only STAGES a version-stamped
-  folder `dist-packages/uxp-<app>-<ver>/`; build the `.ccx` from it in the UXP Developer
-  Tool (Add Plugin → its manifest.json → Actions → Package), then double-click or
-  `UnifiedPluginInstallerAgent.exe /install <file>.ccx`. UPIA won't install a plugin whose
-  id is still dev-loaded in UDT — unload it first (that alone was not enough here; the real
-  blocker was the missing signature).
+- **UXP (Photoshop `panel-uxp`, Premiere Pro `panel-uxp-ppro`) → `.ccx`**: built by
+  `npm run package` with no Adobe tool (`scripts/ccx.mjs`), as
+  `dist-packages/brainferno-mcp-bridge-<app>-<ver>.ccx`. A `.ccx` is a plain zip of the
+  plugin folder with `manifest.json` at the root, and it carries **no signature**. The one
+  thing UPIA insists on: **`host` in `manifest.json` must be one object, not a list.** With
+  the list that our source manifests use (the form the UXP Developer Tool loads), UPIA
+  refuses the file with **status -267**. The UXP Developer Tool's **Package** command makes
+  exactly that change and nothing else, which is why its output installed and an earlier
+  hand-made zip did not; this note used to blame a missing signature, and that was wrong.
+  `scripts/ccx.mjs` writes the manifest with one host object and keeps the source manifest
+  as a list. The version-stamped folder `dist-packages/uxp-<app>-<ver>/` is still written,
+  for loading in the UXP Developer Tool. UPIA also refuses a plugin whose id is still
+  dev-loaded in UDT (use **Remove**, not just Unload).
+  - **How this was found (2026-11-04, Windows 11, UPIA from Creative Cloud, Photoshop
+    27.11, Premiere Pro 26.5.2):** the two `.ccx` files that UDT packaged on 2026-09-05 are
+    still in `dist-packages/`. `zipinfo -v` shows 9 files, no signature entry, no comment
+    and no extra data, and 8 of the 9 files are byte-identical to the staged folder; only
+    `manifest.json` differs, in `host`. Then, with a test plugin id so that the installed
+    panels stayed untouched: a scripted zip with `host` as a list → `Failed to install,
+    status = -267`; the same zip with `host` as one object → `Installation Successful`, for
+    a Photoshop build and for a Premiere Pro build, with file names that carry no
+    `_<HOST>` suffix. `UnifiedPluginInstallerAgent.exe /list all` showed them and
+    `/remove "<name>"` took them out again.
+  - **Not yet checked:** that a panel installed from a scripted `.ccx` opens and connects
+    inside the app (the UDT-made `.ccx` with the same content did, on 2026-09-05), and
+    anything on macOS.
 - **CEP (`panel-cep`, hosts After Effects + Audition) → self-signed `.zxp`**: signed with
   Adobe's **ZXPSignCmd**, auto-downloaded to `.tools/` from CEP-Resources 4.1.103 (win64 only
   in that build; the macOS binary lives in older version folders — drop it in by hand). The
@@ -27,7 +42,8 @@ manifests never drift.
 **Installing (verified live):** Adobe's UPIA installs BOTH formats — `.ccx` AND `.zxp` —
 "Installation Successful" for each; no separate ZXP installer needed. UDT names a UXP
 package `<plugin-id>_<HOST>.ccx` (e.g. `com.brainferno.mcp-bridge.photoshop_PS.ccx`,
-`…premiere_premierepro.ccx`), so Photoshop and Premiere come out distinct. Gotchas: UPIA
+`…premiere_premierepro.ccx`); UPIA does not need that name. `/list all` shows what is
+installed for each app, and `/remove "<plugin name>"` removes one. Gotchas: UPIA
 refuses an id still dev-loaded in UDT (use **Remove**, not just Unload) and the host app is
 best closed. Installed locations: UXP → `…\Roaming\Adobe\UXP\Plugins\External\<id>_<ver>`; CEP
 → `…\Program Files (x86)\Common Files\Adobe\CEP\extensions\<name>`. `install-cc`'s CEP dev

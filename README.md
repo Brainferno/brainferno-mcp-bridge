@@ -246,7 +246,9 @@ Open it once per app; it connects on its own and shows a log and a kill switch.
   free **UXP Developer Tool**: *Add Plugin* → pick the `manifest.json` the installer
   printed (`packages/panel-uxp` or `packages/panel-uxp-ppro`) → *Load*. Then Window →
   Extensions (UXP) → Brainferno MCP Bridge. Premiere needs *Settings → Plugins → Enable
-  developer mode* first (restart Premiere). A double-click `.ccx` install is on the roadmap.
+  developer mode* first (restart Premiere). From a clone, `npm run package` also builds a
+  `.ccx` for each of the two panels, which installs with a double-click and needs no UXP
+  Developer Tool (`docs/quirks/panel-packaging.md`); the releases do not ship those files yet.
 - **Illustrator** needs no panel: the `ai_*` tools drive it from outside (AppleScript on macOS,
   COM on Windows). For Adobe's own Illustrator tools, turn on MCP in Illustrator's preferences and
   give the installer the key it shows. On macOS with both the release and the Beta installed, the
@@ -669,8 +671,9 @@ docs/                build plan, protocol, live-run notes (spikes/), Audition AP
   mode, and the installer. Write-ups with the quirks found: `docs/spikes/05`–`14` (`13` is the
   macOS run: aerender path, Media Encoder's config file and renderer; `14` is the release
   process and what npm actually does after a publish).
-- **Not yet**: double-click panel installs (`.ccx`/`.zxp`) so the UXP Developer
-  Tool is not needed; a single signed installer; TLS for shared mode; Audition multitrack
+- **Not yet**: `.ccx`/`.zxp` panel files in the releases, and an installer that installs
+  them, so that nobody needs the UXP Developer Tool (`npm run package` builds both kinds
+  from a clone today); a single signed installer; TLS for shared mode; Audition multitrack
   writes; Media Encoder queue control. The Codex CLI / Gemini CLI lanes are built and
   unit-tested but not yet verified against the live CLIs — that run is
   `docs/spikes/15-multi-client-lanes.md`. `ae_run_script` (AE-01) is verified live on After

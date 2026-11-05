@@ -4,16 +4,14 @@
 //   packages/panel-cep      -> brainferno-mcp-bridge-cep-<ver>.zxp   (AE + Audition)
 //
 // A CEP .zxp is code-signed here with a self-signed certificate and Adobe's
-// ZXPSignCmd (downloaded on first run into the git-ignored .tools/ folder) — this
-// is fully automated.
+// ZXPSignCmd (downloaded on first run into the git-ignored .tools/ folder).
 //
-// A UXP .ccx must be signed by Adobe's own UXP signer. Adobe is explicit that you
-// should NOT hand-zip a .ccx (a plain zip is rejected by the installer, UPIA
-// status -267). The signer lives in the UXP Developer Tool's "Package" command
-// and in `@adobe/uxp-devtools-cli` (`uxp plugin package`), whose native module
-// has no prebuilt binary for current Node, so it cannot run headless everywhere.
-// So for UXP we stage a version-stamped folder ready to package in the UXP
-// Developer Tool (Actions -> Package) and do not emit a fake .ccx.
+// A UXP .ccx is a plain zip of the plugin folder, built here by scripts/ccx.mjs
+// with no Adobe tool. It carries no signature. What Adobe's installer (UPIA)
+// needs is `host` in manifest.json as ONE object: with the list that the source
+// manifests use, it refuses the file with status -267. That was the whole reason
+// an earlier hand-made zip failed (see docs/quirks/panel-packaging.md). The
+// version-stamped folder is kept beside each .ccx for developer loading.
 //
 // The version is stamped from the root package.json at package time so the
 // manifests can never drift (the lesson from the 0.1.0-for-two-releases bug).
@@ -21,6 +19,8 @@ import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { buildCcx } from "./ccx.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const version = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
@@ -97,23 +97,24 @@ function stampCep(dir) {
 }
 
 async function main() {
-  await ensureZxpSignCmd();
-  ensureCert();
-
-  // UXP -> a version-stamped folder ready for the UXP Developer Tool's Package
-  // command (a plain zip is not an installable .ccx — see the header note).
-  const staged = [];
+  // UXP -> .ccx, plus the version-stamped folder for developer loading. This part
+  // needs no Adobe tool, so it runs first and still succeeds where ZXPSignCmd is missing.
+  const ccxFiles = [];
   for (const [pkg, label] of [["panel-uxp", "photoshop"], ["panel-uxp-ppro", "premiere"]]) {
     const dir = stage(pkg);
     stampUxp(dir);
     const kept = join(outDir, `uxp-${label}-${version}`);
     rmSync(kept, { recursive: true, force: true });
     cpSync(dir, kept, { recursive: true });
-    staged.push(kept);
-    console.log(`  staged ${kept}`);
+    const ccx = join(outDir, `brainferno-mcp-bridge-${label}-${version}.ccx`);
+    writeFileSync(ccx, buildCcx(dir, version));
+    ccxFiles.push(ccx);
+    console.log(`  ${ccx}`);
   }
 
-  // CEP -> signed .zxp (fully automated).
+  // CEP -> signed .zxp.
+  await ensureZxpSignCmd();
+  ensureCert();
   const dir = stage("panel-cep");
   stampCep(dir);
   const zxp = join(outDir, `brainferno-mcp-bridge-cep-${version}.zxp`);
@@ -130,10 +131,8 @@ async function main() {
 
   console.log(`\nCEP extension built (After Effects + Audition), version ${version}:`);
   console.log(`  ${zxp}`);
-  console.log("\nUXP plugins (Photoshop, Premiere) — a .ccx must be signed by Adobe's UXP signer, so");
-  console.log("build each in the UXP Developer Tool: Add Plugin -> pick the manifest.json in the");
-  console.log("staged folder below -> Actions (…) -> Package:");
-  for (const s of staged) console.log(`  ${s}\\manifest.json`);
+  console.log(`\nUXP plugins built (Photoshop, Premiere Pro), version ${version}:`);
+  for (const c of ccxFiles) console.log(`  ${c}`);
   console.log("\nAdobe's UPIA installs BOTH the .ccx and the .zxp (double-clicking a .ccx also works);");
   console.log("no separate ZXP installer is needed. Close the host app and Remove any dev-loaded copy first:");
   console.log(`  ${upia} /install <file>.ccx|.zxp`);
