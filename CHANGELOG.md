@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+**Added**
+
+- `npm run package` now builds the Photoshop and Premiere Pro panels as `.ccx` files
+  (`dist-packages/brainferno-mcp-bridge-photoshop-<ver>.ccx` and `…-premiere-<ver>.ccx`) with
+  no UXP Developer Tool. Before, it only prepared a folder for a person to package by hand.
+  Adobe's installer accepted the scripted files for both apps (Windows 11, 2026-11-04,
+  `docs/quirks/panel-packaging.md`). Not yet checked: that the installed panel opens and
+  connects in the app, and macOS. The releases do not ship these files yet.
+
+**Fixed**
+
+- The packaging notes said that a `.ccx` needs Adobe's own signer and that this is why a
+  hand-made zip was refused (status -267). That was wrong: a `.ccx` has no signature. The
+  installer refuses a `manifest.json` whose `host` is a list and accepts one whose `host`
+  is a single object. The script writes the single object; the source manifests keep the
+  list, which the UXP Developer Tool loads.
+
 ## v0.3.4 — 2026-11-04
 
 One run-script contract and a gate clients can see (X-01); After Effects errors that say where and why (AE-16); `ae_run_script`, a raw After Effects script as one undo step (AE-01); After Effects layers and compositions by name, `ae_find_layers`, `ae_batch`, `ae_undo` and `ae_redo` (AE-03).

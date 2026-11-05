@@ -346,15 +346,18 @@ manifests can't drift.
   never commit), signs, and verifies. The self-signed cert is fine for side-loading.
   `npm run install-cc` still side-loads the same folder with developer mode as the
   no-signing alternative.
-- **UXP → `.ccx`** (Photoshop, Premiere). NOT auto-built. Adobe signs a `.ccx` with its own
-  UXP signer, and is explicit that you should not hand-zip one — a plain zip is rejected by
-  the installer (UPIA status **-267**, confirmed live). The signer lives in the UXP Developer
-  Tool's **Package** command and in `@adobe/uxp-devtools-cli` (`uxp plugin package`), whose
-  native module has no prebuilt binary for current Node (fails on Node 24 here), so it can't
-  run headless. The script therefore stages a version-stamped folder
-  (`dist-packages/uxp-<app>-<ver>/`); build the `.ccx` from it in the UXP Developer Tool
-  (Add Plugin → its `manifest.json` → Actions → Package). UDT names it
-  `<plugin-id>_<HOST>.ccx`, so Photoshop and Premiere come out as distinct files.
+- **UXP → `.ccx`** (Photoshop, Premiere Pro). Built by the script too, with no Adobe tool
+  (`scripts/ccx.mjs`): `dist-packages/brainferno-mcp-bridge-<app>-<ver>.ccx`. A `.ccx` is a
+  plain zip with no signature. What the installer needs is `host` in `manifest.json` as
+  **one object**: with a list, as in our source manifests, it refuses the file (UPIA status
+  **-267**). Earlier notes blamed a missing Adobe signature for that refusal; the check on
+  2026-11-04 showed the list was the cause (`docs/quirks/panel-packaging.md` has the test).
+  The script also keeps the version-stamped folder (`dist-packages/uxp-<app>-<ver>/`) for
+  loading in the UXP Developer Tool. **Verified live on Windows 11, 2026-11-04:** UPIA
+  installed scripted `.ccx` files for Photoshop and for Premiere Pro (test plugin ids).
+  **Not yet checked:** that the panel from a scripted `.ccx` opens and connects in the app,
+  and macOS. The releases do not ship the `.ccx` / `.zxp` files yet, and `install-cc` does
+  not install them.
 
 **Installing — Adobe's Unified Plugin Installer Agent (UPIA) installs BOTH formats**, the
 `.ccx` and the `.zxp` (verified live: "Installation Successful" for each). It's already on
