@@ -29,9 +29,17 @@ manifests never drift.
     a Photoshop build and for a Premiere Pro build, with file names that carry no
     `_<HOST>` suffix. `UnifiedPluginInstallerAgent.exe /list all` showed them and
     `/remove "<name>"` took them out again.
-  - **Not yet checked:** that a panel installed from a scripted `.ccx` opens and connects
-    inside the app (the UDT-made `.ccx` with the same content did, on 2026-09-05), and
-    anything on macOS.
+  - **The installed panels open and connect (2026-11-04, same machine):** UPIA installed
+    the two real files that `npm run package` wrote
+    (`brainferno-mcp-bridge-photoshop-0.3.4.ccx`, `…-premiere-0.3.4.ccx`) over the 0.2.2
+    panels from September; `/list all` showed 0.3.4 for both and
+    `…\UXP\Plugins\External` held only the two `_0.3.4` folders. With the UXP Developer
+    Tool not running, Photoshop and Premiere Pro were started, the panel was opened from
+    the Plugins menu, and each joined the server: `cc_get_capabilities` reported panel
+    version 0.3.4 for both, and one read-only command per app made the round trip through
+    the panel (`ps_list_documents` listed the open document; `pp_project_info` came back
+    with the panel's own "No project is open", as no project was open).
+  - **Not yet checked:** anything on macOS.
 - **CEP (`panel-cep`, hosts After Effects + Audition) → self-signed `.zxp`**: signed with
   Adobe's **ZXPSignCmd**, auto-downloaded to `.tools/` from CEP-Resources 4.1.103 (win64 only
   in that build; the macOS binary lives in older version folders — drop it in by hand). The

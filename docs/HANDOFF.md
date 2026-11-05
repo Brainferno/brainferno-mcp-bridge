@@ -354,10 +354,11 @@ manifests can't drift.
   2026-11-04 showed the list was the cause (`docs/quirks/panel-packaging.md` has the test).
   The script also keeps the version-stamped folder (`dist-packages/uxp-<app>-<ver>/`) for
   loading in the UXP Developer Tool. **Verified live on Windows 11, 2026-11-04:** UPIA
-  installed scripted `.ccx` files for Photoshop and for Premiere Pro (test plugin ids).
-  **Not yet checked:** that the panel from a scripted `.ccx` opens and connects in the app,
-  and macOS. The releases do not ship the `.ccx` / `.zxp` files yet, and `install-cc` does
-  not install them.
+  installed scripted `.ccx` files for Photoshop and for Premiere Pro (test plugin ids, then
+  the real 0.3.4 files over the 0.2.2 panels), and the installed panels opened from the
+  Plugins menu and connected to the server with the UXP Developer Tool not running.
+  **Not yet checked:** macOS. The releases do not ship the `.ccx` / `.zxp` files yet, and
+  `install-cc` does not install them.
 
 **Installing — Adobe's Unified Plugin Installer Agent (UPIA) installs BOTH formats**, the
 `.ccx` and the `.zxp` (verified live: "Installation Successful" for each). It's already on
