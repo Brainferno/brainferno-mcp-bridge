@@ -17,8 +17,9 @@ manifests never drift.
   hand-made zip did not; this note used to blame a missing signature, and that was wrong.
   `scripts/ccx.mjs` writes the manifest with one host object and keeps the source manifest
   as a list. The version-stamped folder `dist-packages/uxp-<app>-<ver>/` is still written,
-  for loading in the UXP Developer Tool. UPIA also refuses a plugin whose id is still
-  dev-loaded in UDT (use **Remove**, not just Unload).
+  for loading in the UXP Developer Tool. On Windows, UPIA also refused a plugin whose id
+  was still dev-loaded in UDT (September 2026; use **Remove**, not just Unload). On macOS
+  it installed such a plugin (see below).
   - **How this was found (2026-11-04, Windows 11, UPIA from Creative Cloud, Photoshop
     27.11, Premiere Pro 26.5.2):** the two `.ccx` files that UDT packaged on 2026-09-05 are
     still in `dist-packages/`. `zipinfo -v` shows 9 files, no signature entry, no comment
@@ -64,9 +65,23 @@ manifests never drift.
     `--remove "<name>"` took out the 0.3.3 folder (the list still showed 0.3.4), a second
     one took out 0.3.4, and a third answered `Failed to remove …, status = -406`. So after
     an install over an older version, run `--remove` until the name is gone from the list.
-  - **Not yet checked on macOS:** an install while the same plugin id is still dev-loaded in
-    UDT, and a `.zxp` (no macOS ZXPSignCmd was on the machine). What the Mac had installed
-    before the double-click install above was not recorded.
+  - **With the plugin dev-loaded in UDT, on macOS (same day and machine):** the operator
+    loaded the Photoshop test plugin from its folder in the UXP Developer Tool; Photoshop's
+    UXP log shows the plugin at 21:13:47, when no copy of it was installed. `--install` of
+    the same id 28 s later answered `Installation Successful`, the log shows `Add
+    successful`, and `--list all` showed it as Enabled. So on macOS UPIA 8.6.0.49 did not
+    refuse a dev-loaded id, unlike the Windows run in September 2026. One run, one app.
+  - **A dev-loaded copy beside the installed panel (seen in the same session, not
+    planned):** the real panels were also loaded from UDT while their installed copies
+    ran. In Photoshop both copies ran for 45 s, and each took the connection from the other
+    every 3 s (16 closes with code 4004, `replaced by newer connection`: a panel that is
+    replaced reconnects, and so replaces the other one). It ended when Photoshop logged
+    `Devtools: Removing existing plugin with id com.brainferno.mcp-bridge.photoshop`; one
+    copy stayed connected. Premiere Pro logged that line at once on each load, and after
+    the last one no panel was connected (`cc_connected_apps`: `connected: false`). So do
+    not load a panel in UDT while its installed copy is in use.
+  - **Not yet checked on macOS:** a `.zxp` (no macOS ZXPSignCmd was on the machine). What
+    the Mac had installed before the double-click install above was not recorded.
 - **CEP (`panel-cep`, hosts After Effects + Audition) → self-signed `.zxp`**: signed with
   Adobe's **ZXPSignCmd**, auto-downloaded to `.tools/` from CEP-Resources 4.1.103 (win64 only
   in that build; the macOS binary lives in older version folders — drop it in by hand). The
@@ -78,9 +93,9 @@ manifests never drift.
 "Installation Successful" for each; no separate ZXP installer needed. UDT names a UXP
 package `<plugin-id>_<HOST>.ccx` (e.g. `com.brainferno.mcp-bridge.photoshop_PS.ccx`,
 `…premiere_premierepro.ccx`); UPIA does not need that name. `/list all` shows what is
-installed for each app, and `/remove "<plugin name>"` removes one. Gotchas: UPIA
-refuses an id still dev-loaded in UDT (use **Remove**, not just Unload) and the host app is
-best closed. Installed locations: UXP → `…\Roaming\Adobe\UXP\Plugins\External\<id>_<ver>`; CEP
+installed for each app, and `/remove "<plugin name>"` removes one. Gotchas: on Windows
+UPIA refused an id still dev-loaded in UDT (use **Remove**, not just Unload; on macOS it
+installed anyway, see above) and the host app is best closed. Installed locations: UXP → `…\Roaming\Adobe\UXP\Plugins\External\<id>_<ver>`; CEP
 → `…\Program Files (x86)\Common Files\Adobe\CEP\extensions\<name>`. On macOS a UXP plugin
 lands in `~/Library/Application Support/Adobe/UXP/Plugins/External/<id>_<ver>`, and UPIA is
 `/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent`,

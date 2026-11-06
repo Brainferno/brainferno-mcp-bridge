@@ -362,9 +362,11 @@ manifests can't drift.
   0.3.4 panels opened from the Plugins menu and connected to the server, again with the UXP
   Developer Tool not running. UPIA's command line (`--install`, `--list all`, `--remove` on
   macOS) installed scripted test plugins for both apps too, also over an older version.
-  **Not yet checked on macOS:** an install with the plugin still dev-loaded in UDT, and a
-  `.zxp`. The releases do not ship the `.ccx` / `.zxp` files yet, and `install-cc` does not
-  install them.
+  On macOS UPIA also installed a plugin whose id was dev-loaded in UDT at that moment (on
+  Windows it refused one in September). Do not load a panel in UDT while its installed copy
+  is in use: in Photoshop the two copies took the connection from each other every 3 s
+  (`docs/quirks/panel-packaging.md`). **Not yet checked on macOS:** a `.zxp`. The releases
+  do not ship the `.ccx` / `.zxp` files yet, and `install-cc` does not install them.
 
 **Installing — Adobe's Unified Plugin Installer Agent (UPIA) installs BOTH formats**, the
 `.ccx` and the `.zxp` (verified live: "Installation Successful" for each). It's already on
@@ -372,7 +374,7 @@ disk; no separate ZXP installer is needed:
 
     "…\Adobe Desktop Common\RemoteComponents\UPI\…\UnifiedPluginInstallerAgent.exe" /install <file>
 
-Double-clicking a `.ccx` also works. Two gotchas, both hit live: UPIA refuses a plugin whose
+Double-clicking a `.ccx` also works. Two gotchas, both hit live on Windows: UPIA refuses a plugin whose
 id is still **loaded in developer mode** — in the UXP Developer Tool use **Remove** (not just
 Unload) on the entry first; and the UXP host app (Photoshop/Premiere) is best **closed**
 during install. The installed plugins land at
