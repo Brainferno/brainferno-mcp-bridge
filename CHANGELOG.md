@@ -18,6 +18,13 @@
   installer refuses a `manifest.json` whose `host` is a list and accepts one whose `host`
   is a single object. The script writes the single object; the source manifests keep the
   list, which the UXP Developer Tool loads.
+- In shared mode, a second server on the same machine (a second Claude Code window, for
+  example) could not bind the shared port and stopped, but only after it had overwritten
+  `~/.brainferno-mcp-bridge/bridge.json`. The file then pointed at a closed port, and the
+  panels of the server that was still running found nothing on their next reload. The
+  server now binds the shared port first and stops before it changes anything, and its
+  message names the server that holds the port and says what to do. A server that stops
+  for another reason after it started its panel hub removes its own handshake file.
 
 ## v0.3.4 — 2026-11-04
 
