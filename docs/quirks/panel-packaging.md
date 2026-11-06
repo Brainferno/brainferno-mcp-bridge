@@ -39,7 +39,25 @@ manifests never drift.
     version 0.3.4 for both, and one read-only command per app made the round trip through
     the panel (`ps_list_documents` listed the open document; `pp_project_info` came back
     with the panel's own "No project is open", as no project was open).
-  - **Not yet checked:** anything on macOS.
+  - **The same on macOS (2026-11-05, macOS 26.6.2, Photoshop 27.11.0, Premiere Pro 26.5.2,
+    Node 26.12.1):** `npm run package` on the Mac wrote the two `.ccx` files and the two
+    staged folders, then stopped at the `.zxp` step, because no macOS ZXPSignCmd was in
+    `.tools/` (see the CEP bullet below; the `.ccx` part runs first for this reason). The
+    operator double-clicked each `.ccx` in Finder and Creative Cloud installed it. Afterwards
+    UPIA's `--list all` showed "Brainferno MCP Bridge 0.3.4" as Enabled for Photoshop and for
+    Premiere Pro, and `~/Library/Application Support/Adobe/UXP/Plugins/External` held
+    `com.brainferno.mcp-bridge.photoshop_0.3.4` and `com.brainferno.mcp-bridge.premiere_0.3.4`.
+    `diff -r` against the staged folders of the same run showed one difference in each:
+    `manifest.json`, where the installed copy has `host` as one object. With the UXP
+    Developer Tool not running, the operator opened each panel from the Plugins menu and
+    both joined the 0.3.4 server: `cc_get_capabilities` reported panel version 0.3.4 for
+    both, and one read-only command per app made the round trip through the panel
+    (`ps_list_documents` returned an empty list, as no document was open; `pp_project_info`
+    came back with the panel's own "No project is open").
+  - **Not yet checked on macOS:** an install from the command line (UPIA's `--install`; only
+    `--list all` was run), an install over an older installed version, and an install while
+    the same plugin id is still dev-loaded in UDT (what the Mac had before this install was
+    not recorded).
 - **CEP (`panel-cep`, hosts After Effects + Audition) → self-signed `.zxp`**: signed with
   Adobe's **ZXPSignCmd**, auto-downloaded to `.tools/` from CEP-Resources 4.1.103 (win64 only
   in that build; the macOS binary lives in older version folders — drop it in by hand). The
@@ -54,7 +72,10 @@ package `<plugin-id>_<HOST>.ccx` (e.g. `com.brainferno.mcp-bridge.photoshop_PS.c
 installed for each app, and `/remove "<plugin name>"` removes one. Gotchas: UPIA
 refuses an id still dev-loaded in UDT (use **Remove**, not just Unload) and the host app is
 best closed. Installed locations: UXP → `…\Roaming\Adobe\UXP\Plugins\External\<id>_<ver>`; CEP
-→ `…\Program Files (x86)\Common Files\Adobe\CEP\extensions\<name>`. `install-cc`'s CEP dev
+→ `…\Program Files (x86)\Common Files\Adobe\CEP\extensions\<name>`. On macOS a UXP plugin
+lands in `~/Library/Application Support/Adobe/UXP/Plugins/External/<id>_<ver>`, and UPIA is
+`/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent`,
+with `--list all` in place of `/list all` (run live, 2026-11-05). `install-cc`'s CEP dev
 install is a junction at `…\Roaming\Adobe\CEP\extensions\<id>`; remove it with `rmdir` (link
 only, never the source) to switch After Effects / Audition onto the installed `.zxp`.
 

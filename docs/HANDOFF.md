@@ -2,7 +2,7 @@
 
 Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `docs/spikes/`.
 
-## Where the project stands (2026-11-04)
+## Where the project stands (2026-11-05)
 
 - Public repo `Brainferno/brainferno-mcp-bridge` (renamed from `adobe-cc-mcp` for Adobe's
   trademark rules), Apache-2.0, `main` is the release branch. CI on every push covers
@@ -357,8 +357,13 @@ manifests can't drift.
   installed scripted `.ccx` files for Photoshop and for Premiere Pro (test plugin ids, then
   the real 0.3.4 files over the 0.2.2 panels), and the installed panels opened from the
   Plugins menu and connected to the server with the UXP Developer Tool not running.
-  **Not yet checked:** macOS. The releases do not ship the `.ccx` / `.zxp` files yet, and
-  `install-cc` does not install them.
+  **Verified live on macOS 26, 2026-11-05:** the `.ccx` files that `npm run package` wrote
+  on the Mac installed by double-click for Photoshop and for Premiere Pro, and the installed
+  0.3.4 panels opened from the Plugins menu and connected to the server, again with the UXP
+  Developer Tool not running. **Not yet checked on macOS:** an install from the command line
+  (UPIA's `--install`), over an older installed version, or with the plugin still dev-loaded
+  in UDT. The releases do not ship the `.ccx` / `.zxp` files yet, and `install-cc` does not
+  install them.
 
 **Installing — Adobe's Unified Plugin Installer Agent (UPIA) installs BOTH formats**, the
 `.ccx` and the `.zxp` (verified live: "Installation Successful" for each). It's already on
