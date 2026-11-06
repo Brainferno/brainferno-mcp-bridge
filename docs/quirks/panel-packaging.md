@@ -54,10 +54,19 @@ manifests never drift.
     both, and one read-only command per app made the round trip through the panel
     (`ps_list_documents` returned an empty list, as no document was open; `pp_project_info`
     came back with the panel's own "No project is open").
-  - **Not yet checked on macOS:** an install from the command line (UPIA's `--install`; only
-    `--list all` was run), an install over an older installed version, and an install while
-    the same plugin id is still dev-loaded in UDT (what the Mac had before this install was
-    not recorded).
+  - **From the command line on macOS (same day and machine, UPIA 8.6.0.49, Photoshop and
+    Premiere Pro both running):** with two test plugins built by `scripts/ccx.mjs` (their
+    own ids and names, no script inside, so the installed panels stayed untouched),
+    `UnifiedPluginInstallerAgent --install <file>.ccx` answered `Installation Successful`
+    for a Photoshop build and for a Premiere Pro build. Installing version 0.3.4 over an
+    installed 0.3.3 of the same id also succeeded, and `--list all` then showed 0.3.4. The
+    older version's folder stayed in `External` beside the new one: the first
+    `--remove "<name>"` took out the 0.3.3 folder (the list still showed 0.3.4), a second
+    one took out 0.3.4, and a third answered `Failed to remove …, status = -406`. So after
+    an install over an older version, run `--remove` until the name is gone from the list.
+  - **Not yet checked on macOS:** an install while the same plugin id is still dev-loaded in
+    UDT, and a `.zxp` (no macOS ZXPSignCmd was on the machine). What the Mac had installed
+    before the double-click install above was not recorded.
 - **CEP (`panel-cep`, hosts After Effects + Audition) → self-signed `.zxp`**: signed with
   Adobe's **ZXPSignCmd**, auto-downloaded to `.tools/` from CEP-Resources 4.1.103 (win64 only
   in that build; the macOS binary lives in older version folders — drop it in by hand). The
@@ -75,7 +84,9 @@ best closed. Installed locations: UXP → `…\Roaming\Adobe\UXP\Plugins\Externa
 → `…\Program Files (x86)\Common Files\Adobe\CEP\extensions\<name>`. On macOS a UXP plugin
 lands in `~/Library/Application Support/Adobe/UXP/Plugins/External/<id>_<ver>`, and UPIA is
 `/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent`,
-with `--list all` in place of `/list all` (run live, 2026-11-05). `install-cc`'s CEP dev
+with `--install <file>`, `--list all` and `--remove "<plugin name>"` in place of the `/…`
+forms (all three run live, 2026-11-05). `npm run package` prints the command for the
+platform it runs on. `install-cc`'s CEP dev
 install is a junction at `…\Roaming\Adobe\CEP\extensions\<id>`; remove it with `rmdir` (link
 only, never the source) to switch After Effects / Audition onto the installed `.zxp`.
 

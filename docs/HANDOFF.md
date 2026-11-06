@@ -360,9 +360,10 @@ manifests can't drift.
   **Verified live on macOS 26, 2026-11-05:** the `.ccx` files that `npm run package` wrote
   on the Mac installed by double-click for Photoshop and for Premiere Pro, and the installed
   0.3.4 panels opened from the Plugins menu and connected to the server, again with the UXP
-  Developer Tool not running. **Not yet checked on macOS:** an install from the command line
-  (UPIA's `--install`), over an older installed version, or with the plugin still dev-loaded
-  in UDT. The releases do not ship the `.ccx` / `.zxp` files yet, and `install-cc` does not
+  Developer Tool not running. UPIA's command line (`--install`, `--list all`, `--remove` on
+  macOS) installed scripted test plugins for both apps too, also over an older version.
+  **Not yet checked on macOS:** an install with the plugin still dev-loaded in UDT, and a
+  `.zxp`. The releases do not ship the `.ccx` / `.zxp` files yet, and `install-cc` does not
   install them.
 
 **Installing — Adobe's Unified Plugin Installer Agent (UPIA) installs BOTH formats**, the
