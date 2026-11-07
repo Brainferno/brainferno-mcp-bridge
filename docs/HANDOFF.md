@@ -200,6 +200,11 @@ Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `
   `node …\packages\server\dist\index.js` process whose parent is this session's `claude.exe`
   (`Get-CimInstance Win32_Process` shows `ParentProcessId` and `CommandLine`). A panel stays on
   the server it already joined until it reconnects, so it may not be on the bridge.json one.
+- **Shared mode runs one server per machine.** Only one process can hold the shared port
+  (`httpPort`), so a second Claude Code window's server stops at start ("failed to connect"
+  in `/mcp`). Its log line names the pid that holds the port; it leaves `bridge.json` alone
+  (`startRuntime` in `packages/server/src/start.ts`). Close the other window, or reconnect
+  there. Seen on macOS, 2026-11-05.
 - UXP panel change (Photoshop, Premiere): reload in the UXP Developer Tool. CEP panel change
   (After Effects, Audition): close and reopen the panel.
 - When a server shuts down cleanly it tells the panels "bye", and the CEP panel then engages

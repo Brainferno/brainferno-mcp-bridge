@@ -2,28 +2,25 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 import { loadConfig, migrateLegacyUserDir } from "./config.js";
-import { startHttpServer, type RunningHttpServer } from "./http.js";
 import { log } from "./logging.js";
-import { buildRuntime, createMcpServer } from "./server.js";
+import { createMcpServer } from "./server.js";
+import { startRuntime, type StartedRuntime } from "./start.js";
+
+let started: StartedRuntime | null = null;
 
 async function main(): Promise<void> {
   const migrated = migrateLegacyUserDir();
   if (migrated) log.info(`copied settings from ${migrated} to ~/.brainferno-mcp-bridge (the old folder can be deleted)`);
   const config = loadConfig();
 
-  const rt = buildRuntime(config);
-  await rt.bridge.ready();
+  // Shared mode binds its port before the hub takes the handshake file (see startRuntime).
+  started = await startRuntime(config);
+  const { rt, remote } = started;
 
   const server = createMcpServer(rt);
   const transport = new StdioServerTransport();
   await server.connect(transport);
   log.info("MCP server ready on stdio");
-
-  let remote: RunningHttpServer | null = null;
-  if (config.httpPort > 0) {
-    // Remote sessions are marked so raw-script tools fail closed for them (BRAINFERNO_MCP_ALLOW_REMOTE_RAW_SCRIPTS).
-    remote = await startHttpServer(() => createMcpServer(rt, { remote: true }), { host: config.httpHost, port: config.httpPort, token: config.httpToken });
-  }
 
   const shutdown = (signal: string) => {
     void (async () => {
@@ -44,5 +41,8 @@ async function main(): Promise<void> {
 
 main().catch((error: unknown) => {
   log.error("fatal", error);
-  process.exit(1);
+  // A server that dies after the hub started must not leave the handshake file pointing at it:
+  // close() removes the file when it is still ours.
+  const closing = started === null ? Promise.resolve() : started.rt.bridge.close().catch(() => undefined);
+  void closing.then(() => process.exit(1));
 });
