@@ -2,7 +2,7 @@
 
 Read this first, then `docs/BUILD_PLAN.md` (Phase 6) and the live-run notes in `docs/spikes/`.
 
-## Where the project stands (2026-11-04)
+## Where the project stands (2026-11-05)
 
 - Public repo `Brainferno/brainferno-mcp-bridge` (renamed from `adobe-cc-mcp` for Adobe's
   trademark rules), Apache-2.0, `main` is the release branch. CI on every push covers
@@ -357,8 +357,16 @@ manifests can't drift.
   installed scripted `.ccx` files for Photoshop and for Premiere Pro (test plugin ids, then
   the real 0.3.4 files over the 0.2.2 panels), and the installed panels opened from the
   Plugins menu and connected to the server with the UXP Developer Tool not running.
-  **Not yet checked:** macOS. The releases do not ship the `.ccx` / `.zxp` files yet, and
-  `install-cc` does not install them.
+  **Verified live on macOS 26, 2026-11-05:** the `.ccx` files that `npm run package` wrote
+  on the Mac installed by double-click for Photoshop and for Premiere Pro, and the installed
+  0.3.4 panels opened from the Plugins menu and connected to the server, again with the UXP
+  Developer Tool not running. UPIA's command line (`--install`, `--list all`, `--remove` on
+  macOS) installed scripted test plugins for both apps too, also over an older version.
+  On macOS UPIA also installed a plugin whose id was dev-loaded in UDT at that moment (on
+  Windows it refused one in September). Do not load a panel in UDT while its installed copy
+  is in use: in Photoshop the two copies took the connection from each other every 3 s
+  (`docs/quirks/panel-packaging.md`). **Not yet checked on macOS:** a `.zxp`. The releases
+  do not ship the `.ccx` / `.zxp` files yet, and `install-cc` does not install them.
 
 **Installing — Adobe's Unified Plugin Installer Agent (UPIA) installs BOTH formats**, the
 `.ccx` and the `.zxp` (verified live: "Installation Successful" for each). It's already on
@@ -366,7 +374,7 @@ disk; no separate ZXP installer is needed:
 
     "…\Adobe Desktop Common\RemoteComponents\UPI\…\UnifiedPluginInstallerAgent.exe" /install <file>
 
-Double-clicking a `.ccx` also works. Two gotchas, both hit live: UPIA refuses a plugin whose
+Double-clicking a `.ccx` also works. Two gotchas, both hit live on Windows: UPIA refuses a plugin whose
 id is still **loaded in developer mode** — in the UXP Developer Tool use **Remove** (not just
 Unload) on the entry first; and the UXP host app (Photoshop/Premiere) is best **closed**
 during install. The installed plugins land at

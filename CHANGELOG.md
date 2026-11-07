@@ -9,7 +9,8 @@
   no UXP Developer Tool. Before, it only prepared a folder for a person to package by hand.
   Adobe's installer accepted the scripted files for both apps (Windows 11, 2026-11-04,
   `docs/quirks/panel-packaging.md`), and the installed panels opened and connected to the
-  server. Not yet checked: macOS. The releases do not ship these files yet.
+  server. The same held on macOS 26 (2026-11-05), where the files built on the Mac installed
+  by double-click. The releases do not ship these files yet.
 
 **Fixed**
 

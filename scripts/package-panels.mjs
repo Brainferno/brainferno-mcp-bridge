@@ -109,33 +109,41 @@ async function main() {
     const ccx = join(outDir, `brainferno-mcp-bridge-${label}-${version}.ccx`);
     writeFileSync(ccx, buildCcx(dir, version));
     ccxFiles.push(ccx);
-    console.log(`  ${ccx}`);
   }
 
-  // CEP -> signed .zxp.
-  await ensureZxpSignCmd();
-  ensureCert();
-  const dir = stage("panel-cep");
-  stampCep(dir);
-  const zxp = join(outDir, `brainferno-mcp-bridge-cep-${version}.zxp`);
-  rmSync(zxp, { force: true });
-  execFileSync(zxpExe, ["-sign", dir, zxp, certPath, certPass], { stdio: "inherit" });
-  execFileSync(zxpExe, ["-verify", zxp, "-certInfo"], { stdio: "inherit" });
-  console.log(`  ${zxp}`);
-
-  rmSync(stageDir, { recursive: true, force: true });
-
+  // UPIA takes `/install` on Windows and `--install` on macOS (both run live; see
+  // docs/quirks/panel-packaging.md).
   const upia = isWin
     ? "\"C:\\Program Files\\Common Files\\Adobe\\Adobe Desktop Common\\RemoteComponents\\UPI\\UnifiedPluginInstallerAgent\\UnifiedPluginInstallerAgent.exe\""
-    : "\"/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/…/UnifiedPluginInstallerAgent\"";
+    : "\"/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent\"";
+  const installFlag = isWin ? "/install" : "--install";
+
+  // Printed before the .zxp step, so a machine with no ZXPSignCmd still gets the UXP result.
+  console.log(`UXP plugins built (Photoshop, Premiere Pro), version ${version}:`);
+  for (const c of ccxFiles) console.log(`  ${c}`);
+  console.log("Install one with a double-click, or with Adobe's UPIA. Remove any dev-loaded copy in the");
+  console.log("UXP Developer Tool first:");
+  console.log(`  ${upia} ${installFlag} <file>.ccx`);
+
+  // CEP -> signed .zxp.
+  let zxp;
+  try {
+    await ensureZxpSignCmd();
+    ensureCert();
+    const dir = stage("panel-cep");
+    stampCep(dir);
+    zxp = join(outDir, `brainferno-mcp-bridge-cep-${version}.zxp`);
+    rmSync(zxp, { force: true });
+    execFileSync(zxpExe, ["-sign", dir, zxp, certPath, certPass], { stdio: "inherit" });
+    execFileSync(zxpExe, ["-verify", zxp, "-certInfo"], { stdio: "inherit" });
+  } finally {
+    rmSync(stageDir, { recursive: true, force: true });
+  }
 
   console.log(`\nCEP extension built (After Effects + Audition), version ${version}:`);
   console.log(`  ${zxp}`);
-  console.log(`\nUXP plugins built (Photoshop, Premiere Pro), version ${version}:`);
-  for (const c of ccxFiles) console.log(`  ${c}`);
-  console.log("\nAdobe's UPIA installs BOTH the .ccx and the .zxp (double-clicking a .ccx also works);");
-  console.log("no separate ZXP installer is needed. Close the host app and Remove any dev-loaded copy first:");
-  console.log(`  ${upia} /install <file>.ccx|.zxp`);
+  console.log("UPIA installs the .zxp too; no separate ZXP installer is needed. Close the host app first:");
+  console.log(`  ${upia} ${installFlag} <file>.zxp`);
   console.log("Or keep `npm run install-cc`, which side-loads the folders with developer mode.");
 }
 
