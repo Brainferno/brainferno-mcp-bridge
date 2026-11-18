@@ -371,7 +371,14 @@ manifests can't drift.
   Windows it refused one in September). Do not load a panel in UDT while its installed copy
   is in use: in Photoshop the two copies took the connection from each other every 3 s
   (`docs/quirks/panel-packaging.md`). **Not yet checked on macOS:** a `.zxp`. The releases
-  do not ship the `.ccx` / `.zxp` files yet, and `install-cc` does not install them.
+  do not ship the `.ccx` / `.zxp` files yet, and `install-cc` does not install them. A
+  draft of both, from 2026-08-31, is on the branch `draft/panel-installers` (commits
+  `1b2dc2a` and `9a6c7d9`, never merged): the installer installs the panels through UPIA,
+  falls back to the developer setup and removes the old CEP junction; a macOS release job
+  signs `cep.zxp` with a certificate kept as a GitHub secret and attaches the files to the
+  release. Reuse those two parts. Its `.ccx` builder zips the manifest with `host` as a
+  list, which UPIA refuses (-267), so build the files with `scripts/ccx.mjs`. Delete the
+  branch once both are on `main`.
 
 **Installing — Adobe's Unified Plugin Installer Agent (UPIA) installs BOTH formats**, the
 `.ccx` and the `.zxp` (verified live: "Installation Successful" for each). It's already on
